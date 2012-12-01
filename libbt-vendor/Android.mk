@@ -5,7 +5,8 @@ include $(CLEAR_VARS)
 BDROID_DIR := $(TOP_DIR)external/bluetooth/bluedroid
 
 LOCAL_SRC_FILES := \
-	bt_vendor_mrvl.c
+        bt_vendor_mrvl.c \
+        hardware_mrvl.c
 
 LOCAL_C_INCLUDES += \
         $(BDROID_DIR)/hci/include
