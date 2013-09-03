@@ -143,6 +143,10 @@ static int bt_vnd_mrvl_if_op(bt_vendor_opcode_t opcode, void *param)
 		break;
 	case BT_VND_OP_LPM_WAKE_SET_STATE:
 		break;
+	case BT_VND_OP_EPILOG:
+		if (vnd_cb)
+			vnd_cb->epilog_cb(BT_VND_OP_RESULT_SUCCESS);
+		break;
 	default:
 		ret = -1;
 		break;
