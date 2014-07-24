@@ -1,0 +1,213 @@
+##############################################################################
+#  
+#
+#
+#  Copyright 2006, The Android Open Source Project
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.  
+##############################################################################
+#  
+#  
+##############################################################################
+
+#
+# Common include file for Android build
+#
+
+################################################################
+# Options.
+
+# CPU arch type. Could be 'arm' or 'mips'
+ARCH_TYPE                    ?= arm
+
+# <ro.hardware> property, which comes from 'Hardware' field of
+# 'cpuinfo' of the device.
+RO_HARDWARE                  ?=
+
+# Select prebuilt binary types.
+FIXED_ARCH_TYPE              ?= 
+
+# GPU arch type.
+GPU_TYPE                     ?= unified
+
+# Set this variable to Kernel directory.
+export KERNEL_DIR            ?= $(ANDROID_BUILD_TOP)/kernel/kernel
+
+# Cross compiler for building kernel module
+export CROSS_COMPILE         ?= arm-eabi-
+
+# Enable this to allocate video memory via coherent DMA.
+NO_DMA_COHERENT              ?= 1
+
+# Enable to start GPU clock in drver.
+ENABLE_GPU_CLOCK_BY_DRIVER   ?= 1
+
+# Enable L2 cache.
+ENABLE_ARM_L2_CACHE          ?= 0
+
+# Enable platform driver model, available after linux 2.6.x.
+USE_PLATFORM_DRIVER          ?= 1
+
+# Enable Vivante profiler.
+USE_PROFILER                 ?= 0
+
+# Force all video memory cached.
+FORCE_ALL_VIDEO_MEMORY_CACHED ?= 0
+
+# Enable caching for non paged memory.
+NONPAGED_MEMORY_CACHEABLE    ?= 0
+
+# Enable buffering for non paged memory
+NONPAGED_MEMORY_BUFFERABLE   ?= 1
+
+# Enable swap rectangle - EXPERIMENTAL
+SUPPORT_SWAP_RECTANGLE       ?= 1
+
+# Enable memory bank alignment
+USE_BANK_ALIGNMENT           ?= 0
+BANK_BIT_START               ?= 0
+BANK_BIT_END                 ?= 0
+BANK_CHANNEL_BIT             ?= 0
+
+# Enable debug.
+DEBUG                        ?= 0
+
+# This macro will be export by Android build environement. Default for Eclair.
+PLATFORM_SDK_VERSION         ?= 9
+
+# Gralloc is built to work with s/w opengles for composition
+USE_COPYBIT_MODE_FOR_ANDROID = 0
+
+# Build as vanilla Linux in Android environment with VDK backend
+USE_LINUX_MODE_FOR_ANDROID   ?= 0
+
+# Enable caching for the video memory
+ENABLE_CACHED_VIDEO_MEMORY   ?= 1
+
+# Framebuffer pixel format
+# default   : 0
+# RGBA_8888 : 1
+# RGBX_8888 : 2
+# RGB_888   : 3
+# RGB_565   : 4
+# BGRA_8888 : 5
+FRAMEBUFFER_PIXEL_FORMAT     ?= 5
+
+
+################################################################
+# Target INCLUDES.
+
+C_INCLUDES    := $(TARGET_C_INCLUDES) $(filter-out %/opengl/include,$(TARGET_PROJECT_INCLUDES))
+
+
+################################################################
+# Target CFLAGS.
+
+CFLAGS        := $(TARGET_GLOBAL_CFLAGS) $(TARGET_$(ARCH_TYPE)_CFLAGS)
+
+CFLAGS        += -DLINUX
+
+ifeq ($(USE_LINUX_MODE_FOR_ANDROID), 1)
+#Only FB backend for VDK is a meaningful configuration under Android.
+CFLAGS        += -DUSE_VDK=1
+else
+CFLAGS        += -DUSE_VDK=0
+endif
+
+ifeq ($(USE_COPYBIT_MODE_FOR_ANDROID), 1)
+CFLAGS        += -DCOPYBIT_WITH_GRALLOC=1
+endif
+
+ifeq ($(DEFER_RESOLVES),1)
+CFLAGS        += -DgcdDEFER_RESOLVES=1
+endif
+
+ifeq ($(COPYBLT_OPTIMIZATION),1)
+CFLAGS        += -DgcdCOPYBLT_OPTIMIZATION=1
+endif
+
+PLATFORM_SDK_VERSION ?= 12
+
+ifeq ($(ENABLE_LINEAR_BUFFER_FOR_GPU),1)
+CFLAGS        += -DgcdGPU_LINEAR_BUFFER_ENABLED=1
+endif
+
+ifeq ($(ENABLE_OUTER_CACHE_PATCH),1)
+CFLAGS        += -DgcdENABLE_OUTER_CACHE_PATCH=1
+endif
+
+ifeq ($(USE_BANK_ALIGNMENT), 1)
+    CFLAGS += -DgcdENABLE_BANK_ALIGNMENT=1
+    ifneq ($(BANK_BIT_START), 0)
+	        ifneq ($(BANK_BIT_END), 0)
+	            CFLAGS += -DgcdBANK_BIT_START=$(BANK_BIT_START)
+	            CFLAGS += -DgcdBANK_BIT_END=$(BANK_BIT_END)
+	        endif
+    endif
+
+    ifneq ($(BANK_CHANNEL_BIT), 0)
+        CFLAGS += -DgcdBANK_CHANNEL_BIT=$(BANK_CHANNEL_BIT)
+    endif
+endif
+
+CFLAGS        += -DANDROID_SDK_VERSION=$(PLATFORM_SDK_VERSION)
+CFLAGS        += -fno-strict-aliasing -fno-short-enums -Wno-missing-field-initializers
+
+ifeq ($(USE_PROFILER), 1)
+CFLAGS        += -DVIVANTE_PROFILER=1
+else
+CFLAGS        += -DVIVANTE_PROFILER=0
+endif
+
+ifeq ($(DEBUG), 1)
+CFLAGS        += -DDBG=1 -DDEBUG -D_DEBUG -O0 -g
+endif
+
+
+################################################################
+# Tag.
+
+TAG                          := VIVANTE
+
+################################################################
+# Variables.
+
+export AQROOT                := $(abspath $(call my-dir))
+export AQARCH                := $(AQROOT)/arch/$(GPU_TYPE)
+
+GC_HAL_USER_DIR              := hal/user
+GC_HAL_ARCH_USER_DIR         := arch/$(GPU_TYPE)/hal/user
+GC_HAL_OS_USER_DIR           := hal/os/linux/user
+GC_HAL_OPTIMIZER_DIR         := hal/optimizer
+GC_EGL_DIR                   := driver/openGL/egl
+GC_GLES11_DIR                := driver/openGL/libGLESv11
+GC_GLESv2X_DIR               := driver/openGL/libGLESv2x/driver
+GC_GLESv2SC_DIR              := driver/openGL/libGLESv2x/compiler/libGLESv2SC
+GC_GRALLOC_DIR               := driver/gralloc
+GC_COPYBIT_DIR               := driver/copybit
+
+#Add for Gingerbread build issue
+ifdef FIXED_ARCH_TYPE
+GRANDFATHERED_USER_MODULES += \
+$(GC_GLESv2SC_DIR)/preprocessor/$(FIXED_ARCH_TYPE)/libglslPreprocessor \
+$(GC_GLESv2SC_DIR)/compiler/$(FIXED_ARCH_TYPE)/libglslCompiler \
+$(GC_GLESv2SC_DIR)/entry/$(FIXED_ARCH_TYPE)/libGLESv2SC
+endif
+
+
+ifeq ($(FORCE_ALL_VIDEO_MEMORY_CACHED), 1)
+CFLAGS        += -DgcdPAGED_MEMORY_CACHEABLE=1
+else
+CFLAGS        += -DgcdPAGED_MEMORY_CACHEABLE=0
+endif
+
