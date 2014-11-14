@@ -16,9 +16,6 @@
 **
 *****************************************************************************/
 
-
-
-
 #include <limits.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -122,23 +119,23 @@ _ConvertAndroid2HALFormat(
         break;
 
     case HAL_PIXEL_FORMAT_RGBA_8888:
-        *HalFormat = gcvSURF_A8B8G8R8;
+        *HalFormat = gcvSURF_A8R8G8B8;
         break;
 
     case HAL_PIXEL_FORMAT_RGBX_8888:
         *HalFormat = gcvSURF_X8B8G8R8;
         break;
 
-    case HAL_PIXEL_FORMAT_RGBA_4444:
-        *HalFormat = gcvSURF_R4G4B4A4;
-        break;
+    // case HAL_PIXEL_FORMAT_RGBA_4444:
+        // *HalFormat = gcvSURF_R4G4B4A4;
+        // break;
 
-    case HAL_PIXEL_FORMAT_RGBA_5551:
-        *HalFormat = gcvSURF_R5G5B5A1;
-        break;
+    // case HAL_PIXEL_FORMAT_RGBA_5551:
+        // *HalFormat = gcvSURF_R5G5B5A1;
+        // break;
 
     case HAL_PIXEL_FORMAT_BGRA_8888:
-        *HalFormat = gcvSURF_A8R8G8B8;
+        *HalFormat = gcvSURF_A8B8G8R8;
         break;
 
     case ANDROID_HAL_PIXEL_FORMAT_YCbCr_420_SP:
@@ -245,8 +242,8 @@ static int _ConvertFormatToSurfaceInfo(
         break;
 
     case HAL_PIXEL_FORMAT_RGB_565:
-    case HAL_PIXEL_FORMAT_RGBA_5551:
-    case HAL_PIXEL_FORMAT_RGBA_4444:
+    // case HAL_PIXEL_FORMAT_RGBA_5551:
+    // case HAL_PIXEL_FORMAT_RGBA_4444:
         xstride = _ALIGN(Width, 16);
         ystride = _ALIGN(Height, 4);
         size = xstride * ystride * 2;

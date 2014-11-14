@@ -8,7 +8,6 @@
 #include "OMX_IppDef.h"
 #include <binder/IMemory.h>
 #include <utils/RefBase.h>
-#include <linux/android_pmem.h>
 #include <sys/ioctl.h>
 #include <cutils/properties.h>
 #ifdef USE_ION

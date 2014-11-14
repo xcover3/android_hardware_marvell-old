@@ -22,7 +22,7 @@
 #define __gc_gralloc_gr_h_
 
 #include <stdint.h>
-#include <asm/page.h>
+// #include <asm/page.h>
 #include <limits.h>
 #include <sys/cdefs.h>
 #include <hardware/gralloc.h>

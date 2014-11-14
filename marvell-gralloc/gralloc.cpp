@@ -209,6 +209,8 @@ int gralloc_perform(struct gralloc_module_t const* module,
         int operation, ... )
 {
     int res = -EINVAL;
+	// 5.0 does not use it anymore
+#if 0 
     va_list args;
     va_start(args, operation);
 
@@ -231,6 +233,8 @@ int gralloc_perform(struct gralloc_module_t const* module,
     }
 
     va_end(args);
+#endif
+	ALOGE("gralloc_perform: no implementation for operation 0x%08x", operation);
     return res;
 }
 
