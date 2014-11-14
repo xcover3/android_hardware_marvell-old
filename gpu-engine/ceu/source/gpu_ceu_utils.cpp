@@ -18,6 +18,9 @@
 #include "gpu_ceu_utils.h"
 
 #ifdef ANDROID
+
+#define SK_SUPPORT_LEGACY_SETCONFIG
+
 #include <SkImageDecoder.h>
 #include <SkImageEncoder.h>
 #include <SkBitmap.h>
@@ -291,7 +294,7 @@ CEUbool _ceu_load_image_as_rgb565(
                         asset->getBuffer(false),
                         asset->getLength(),
                         &bm,
-                        SkBitmap::kRGB_565_Config,
+                        kRGB_565_SkColorType,
                         SkImageDecoder::kDecodePixels_Mode,
                         NULL))
     {
@@ -345,7 +348,7 @@ CEUbool _ceu_load_image_as_rgba8888(
                         asset->getBuffer(false),
                         asset->getLength(),
                         &bm,
-                        SkBitmap::kARGB_8888_Config,
+                        kRGBA_8888_SkColorType,  // fix me, should be ARGB_8888
                         SkImageDecoder::kDecodePixels_Mode,
                         NULL))
     {
@@ -401,7 +404,7 @@ ceuSTATUS _ceu_dump_image_from_memory(
         return ceuSTATUS_FAILED;
     }
 
-    bm.setConfig(config, width, height, stride);
+    bm.setConfig(config, width, height, stride, kIgnore_SkAlphaType);
 
     bm.setPixels(srcMemory);
 

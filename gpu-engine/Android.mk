@@ -13,5 +13,5 @@ LOCAL_PATH := $(call my-dir)
 include $(CEU_PATH)/Android.mk
 include $(CSC_PATH)/Android.mk
 include $(TEX_PATH)/Android.mk
-include $(VEU_PATH)/Android.mk
+#include $(VEU_PATH)/Android.mk
 
