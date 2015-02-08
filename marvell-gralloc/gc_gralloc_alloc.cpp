@@ -112,6 +112,7 @@ _ConvertAndroid2HALFormat(
 {
     gceSTATUS status = gcvSTATUS_OK;
 
+	ALOGE("Format is %d\n", Format);
     switch (Format)
     {
     case HAL_PIXEL_FORMAT_RGB_565:
@@ -119,11 +120,13 @@ _ConvertAndroid2HALFormat(
         break;
 
     case HAL_PIXEL_FORMAT_RGBA_8888:
+		// XO-4 use this format
         *HalFormat = gcvSURF_A8R8G8B8;
+		ALOGE("Format is HAL_PIXEL_FORMAT_RGBA_8888\n");
         break;
 
     case HAL_PIXEL_FORMAT_RGBX_8888:
-        *HalFormat = gcvSURF_X8B8G8R8;
+        *HalFormat = gcvSURF_X8R8G8B8;
         break;
 
     // case HAL_PIXEL_FORMAT_RGBA_4444:
@@ -135,6 +138,7 @@ _ConvertAndroid2HALFormat(
         // break;
 
     case HAL_PIXEL_FORMAT_BGRA_8888:
+		ALOGE("Format is HAL_PIXEL_FORMAT_BGRA_8888 to gcvSURF_A8B8G8R8\n");
         *HalFormat = gcvSURF_A8B8G8R8;
         break;
 
