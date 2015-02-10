@@ -44,6 +44,8 @@
 #include <gc_hal_user.h>
 #include <gc_hal_base.h>
 
+#define PLATFORM_SDK_VERSION 22
+
 #if HAVE_ANDROID_OS
 #if (MRVL_VIDEO_MEMORY_USE_TYPE == gcdMEM_TYPE_ION)
 #include <linux/ion.h>
@@ -61,32 +63,6 @@ extern android::sp<android::IDisplayModel> displayModel;
 using namespace android;
 
 #define _ALIGN( n, align_dst ) ( (n + (align_dst-1)) & ~(align_dst-1) )
-
-/*******************************************************************************
-**
-**  YUV pixel formats of android hal.
-**
-**  Different android versions have different definitaions.
-**  These are collected from hardware/libhardware/include/hardware/hardware.h
-*/
-enum
-{
-    ANDROID_HAL_PIXEL_FORMAT_YCbCr_422_SP       = 0x10, // NV16
-    ANDROID_HAL_PIXEL_FORMAT_YCrCb_420_SP       = 0x11, // NV21
-    ANDROID_HAL_PIXEL_FORMAT_YCbCr_422_P        = 0x12,
-    ANDROID_HAL_PIXEL_FORMAT_YCbCr_420_P        = 0x13, // I420
-    ANDROID_HAL_PIXEL_FORMAT_YCbCr_422_I        = 0x14, // YUY2
-    ANDROID_HAL_PIXEL_FORMAT_YCbCr_420_I        = 0x15,
-    ANDROID_HAL_PIXEL_FORMAT_CbYCrY_422_I       = 0x16, // UYVY
-    ANDROID_HAL_PIXEL_FORMAT_CbYCrY_420_I       = 0x17,
-    ANDROID_HAL_PIXEL_FORMAT_YCbCr_420_SP_TILED = 0x20,
-    ANDROID_HAL_PIXEL_FORMAT_YCbCr_420_SP       = 0x21, // NV12
-    ANDROID_HAL_PIXEL_FORMAT_YCrCb_420_SP_TILED = 0x22,
-    ANDROID_HAL_PIXEL_FORMAT_YCrCb_422_SP       = 0x23, // NV61
-
-    ANDROID_HAL_PIXEL_FORMAT_YV12               = 0x32315659, // YCrCb 4:2:0 Planar
-};
-
 
 /*******************************************************************************
 **
@@ -112,7 +88,6 @@ _ConvertAndroid2HALFormat(
 {
     gceSTATUS status = gcvSTATUS_OK;
 
-	ALOGE("Format is %d\n", Format);
     switch (Format)
     {
     case HAL_PIXEL_FORMAT_RGB_565:
@@ -120,54 +95,53 @@ _ConvertAndroid2HALFormat(
         break;
 
     case HAL_PIXEL_FORMAT_RGBA_8888:
-		// XO-4 use this format
         *HalFormat = gcvSURF_A8R8G8B8;
-		ALOGE("Format is HAL_PIXEL_FORMAT_RGBA_8888\n");
         break;
 
     case HAL_PIXEL_FORMAT_RGBX_8888:
         *HalFormat = gcvSURF_X8R8G8B8;
         break;
 
-    // case HAL_PIXEL_FORMAT_RGBA_4444:
-        // *HalFormat = gcvSURF_R4G4B4A4;
-        // break;
+#if PLATFORM_SDK_VERSION < 19
+    case HAL_PIXEL_FORMAT_RGBA_4444:
+        *HalFormat = gcvSURF_R4G4B4A4;
+        break;
 
-    // case HAL_PIXEL_FORMAT_RGBA_5551:
-        // *HalFormat = gcvSURF_R5G5B5A1;
-        // break;
+    case HAL_PIXEL_FORMAT_RGBA_5551:
+        *HalFormat = gcvSURF_R5G5B5A1;
+        break;
+#endif
 
     case HAL_PIXEL_FORMAT_BGRA_8888:
-		ALOGE("Format is HAL_PIXEL_FORMAT_BGRA_8888 to gcvSURF_A8B8G8R8\n");
         *HalFormat = gcvSURF_A8B8G8R8;
         break;
 
-    case ANDROID_HAL_PIXEL_FORMAT_YCbCr_420_SP:
+    case HAL_PIXEL_FORMAT_YCbCr_420_SP_MRVL:
         /* YUV 420 semi planner: NV12 */
         *HalFormat = gcvSURF_NV12;
         break;
 
-    case ANDROID_HAL_PIXEL_FORMAT_YCrCb_420_SP:
+    case HAL_PIXEL_FORMAT_YCrCb_420_SP:
         /* YVU 420 semi planner: NV21 */
         *HalFormat = gcvSURF_NV21;
         break;
 
-    case ANDROID_HAL_PIXEL_FORMAT_YCbCr_420_P:
+    case HAL_PIXEL_FORMAT_YCbCr_420_P:
         /* YUV 420 planner: I420 */
         *HalFormat = gcvSURF_I420;
         break;
 
-    case ANDROID_HAL_PIXEL_FORMAT_YV12:
+    case HAL_PIXEL_FORMAT_YV12:
         /* YVU 420 planner: YV12 */
         *HalFormat = gcvSURF_YV12;
         break;
 
-    case ANDROID_HAL_PIXEL_FORMAT_YCbCr_422_I:
+    case HAL_PIXEL_FORMAT_YCbCr_422_I:
         /* YUV 422 package: YUYV, YUY2 */
         *HalFormat = gcvSURF_YUY2;
         break;
 
-    case ANDROID_HAL_PIXEL_FORMAT_CbYCrY_422_I:
+    case HAL_PIXEL_FORMAT_CbYCrY_422_I:
         /* UYVY 422 package: UYVY */
         *HalFormat = gcvSURF_UYVY;
         break;
@@ -199,32 +173,33 @@ static int _ConvertFormatToSurfaceInfo(
 
     switch(Format)
     {
-    case ANDROID_HAL_PIXEL_FORMAT_YCbCr_420_SP:
-    case ANDROID_HAL_PIXEL_FORMAT_YCrCb_420_SP:
-        xstride = _ALIGN(Width, 2);
-        size    = xstride * Height * 2;
-        break;
-
-    case ANDROID_HAL_PIXEL_FORMAT_YCbCr_422_SP:
-        xstride = _ALIGN(Width, 2);
-        ystride = _ALIGN(Height, 2);
-        size    = (xstride * ystride) + (Width/2 * Height/2) * 2;
-        break;
-
-    case ANDROID_HAL_PIXEL_FORMAT_YCbCr_420_P:
+    case HAL_PIXEL_FORMAT_YCbCr_420_SP_MRVL:
+    case HAL_PIXEL_FORMAT_YCrCb_420_SP:
         xstride = _ALIGN(Width, 64 );
         ystride = _ALIGN(Height, 64 );
         size    = xstride * ystride * 3 / 2;
         break;
 
-    case ANDROID_HAL_PIXEL_FORMAT_YV12:
+    case HAL_PIXEL_FORMAT_YCbCr_422_SP:
+        xstride = _ALIGN(Width, 64);
+        ystride = _ALIGN(Height, 64);
+        size    = xstride * ystride * 2;
+        break;
+
+    case HAL_PIXEL_FORMAT_YCbCr_420_P:
         xstride = _ALIGN(Width, 64 );
         ystride = _ALIGN(Height, 64 );
         size    = xstride * ystride * 3 / 2;
         break;
 
-    case ANDROID_HAL_PIXEL_FORMAT_YCbCr_422_I:
-    case ANDROID_HAL_PIXEL_FORMAT_CbYCrY_422_I:
+    case HAL_PIXEL_FORMAT_YV12:
+        xstride = _ALIGN(Width, 64 );
+        ystride = _ALIGN(Height, 64 );
+        size    = xstride * ystride * 3 / 2;
+        break;
+
+    case HAL_PIXEL_FORMAT_YCbCr_422_I:
+    case HAL_PIXEL_FORMAT_CbYCrY_422_I:
         xstride = _ALIGN(Width, 16);
         ystride = _ALIGN(Height, 32);
         size    = xstride * ystride * 2;
@@ -246,8 +221,10 @@ static int _ConvertFormatToSurfaceInfo(
         break;
 
     case HAL_PIXEL_FORMAT_RGB_565:
-    // case HAL_PIXEL_FORMAT_RGBA_5551:
-    // case HAL_PIXEL_FORMAT_RGBA_4444:
+#if PLATFORM_SDK_VERSION < 19
+    case HAL_PIXEL_FORMAT_RGBA_5551:
+    case HAL_PIXEL_FORMAT_RGBA_4444:
+#endif
         xstride = _ALIGN(Width, 16);
         ystride = _ALIGN(Height, 4);
         size = xstride * ystride * 2;
@@ -825,19 +802,30 @@ gc_gralloc_alloc_buffer(
     int * Stride
     )
 {
-    int err = 0;
-    int fd = -1;
-
-    int master  = -1;
-    void* base          = gcvNULL;
+    int err             = 0;
+    int fd              = -1;
+    int master          = -1;
     int offset          = 0;
     int flags           = 0;
+    int width           = 0;
+    int height          = 0;
 
-    /* Flag for distinguish pmem path or GC vidmem path. */
-    bool bContigMem       = gcvFALSE;
+    size_t size         = 0;
+    size_t xstride      = 0;
+    size_t ystride      = 0;
+    int bpr             = 0;
+    int physAddr        = 0;
+    gctUINT pixelPipes;
 
-    gceSTATUS status = gcvSTATUS_OK;
-    gctUINT stride   = 0;
+    /* Buffer handle. */
+    gc_private_handle_t * handle      = NULL;
+
+    gctBOOL isAlloc                   = gcvFALSE;
+    gctBOOL isPmemAlloc               = gcvFALSE;
+    gctBOOL isGcAlloc                 = gcvFALSE;
+
+    gceSTATUS status                  = gcvSTATUS_OK;
+    gctUINT stride                    = 0;
 
     gceSURF_FORMAT format             = gcvSURF_UNKNOWN;
     gceSURF_FORMAT resolveFormat      = gcvSURF_UNKNOWN;
@@ -863,14 +851,14 @@ gc_gralloc_alloc_buffer(
     /* Binder info. */
     IPCThreadState* ipc               = IPCThreadState::self();
 
-    size_t size     = 0;
-    size_t xstride  = 0;
-    size_t ystride  = 0;
-    int bpr         = 0;
-    int physAddr    = 0;
-    gctUINT pixelPipes;
-    /* Buffer handle. */
-    gc_private_handle_t * handle      = NULL;
+    clientPID = ipc->getCallingPid();
+
+    forSelf = (clientPID == getpid());
+
+    if (forSelf)
+    {
+        ALOGI("Self allocation");
+    }
 
     /* Must be set current hardwareType to 3D, due to surfaceflinger need tile
      * surface.
@@ -881,43 +869,61 @@ gc_gralloc_alloc_buffer(
     gcmONERROR(
         gcoHAL_QueryPixelPipesInfo(&pixelPipes,gcvNULL,gcvNULL));
 
-    /* Only HW render buffer still go GC video mem path. */
-    if((!(Usage & GRALLOC_USAGE_HW_RENDER)) ||
-       (Usage & GRALLOC_USAGE_PRIVATE_3))
-    {
-        flags |= private_handle_t::PRIV_FLAGS_USES_PMEM;
-        bContigMem = gcvTRUE;
-
-        /* FIX ME: Workaround for PMEM path, due to user-allocated surface don't
-         * do alignment when created, it may cause resolve onto texture
-         * surface failed.
-         */
-        Width = _ALIGN(Width, 16);
-        Height = _ALIGN(Height, 4*pixelPipes); // the alignment of height is base on HW pixelpipe
-    }
-
     /* Convert to hal pixel format. */
     gcmONERROR(
        _ConvertAndroid2HALFormat(Format,
                                  &format));
 
-    clientPID = ipc->getCallingPid();
-
-    forSelf = (clientPID == getpid());
-
-    if (forSelf)
+    /*check usage to determine alloc buffer from ion or gc driver.*/
+#if 0
+    if(Usage & GRALLOC_USAGE_OVLY_DISP)
     {
-        ALOGI("Self allocation");
+        /*alloc buffer from ion first, if failed, alloc buffer from gc driver.*/
+        isPmemAlloc = gcvTRUE;
+        isGcAlloc   = gcvTRUE;
+    }
+#endif
+    if((Usage & GRALLOC_USAGE_HW_RENDER) && !(Usage & GRALLOC_USAGE_PRIVATE_3))
+    {
+        /*alloc buffer from gc driver.*/
+        isPmemAlloc = gcvFALSE;
+        isGcAlloc = gcvTRUE;
+    }
+    else
+    {
+        /*alloc buffer from ion, including GRALLOC_USAGE_PRIVATE_3*/
+        isPmemAlloc = gcvTRUE;
+        isGcAlloc   = gcvFALSE;
     }
 
-
-    if(bContigMem)
+    /*ion path, allocated continuous memroy.*/
+    if(isPmemAlloc)
     {
-        private_module_t* module = reinterpret_cast<private_module_t*>(
-                Dev->common.module);
+        flags |= private_handle_t::PRIV_FLAGS_USES_PMEM;
 
-        err = _ConvertFormatToSurfaceInfo(Format, Width, Height, &xstride, &ystride, &size);
-        if(err < 0) return err;
+        /* FIX ME: Workaround for PMEM path, due to user-allocated surface don't
+         * do alignment when created, it may cause resolve onto texture
+         * surface failed.
+         */
+        width = _ALIGN(Width, 16);
+
+        /*the alignment of height is base on HW pixelpipe*/
+        height = _ALIGN(Height, 4*pixelPipes);
+
+        private_module_t* module =
+            reinterpret_cast<private_module_t*>(Dev->common.module);
+
+        err = _ConvertFormatToSurfaceInfo(Format,
+                                           width,
+                                           height,
+                                           &xstride,
+                                           &ystride,
+                                           &size);
+        if(err < 0)
+        {
+            ALOGE("not found compatible format!");
+            return err;
+        }
 
         size = roundUpToPageSize(size);
 
@@ -926,42 +932,90 @@ gc_gralloc_alloc_buffer(
 #else
         master = pmem_alloc_buffer(offset, size, &physAddr);
 #endif
-        if (master < 0)
-        {
-            err = master;
-            goto OnError;
-        }
 
-        gcmONERROR(
+        if(master >= 0)
+        {
+            gcmONERROR(
                 gcoSURF_Construct(gcvNULL,
-                                  Width,
-                                  Height,
+                                  width,
+                                  height,
                                   1,
                                   gcvSURF_BITMAP,
                                   format,
                                   gcvPOOL_USER,
                                   &surface));
 
-        /* Now retrieve and store vid mem node attributes. */
-        gcmONERROR(
-           gcoSURF_QueryVidMemNode(surface,
-                                   &vidNode,
-                                   &pool,
-                                   &adjustedSize));
-    }
-    else
-    {
-        /* For 3D app. */
-        master = open("/dev/null",O_RDONLY,0);
-        /* we're using two fds now */
-        fd = open("/dev/null", O_RDONLY, 0);
+            /* Now retrieve and store vid mem node attributes. */
+            gcmONERROR(
+               gcoSURF_QueryVidMemNode(surface,
+                                       &vidNode,
+                                       &pool,
+                                       &adjustedSize));
+
+            /* For CPU apps, we must synchronize lock requests from CPU with the composition.
+             * Composition could happen in the following ways. i)2D, ii)3D, iii)CE, iv)copybit 2D.
+             * (Note that, we are not considering copybit composition of 3D apps, which also uses
+             * linear surfaces. Can be added later if needed.)
+
+             * In all cases, the following mechanism must be used for proper synchronization
+             * between CPU and GPU :
+
+             * - App on gralloc::lock
+             *      wait_signal(hwDoneSignal);
+
+             * - Compositor on composition
+             *      set_unsignalled(hwDoneSignal);
+             *      issue composition;
+             *      schedule_event(hwDoneSignal, clientPID);
+
+             *  This is a manually reset signal, which is unsignalled by the compositor when
+             *  buffer is in use, prohibiting app from obtaining write lock.
+             */
+            /* Manually reset signal, for CPU/GPU sync. */
+            gcmONERROR(gcoOS_CreateSignal(gcvNULL,
+                                          gcvTRUE,
+                                          &signal));
+
+            /* Initially signalled. */
+            gcmONERROR(gcoOS_Signal(gcvNULL,
+                                    signal,
+                                    gcvTRUE));
+
+            ALOGV("Created signal=%p for hnd=%p", signal, handle);
+
+            /*buffer is allocated successfully.*/
+            isAlloc = gcvTRUE;
+        }
+
+        /*if fail to alloc buffer from ion and gc path is not allowed, return falied.*/
+        if(master < 0 && !isGcAlloc)
+        {
+            err = master;
+            goto OnError;
+        }
+
     }
 
-    /*This flag is used to decide texture surafce use linear or tile. */
-#if !gcdGPU_LINEAR_BUFFER_ENABLED
-    /* 3D App use tile buffer, non-cached.(gcvSURF_TEXTURE) */
-    if(!bContigMem)
+    /*gc path, allocate memroy from gc driver(continuous or non-continous).*/
+    if(!isAlloc && isGcAlloc)
     {
+        /*reset width and height*/
+        width = Width;
+        height = Height;
+
+        /*remove pmem flags if it is set*/
+        flags &= ~private_handle_t::PRIV_FLAGS_USES_PMEM;
+
+        /* For 3D app. */
+        master = open("/dev/null",O_RDONLY,0);
+
+        /* we're using two fds now */
+        fd = open("/dev/null", O_RDONLY, 0);
+
+        /*This flag is used to decide texture surafce use linear or tile. */
+#if !gcdGPU_LINEAR_BUFFER_ENABLED
+        /* 3D App use tile buffer, non-cached.(gcvSURF_TEXTURE) */
+
         /* Get the resolve format. */
         gcmONERROR(
             gcoTEXTURE_GetClosestFormat(gcvNULL,
@@ -971,8 +1025,8 @@ gc_gralloc_alloc_buffer(
         /* Construct the resolve target. */
         gcmONERROR(
             gcoSURF_Construct(gcvNULL,
-                              Width,
-                              Height,
+                              width,
+                              height,
                               1,
                               gcvSURF_TEXTURE,
                               resolveFormat,
@@ -1011,90 +1065,60 @@ gc_gralloc_alloc_buffer(
                  resolveAdjustedSize,
                  resolvePool,
                  resolveFormat);
-    }
+
 #else
-    /* 3D App use linear buffer, non-cached. (gcvSURF_BITMAP)*/
-    if(!bContigMem)
-    {
-        /* For HARWARE_RENDER case, allocate non-cacheable Linear Surface from GC reserved. */
+            /* 3D App use linear buffer, non-cached. (gcvSURF_BITMAP)*/
+
+            /* For HARWARE_RENDER case, allocate non-cacheable Linear Surface from GC reserved. */
 #if gcdANDROID_UNALIGNED_LINEAR_COMPOSITION_ADJUST
-         gcmONERROR(
-            gcoSURF_Construct(gcvNULL,
-                              Width,
-                              Height,
-                              1,
-                              gcvSURF_FLIP_BITMAP,
-                              format,
-                              gcvPOOL_DEFAULT,
-                              &surface));
+             gcmONERROR(
+                gcoSURF_Construct(gcvNULL,
+                                  width,
+                                  height,
+                                  1,
+                                  gcvSURF_FLIP_BITMAP,
+                                  format,
+                                  gcvPOOL_DEFAULT,
+                                  &surface));
 #else
-         gcmONERROR(
-            gcoSURF_Construct(gcvNULL,
-                              Width,
-                              Height,
-                              1,
-                              gcvSURF_BITMAP,
-                              format,
-                              gcvPOOL_DEFAULT,
-                              &surface));
+             gcmONERROR(
+                gcoSURF_Construct(gcvNULL,
+                                  width,
+                                  height,
+                                  1,
+                                  gcvSURF_BITMAP,
+                                  format,
+                                  gcvPOOL_DEFAULT,
+                                  &surface));
 #endif
-        /* Now retrieve and store vid mem node attributes. */
-        gcmONERROR(
-           gcoSURF_QueryVidMemNode(surface,
-                                   &vidNode,
-                                   &pool,
-                                   &adjustedSize));
+            /* Now retrieve and store vid mem node attributes. */
+            gcmONERROR(
+               gcoSURF_QueryVidMemNode(surface,
+                                       &vidNode,
+                                       &pool,
+                                       &adjustedSize));
 
-        /* Get stride. */
-        gcmONERROR(
-            gcoSURF_GetAlignedSize(surface,
-                                   &stride,
-                                   gcvNULL,
-                                   gcvNULL));
-    }
+            /* Get stride. */
+            gcmONERROR(
+                gcoSURF_GetAlignedSize(surface,
+                                       &stride,
+                                       gcvNULL,
+                                       gcvNULL));
+
 #endif
+            /*buffer is allocated successfully.*/
+            isAlloc = gcvTRUE;
 
-    /* For 2D App, need signal to sync CPU and GPU. */
-    if (!(Usage & GRALLOC_USAGE_HW_RENDER))
-    {
-        /* For CPU apps, we must synchronize lock requests from CPU with the composition.
-         * Composition could happen in the following ways. i)2D, ii)3D, iii)CE, iv)copybit 2D.
-         * (Note that, we are not considering copybit composition of 3D apps, which also uses
-         * linear surfaces. Can be added later if needed.)
-
-         * In all cases, the following mechanism must be used for proper synchronization
-         * between CPU and GPU :
-
-         * - App on gralloc::lock
-         *      wait_signal(hwDoneSignal);
-
-         * - Compositor on composition
-         *      set_unsignalled(hwDoneSignal);
-         *      issue composition;
-         *      schedule_event(hwDoneSignal, clientPID);
-
-         *  This is a manually reset signal, which is unsignalled by the compositor when
-         *  buffer is in use, prohibiting app from obtaining write lock.
-         */
-        /* Manually reset signal, for CPU/GPU sync. */
-        gcmONERROR(gcoOS_CreateSignal(gcvNULL,
-                                      gcvTRUE,
-                                      &signal));
-
-        /* Initially signalled. */
-        gcmONERROR(gcoOS_Signal(gcvNULL,
-                                signal,
-                                gcvTRUE));
-
-        ALOGV("Created signal=%p for hnd=%p", signal, handle);
+            /*buffer is allocated from gc driver but not ion.*/
+            isPmemAlloc = gcvFALSE;
     }
 
     if(err == 0)
     {
         handle = new gc_private_handle_t(fd, size, flags);
         handle->master              = master;
-        handle->width               = (int) Width;
-        handle->height              = (int) Height;
+        handle->width               = (int) width;
+        handle->height              = (int) height;
         handle->format              = (int) Format;
         handle->surfFormat          = (int) format;
 
@@ -1115,7 +1139,8 @@ gc_gralloc_alloc_buffer(
         /* Case module. */
         gralloc_module_t *module =
             reinterpret_cast<gralloc_module_t *>(Dev->common.module);
-        if(bContigMem)
+
+        if(isPmemAlloc)
         {
             /* Public part. */
             handle->offset          = offset;
