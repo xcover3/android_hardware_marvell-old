@@ -2,7 +2,7 @@ LOCAL_PATH := $(call my-dir)
 
 include $(CLEAR_VARS)
 
-BDROID_DIR := $(TOP_DIR)external/bluetooth/bluedroid
+BDROID_DIR := $(TOP_DIR)system/bt
 
 LOCAL_SRC_FILES := \
         bt_vendor_mrvl.c \
