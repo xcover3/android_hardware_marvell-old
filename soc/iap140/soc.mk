@@ -35,7 +35,7 @@ PRODUCT_COPY_FILES += \
 	$(LOCAL_PATH)/ueventd.iap140.rc:root/ueventd.iap140.rc
 
 BOARD_SEPOLICY_DIRS += \
-	$(LOCAL_PATH)/prebuilts/sepolicy
+	$(LOCAL_PATH)/sepolicy
 
 # Set up the local kernel.
 TARGET_KERNEL_SRC := hardware/bsp/kernel/marvell/pxa-3.14
