@@ -19,7 +19,7 @@ on init
 
 on fs
     # mount /data by fstab to support encryption.
-    mount_all /fstab.$(ro.hardware)
+    mount_all /fstab.${ro.hardware}
     mount debugfs debugfs /sys/kernel/debug
 
 on post-fs-data
