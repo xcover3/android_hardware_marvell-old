@@ -1,0 +1,4 @@
+# Added the rules for Bluetooth device
+allow mwirelessd bluetoothtbd_device:chr_file create_file_perms;
+allow mwirelessd self:tcp_socket create_socket_perms;
+allow mwirelessd mwireless_device:chr_file create_file_perms;
