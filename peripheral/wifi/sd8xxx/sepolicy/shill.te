@@ -1,0 +1,3 @@
+allow shill wireless_data_file:dir search;
+allow shill wireless_data_file:sock_file write;
+unix_socket_connect(shill, mwirelessd, mwirelessd)
