@@ -20,5 +20,6 @@ allow mwirelessd wireless_data_file:file create_file_perms;
 allow mwirelessd wireless_data_file:sock_file create_file_perms;
 
 allow mwirelessd self:capability { setuid setgid sys_module };
+allow mwirelessd mwirelessd_socket:sock_file unlink;
 
 dontaudit mwirelessd property_socket:sock_file create_file_perms;
