@@ -21,7 +21,7 @@ PRODUCT_COPY_FILES += \
         $(WLAN_LIB_DIR)/hal/wifi/sd8xxx/firmware/sd8777_uapsta.bin:system/etc/firmware/mrvl/sd8777_uapsta.bin \
         $(WLAN_LIB_DIR)/hal/wifi/sd8xxx/firmware/txpwrlimit_cfg.bin:system/etc/firmware/mrvl/txpwrlimit_cfg.bin
 
-WIFI_DRIVER_HAL_MODULE := wifi_driver.$(soc_name)
+WIFI_DRIVER_HAL_MODULE := wifi_driver.iap140
 WIFI_DRIVER_HAL_PERIPHERAL := sd8xxx
 
 BOARD_SEPOLICY_DIRS += $(WLAN_BSP_SRC)/sepolicy
