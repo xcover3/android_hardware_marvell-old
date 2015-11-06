@@ -15,7 +15,7 @@
 #
 
 WLAN_BSP_SRC = hardware/bsp/marvell/peripheral/wifi/sd8xxx
-WLAN_LIB_DIR = $(TOP)/vendor/bsp/marvell/device/abox
+WLAN_LIB_DIR = $(TOP)/vendor/bsp/marvell/device/abox_edge
 
 PRODUCT_COPY_FILES += \
         $(WLAN_LIB_DIR)/hal/wifi/sd8xxx/firmware/sd8777_uapsta.bin:system/etc/firmware/mrvl/sd8777_uapsta.bin \

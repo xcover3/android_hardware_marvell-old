@@ -16,9 +16,9 @@
 
 # audio modules
 PRODUCT_COPY_FILES += \
-     $(TOP)/vendor/bsp/marvell/device/abox/hal/audio/libacm.so:system/lib/libacm.so \
-     $(TOP)/vendor/bsp/marvell/device/abox/hal/audio/libxml2.so:system/lib/libxml2.so \
-     $(TOP)/vendor/bsp/marvell/device/abox/hal/audio/audio.primary.mrvl.so:system/lib/hw/audio.primary.mrvl.so
+     $(TOP)/vendor/bsp/marvell/device/abox_edge/hal/audio/libacm.so:system/lib/libacm.so \
+     $(TOP)/vendor/bsp/marvell/device/abox_edge/hal/audio/libxml2.so:system/lib/libxml2.so \
+     $(TOP)/vendor/bsp/marvell/device/abox_edge/hal/audio/audio.primary.mrvl.so:system/lib/hw/audio.primary.mrvl.so
 
 PRODUCT_COPY_FILES += \
      $(TOP)/hardware/bsp/marvell/peripheral/audio/audio_policy.conf:/system/etc/audio_policy.conf \
