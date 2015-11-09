@@ -14,17 +14,25 @@
 # limitations under the License.
 #
 
-# audio modules
-PRODUCT_COPY_FILES += \
-     $(TOP)/vendor/bsp/marvell/device/abox_edge/hal/audio/libacm.so:system/lib/libacm.so \
-     $(TOP)/vendor/bsp/marvell/device/abox_edge/hal/audio/libxml2.so:system/lib/libxml2.so \
-     $(TOP)/vendor/bsp/marvell/device/abox_edge/hal/audio/audio.primary.mrvl.so:system/lib/hw/audio.primary.mrvl.so
+# Audio Component Config
+BOARD_AUDIO_COMPONENT_APU   := MAP-LITE
+BOARD_ENABLE_ADVANCED_AUDIO := false
 
+# Audio Config
+BOARD_WITH_STEREO_SPKR := false
+
+# Route audio speaker to headset output
+BOARD_WITH_HEADSET_OUTPUT_ONLY := true
+
+# Audio modules
 PRODUCT_COPY_FILES += \
      $(TOP)/hardware/bsp/marvell/peripheral/audio/audio_policy.conf:/system/etc/audio_policy.conf \
      $(TOP)/hardware/bsp/marvell/peripheral/audio/platform_audio_config.xml:/system/etc/platform_audio_config.xml
 
 PRODUCT_PACKAGES += \
-        libaudioutils
+     libaudioutils
+
+DEVICE_PACKAGES += \
+     audio.primary.mrvl
 
 -include hardware/bsp/marvell/peripheral/audio/audio_xml/iap140.mk
