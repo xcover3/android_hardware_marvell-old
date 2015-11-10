@@ -16,6 +16,5 @@
 
 # Sensor modules
 
-PRODUCT_COPY_FILES += \
-     $(TOP)/vendor/bsp/marvell/hal/sensor/libsensor_hal_mrvl.so:system/lib/libsensor_hal_mrvl.so \
-     $(TOP)/vendor/bsp/marvell/hal/sensor/sensors.default.so:system/lib/hw/sensors.default.so
+DEVICE_PACKAGES += \
+    sensors.iap140
