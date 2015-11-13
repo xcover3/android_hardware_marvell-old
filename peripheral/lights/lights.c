@@ -14,15 +14,17 @@
  * limitations under the License.
  */
 
+#define LOG_TAG "mrvl_lights"
+//#define LOG_NDEBUG 0
+
+#include <cutils/log.h>
 #include <hardware/lights.h>
 #include <string.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <stdlib.h>
-#include <utils/Log.h>
 #include <hardware/hardware.h>
 
-#define LOG_TAG "marvl-lights"
 #define LED_PATH(path, num, node)  \
     sprintf(path, "/sys/class/leds/usr%d/%s", num, node)
 
@@ -81,9 +83,7 @@ static int write_to_file(const char* const file_name, int value)
 {
     FILE* fp = NULL;
 
-#ifdef LIGHTS_DEBUG
-    ALOGD("write %d to %s\n", value, file_name);
-#endif
+    ALOGV("write %d to %s", value, file_name);
 
     fp = fopen(file_name, "w");
     if (!fp) {
@@ -92,6 +92,25 @@ static int write_to_file(const char* const file_name, int value)
     }
 
     fprintf(fp, "%d", value);
+    fclose(fp);
+
+    return 0;
+}
+
+
+static int write_str_to_file(const char* const file_name, const char* str)
+{
+    FILE *fp = NULL;
+
+    ALOGV("write %s to %s", str, file_name);
+
+    fp = fopen(file_name, "w");
+    if (!fp) {
+        ALOGE("fail to open file: %s", file_name);
+        return -1;
+    }
+
+    fprintf(fp, "%s", str);
     fclose(fp);
 
     return 0;
@@ -211,28 +230,30 @@ static int lights_set_notifications(struct light_device_t* dev,
     int flash_off_ms = get_flash_off_ms(dev, state);
     int flash_mode = get_flash_mode(dev, state);
 
-#ifdef LIGHTS_DEBUG
-    ALOGD("state: color: %x, flashOnMS: %d, flashOffMS: %d, flashMode: %d\n",
+    ALOGV("state: color: %x, flashOnMS: %d, flashOffMS: %d, flashMode: %d",
         state->color, state->flashOnMS, state->flashOffMS, state->flashMode);
-#endif
 
     char path[64];
     unsigned char brightness[3];
     int i;
 
-    brightness[0] = get_color_g(dev, state);
-    brightness[1] = get_color_b(dev, state);
-    brightness[2] = get_color_r(dev, state);
-    for (i = 0; i < 3; i++) {
-        LED_PATH(path, i, "led_mode");
-        write_to_file(path, flash_mode);
-        LED_PATH(path, i, "brightness");
-        write_to_file(path, brightness[i]);
-        LED_PATH(path, i, "delay_on");
+    /* Use /sys/class/leds/usr0 as LIGHT_ID_NOTIFICATIONS */
+    LED_PATH(path, 0, "trigger");
+    if (flash_mode == LIGHT_FLASH_NONE) {
+        write_str_to_file(path, "none");
+    } else if (flash_mode == LIGHT_FLASH_TIMED) {
+        write_str_to_file(path, "timer");
+        LED_PATH(path, 0, "delay_on");
         write_to_file(path, flash_on_ms);
-        LED_PATH(path, i, "delay_off");
+        LED_PATH(path, 0, "delay_off");
         write_to_file(path, flash_off_ms);
+    } else {
+        ALOGE("Invalid LED flash mode");
+        return -1;
     }
+
+    LED_PATH(path, 0, "brightness");
+    write_to_file(path, state->color);
 
     return 0;
 }
@@ -269,9 +290,7 @@ static int lights_device_open(const struct hw_module_t* module,
     mydev->max_brightness = 0x64;    // default max brightness is 100
     *device = &dev->common;
 
-#ifdef LIGHTS_DEBUG
-    ALOGD("lights_device_open: device name: %s\n", name);
-#endif
+    ALOGV("lights_device_open: device name: %s", name);
 
     int ret = 0;
     if (!strcmp(name, LIGHT_ID_BACKLIGHT)) {
@@ -296,7 +315,7 @@ static int lights_device_open(const struct hw_module_t* module,
         dev->set_light = lights_set_attention;
         ret = access(ATTENTION_BACKLIGHT, F_OK);
     } else {
-        ALOGE("lights_device_open: invalid %s\n", name);
+        ALOGE("lights_device_open: invalid %s", name);
         ret = -1;
     }
 
