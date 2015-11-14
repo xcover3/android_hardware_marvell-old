@@ -9,7 +9,10 @@ allow mwirelessd init:unix_stream_socket { connectto newconn acceptfrom };
 
 allow mwirelessd shell_exec:file { read execute open execute_no_trans };
 
-allow mwirelessd sysfs:file write;
+allow mwirelessd sysfs:file rw_file_perms;
+allow mwirelessd sysfs:dir  r_dir_perms;
+allow mwirelessd sysfs:lnk_file read;
+allow mwirelessd proc:dir search;
 
 allow mwirelessd system_data_file:dir create_dir_perms;
 allow mwirelessd system_data_file:sock_file create_file_perms;
