@@ -26,7 +26,7 @@ TARGET_KERNEL_ARCH := $(TARGET_ARCH)
 TARGET_NO_BOOTLOADER := false
 TARGET_NO_KERNEL := false
 
-BOARD_KERNEL_CMDLINE := androidboot.console=ttyS1 console=ttyS1,115200 panic_debug uart_dma crashkernel=4k@0x8140000 user_debug=31 earlyprintk=uart8250-32bit,0xd4017000 cma=20M ddr_mode=2 RDCA=08140400 cpmem=32M@0x06000000 androidboot.exist.cp=18 androidboot.hardware=iap140
+BOARD_KERNEL_CMDLINE := androidboot.console=ttyS1 console=ttyS1,115200 panic_debug uart_dma crashkernel=4k@0x8140000 user_debug=31 earlyprintk=uart8250-32bit,0xd4017000 cma=20M ddr_mode=2 RDCA=08140400 cpmem=32M@0x06000000 androidboot.exist.cp=18 androidboot.hardware=iap140 androidboot.selinux=enforcing
 
 PRODUCT_COPY_FILES += \
 	$(LOCAL_PATH)/init.iap140.rc:root/init.iap140.rc \
@@ -41,5 +41,5 @@ BOARD_SEPOLICY_DIRS += \
 TARGET_KERNEL_SRC := hardware/bsp/kernel/marvell/pxa-3.14
 TARGET_KERNEL_DEFCONFIG := armadillo_edge_defconfig
 
-# include the hal modules
+# Include the HAL modules.
 -include hardware/bsp/marvell/soc/iap140/hal_modules.mk
