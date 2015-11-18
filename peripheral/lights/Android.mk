@@ -23,7 +23,6 @@ LOCAL_SHARED_LIBRARIES := \
     libcutils \
     libhardware \
 
-$(info BOARD_LIGHTS_BUTTONS=$(BOARD_LIGHTS_BUTTONS))
 ifeq ($(BOARD_LIGHTS_BUTTONS),buttons_via_lcd)
 LOCAL_CFLAGS += -DBUTTONS_VIA_LCD
 endif
