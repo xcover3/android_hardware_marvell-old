@@ -39,7 +39,7 @@ BOARD_SEPOLICY_DIRS += \
 
 # Set up the local kernel.
 TARGET_KERNEL_SRC := hardware/bsp/kernel/marvell/pxa-3.14
-TARGET_KERNEL_DEFCONFIG := armadillo_edge_defconfig
+TARGET_KERNEL_DEFCONFIG := abox_edge_defconfig
 
 # Include the HAL modules.
 -include hardware/bsp/marvell/soc/iap140/hal_modules.mk
