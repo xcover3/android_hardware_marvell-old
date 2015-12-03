@@ -41,5 +41,9 @@ BOARD_SEPOLICY_DIRS += \
 TARGET_KERNEL_SRC := hardware/bsp/kernel/marvell/pxa-3.14
 TARGET_KERNEL_DEFCONFIG := abox_edge_defconfig
 
+# Add boot control
+DEVICE_PACKAGES += \
+	bootctrl.mrvl
+
 # Include the HAL modules.
 -include hardware/bsp/marvell/soc/iap140/hal_modules.mk
