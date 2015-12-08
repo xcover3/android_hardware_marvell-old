@@ -1,0 +1,2 @@
+# Allow the NVM partition to be mounted
+allow init nvm_data_file:dir mounton;

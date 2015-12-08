@@ -1,0 +1,2 @@
+# NVM block device
+type nvm_block_device, dev_type;
