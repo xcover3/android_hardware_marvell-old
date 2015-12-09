@@ -23,6 +23,10 @@ on fs
     mount_all /fstab.${ro.hardware}
     mount debugfs debugfs /sys/kernel/debug
 
+    # mount /NVM to save board unique data, such as product SN, and MAC address.
+    mkdir /NVM 0744 system system
+    mount ext4 /dev/block/by-name/NVM /NVM ro nosuid nodev nodelalloc,noauto_da_alloc
+
 on post-fs-data
     setprop wifi.interface wlan0
     setprop wifidirect.interface p2p0
