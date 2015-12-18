@@ -36,3 +36,18 @@ on post-fs-data
     mkdir /data/misc/wifi/wapi_certs 0777 wifi wifi
     mkdir /data/misc/dhcp 0770 dhcp dhcp
     chown dhcp dhcp /data/misc/dhcp
+
+on fs
+    mkdir /teesst 0700 root root
+    setprop ro.frp.pst /dev/block/mmcblk0p15
+    chown keystore keystore /dev/tzdd
+
+on post-fs
+    start teecsstdca
+
+service teecsstdca /system/bin/teec_sstd_ca /teesst
+    class core
+    user root
+    oneshot
+    disabled
+
