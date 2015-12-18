@@ -408,7 +408,7 @@ int btsnd_hcic_set_pcm_mode(void) {
         pcm_mode = 0x2;
     }
 
-    p = (HC_BT_HDR *) vnd_cb->alloc(HCIC_PARAM_SIZE_WRITE_PARAM1);
+    p = (HC_BT_HDR *) vnd_cb->alloc(BT_HC_HDR_SIZE + HCIC_PREAMBLE_SIZE + HCIC_PARAM_SIZE_WRITE_PARAM1);
     if (p == NULL)
         return BT_VND_OP_RESULT_FAIL;
 
