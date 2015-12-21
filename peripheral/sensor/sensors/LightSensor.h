@@ -45,9 +45,6 @@ class LightSensorSet : public MrvlSensorBase {
   virtual bool hasPendingEvents() const;
   virtual int setDelay(int32_t handle, int64_t ns);
   virtual int enable(int32_t handle, int enabled);
-
- protected:
-  struct sensor_t mBaseSensorList[];
 };
 
 class IntersilLightSensor : public LightSensorSet {

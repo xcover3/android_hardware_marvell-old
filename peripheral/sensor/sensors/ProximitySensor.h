@@ -42,9 +42,6 @@ class ProximitySensor : public MrvlSensorBase {
   virtual bool hasPendingEvents() const;
   virtual int enable(int32_t handle, int enabled);
   virtual int setDelay(int32_t handle, int64_t ns);
-
- protected:
-  struct sensor_t mBaseSensorList[];
 };
 
 class IntersilProximitySensor : public ProximitySensor {

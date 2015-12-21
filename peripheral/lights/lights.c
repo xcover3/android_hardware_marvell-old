@@ -28,6 +28,8 @@
 #define LED_PATH(path, num, node)  \
     sprintf(path, "/sys/class/leds/usr%d/%s", num, node)
 
+#define UNUSED(x) (void)(x)
+
 const char* const LCD_BACKLIGHT = "/sys/class/backlight/lcd-bl/brightness";
 const char* const LCD_MAX_BACKLIGHT = "/sys/class/backlight/lcd-bl/max_brightness";
 const char* const KEYBOARD_BACKLIGHT = "";
@@ -47,14 +49,14 @@ struct light_module_t {
 };
 
 struct light_module_t HAL_MODULE_INFO_SYM = {
-    common: {
-        tag : HARDWARE_MODULE_TAG,
-        version_major : 1,
-        version_minor : 0,
-        id : LIGHTS_HARDWARE_MODULE_ID,
-        name : "lights module",
-        author : "Marvell SEEDS",
-        methods : &lights_module_methods,
+    .common = {
+        .tag = HARDWARE_MODULE_TAG,
+        .version_major = 1,
+        .version_minor = 0,
+        .id = LIGHTS_HARDWARE_MODULE_ID,
+        .name = "lights module",
+        .author = "Marvell SEEDS",
+        .methods = &lights_module_methods,
     }
 };
 
@@ -204,6 +206,9 @@ static int lights_set_lcd(struct light_device_t* dev,
 static int lights_set_keyboard(struct light_device_t* dev,
                                struct light_state_t const* state)
 {
+    UNUSED(dev);
+    UNUSED(state);
+
     return 0;
 }
 
@@ -220,6 +225,9 @@ static int lights_set_button(struct light_device_t* dev,
 static int lights_set_battery(struct light_device_t* dev,
                               struct light_state_t const* state)
 {
+    UNUSED(dev);
+    UNUSED(state);
+
     return 0;
 }
 
@@ -261,6 +269,9 @@ static int lights_set_notifications(struct light_device_t* dev,
 static int lights_set_attention(struct light_device_t* dev,
                                 struct light_state_t const* state)
 {
+    UNUSED(dev);
+    UNUSED(state);
+
     return 0;
 }
 
