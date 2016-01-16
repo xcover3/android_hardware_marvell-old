@@ -35,7 +35,9 @@ const char* const LCD_MAX_BACKLIGHT = "/sys/class/backlight/lcd-bl/max_brightnes
 const char* const KEYBOARD_BACKLIGHT = "";
 const char* const BUTTON_BACKLIGHT = "/sys/class/leds/button-backlight/brightness";
 const char* const BATTERY_BACKLIGHT = "";
-const char* const ATTENTION_BACKLIGHT = "";
+const char* const ATTENTION_LIGHT = "/sys/class/leds/usr1/brightness";
+const char* const BLUETOOTH_LIGHT = "/sys/class/leds/usr2/brightness";
+const char* const WIFI_LIGHT = "/sys/class/leds/usr3/brightness";
 
 static int lights_device_open ( const struct hw_module_t* module,
     const char* name, struct hw_device_t** device );
@@ -266,11 +268,26 @@ static int lights_set_notifications(struct light_device_t* dev,
     return 0;
 }
 
+static int lights_set_bluetooth(struct light_device_t* dev,
+                                struct light_state_t const* state)
+{
+    write_to_file(BLUETOOTH_LIGHT, state->color);
+
+    return 0;
+}
+
+static int lights_set_wifi(struct light_device_t* dev,
+                           struct light_state_t const* state)
+{
+    write_to_file(WIFI_LIGHT, state->color);
+
+    return 0;
+}
+
 static int lights_set_attention(struct light_device_t* dev,
                                 struct light_state_t const* state)
 {
-    UNUSED(dev);
-    UNUSED(state);
+    write_to_file(ATTENTION_LIGHT, state->color);
 
     return 0;
 }
@@ -324,7 +341,13 @@ static int lights_device_open(const struct hw_module_t* module,
         ret = access(path, F_OK);
     } else if (!strcmp(name, LIGHT_ID_ATTENTION)) {
         dev->set_light = lights_set_attention;
-        ret = access(ATTENTION_BACKLIGHT, F_OK);
+        ret = access(ATTENTION_LIGHT, F_OK);
+    } else if (!strcmp(name, LIGHT_ID_BLUETOOTH)) {
+        dev->set_light = lights_set_bluetooth;
+        ret = access(BLUETOOTH_LIGHT, F_OK);
+    } else if (!strcmp(name, LIGHT_ID_WIFI)) {
+        dev->set_light = lights_set_wifi;
+        ret = access(WIFI_LIGHT, F_OK);
     } else {
         ALOGE("lights_device_open: invalid %s", name);
         ret = -1;
