@@ -34,6 +34,7 @@ BOARD_KERNEL_CMDLINE := androidboot.console=ttyS1 console=ttyS1,115200 panic_deb
 PRODUCT_COPY_FILES += \
 	$(LOCAL_PATH)/init.iap140.rc:root/init.iap140.rc \
 	system/core/rootdir/init.usb.rc:root/init.usb.rc \
+	$(LOCAL_PATH)/init.iap140.usb.rc:root/init.iap140.usb.rc \
 	system/core/rootdir/ueventd.rc:root/ueventd.rc \
 	$(LOCAL_PATH)/ueventd.iap140.rc:root/ueventd.iap140.rc
 

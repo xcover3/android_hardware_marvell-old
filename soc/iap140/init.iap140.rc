@@ -14,6 +14,8 @@
 # limitations under the License.
 #
 
+import init.iap140.usb.rc
+
 on init
     symlink /dev/block/platform/soc.2/d4200000.axi/d4281000.sdh/by-name /dev/block/by-name
     setprop ro.board.platform mrvl
