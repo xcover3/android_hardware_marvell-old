@@ -26,9 +26,6 @@ allow mwirelessd wireless_data_file:sock_file create_file_perms;
 allow mwirelessd self:capability { setuid setgid sys_module };
 allow mwirelessd mwirelessd_socket:sock_file unlink;
 
-allow mwirelessd nvm_data_file:file r_file_perms;
-allow mwirelessd nvm_data_file:dir search;
-
 dontaudit mwirelessd property_socket:sock_file create_file_perms;
 dontaudit mwirelessd sysfs_devices_system_cpu:dir r_dir_perms;
 dontaudit mwirelessd sysfs_devices_system_cpu:file r_file_perms;
