@@ -15,8 +15,11 @@
 LOCAL_PATH := $(call my-dir)
 
 include $(CLEAR_VARS)
-LOCAL_PREBUILT_LIBS := ../../../../../vendor/bsp/marvell/device/abox_edge/libs/libMarvellWireless.so
-LOCAL_MODULE_TAGS := optional
-LOCAL_MODULE_OWNER := marvell
-include $(BUILD_MULTI_PREBUILT)
 
+LOCAL_MODULE := libMarvellWireless
+LOCAL_MODULE_SUFFIX := .so
+LOCAL_MODULE_CLASS := SHARED_LIBRARIES
+LOCAL_PREBUILT_MODULE_FILE := $(TOP)/vendor/bsp/marvell/device/abox_edge/libs/libMarvellWireless.so
+LOCAL_MODULE_TAGS := optional
+LOCAL_MODULE_TARGET_ARCH := $(TARGET_ARCH)
+include $(BUILD_PREBUILT)

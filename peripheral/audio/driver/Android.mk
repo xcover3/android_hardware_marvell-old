@@ -20,10 +20,14 @@ ifneq ($(BOARD_USES_GENERIC_AUDIO),true)
 
 # prebuild the Marvell proprietory audio codec driver
 include $(CLEAR_VARS)
-LOCAL_PREBUILT_LIBS := ../../../../../../vendor/bsp/marvell/device/abox_edge/hal/audio/libacm.so
+
+LOCAL_MODULE := libacm
+LOCAL_MODULE_SUFFIX := .so
+LOCAL_MODULE_CLASS := SHARED_LIBRARIES
+LOCAL_PREBUILT_MODULE_FILE := $(TOP)/vendor/bsp/marvell/device/abox_edge/hal/audio/libacm.so
 LOCAL_MODULE_TAGS := optional
-LOCAL_MODULE_OWNER := marvell
-include $(BUILD_MULTI_PREBUILT)
+LOCAL_MODULE_TARGET_ARCH := $(TARGET_ARCH)
+include $(BUILD_PREBUILT)
 
 # build audio.primary.mrvl.so
 include $(CLEAR_VARS)
