@@ -23,9 +23,6 @@ TARGET_CPU_ABI := armeabi-v7a
 TARGET_CPU_ABI2 := armeabi
 TARGET_KERNEL_ARCH := $(TARGET_ARCH)
 
-# TODO: Remove once clang is the default. http://b/26283900
-USE_CLANG_PLATFORM_BUILD := true
-
 TARGET_NO_BOOTLOADER := false
 TARGET_NO_KERNEL := false
 
