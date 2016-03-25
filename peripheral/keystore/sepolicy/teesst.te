@@ -1,20 +1,15 @@
-# TEE file types
+# TEE file types.
 init_daemon_domain(teecsstdca)
 type teecsstdca_device, dev_type;
 type teesst_data_file, file_type, data_file_type;
-
-# init
-# allow init teecsstdca_exec:file setattr;
 
 # shell
 allow shell teesst_data_file:dir getattr;
 allow shell teecsstdca_device:chr_file getattr;
 
 # teecsstdca
-
 type teecsstdca, domain;
 type teecsstdca_exec, exec_type, file_type;
-
 
 allow teecsstdca teecsstdca_device:chr_file create_file_perms;
 allow teecsstdca teesst_data_file:dir create_dir_perms;
@@ -23,12 +18,9 @@ allow teecsstdca shell_exec:file rx_file_perms;
 allow teecsstdca self:capability { dac_override setuid ipc_lock setgid };
 
 # untrusted_app
-
 allow untrusted_app teesst_data_file:dir getattr;
-
 allow untrusted_app teecsstdca_exec:file rx_file_perms;
 allow untrusted_app teecsstdca_device:chr_file getattr;
 
 # keystore
 allow keystore teecsstdca_device:chr_file rw_file_perms;
-
