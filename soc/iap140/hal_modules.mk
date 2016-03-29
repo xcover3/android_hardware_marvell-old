@@ -21,6 +21,7 @@
 -include hardware/bsp/marvell/soc/iap140/modules/wifi_hal_module.mk
 -include hardware/bsp/marvell/soc/iap140/modules/bluetooth_hal_moduel.mk
 -include hardware/bsp/marvell/soc/iap140/modules/keystore_hal_module.mk
+-include hardware/bsp/marvell/soc/iap140/modules/peripheral_io_hal_module.mk
 
 # the client and server of the wireless daemon
 -include hardware/bsp/marvell/soc/iap140/modules/libwireless.mk
