@@ -31,31 +31,31 @@
 #include "bootinfo.h"
 
 
-void boot_control_init(struct boot_control_module *module)
+void boot_control_init(struct boot_control_module *module __unused)
 {
 	return;
 }
 
-unsigned get_number_slots(struct boot_control_module *module)
+unsigned get_number_slots(struct boot_control_module *module __unused)
 {
-	return 2;
+	return MAX_SLOTS;
 }
 
-unsigned get_current_slot(struct boot_control_module *module)
+unsigned get_current_slot(struct boot_control_module *module __unused)
 {
 	char propbuf[PROPERTY_VALUE_MAX];
-	const char* suffix[2] = {"_a", "_b"};
+	const char* suffix[MAX_SLOTS] = {"_a", "_b"};
 	int i;
 
 	property_get("ro.boot.slot_suffix", propbuf, "");
 
 	if (propbuf[0] != '\0') {
-		for (i = 0; i < 2; i++) {
+		for (i = 0; i < MAX_SLOTS; i++) {
 			if (strncmp(propbuf, suffix[i], 2) == 0)
 				return i;
 		}
 
-		if (i == 2)
+		if (i == MAX_SLOTS)
 			fprintf(stderr, "WARNING: androidboot.slot_suffix is invalid\n");
 	} else {
 		fprintf(stderr, "WARNING: androidboot.slot_suffix is NULL\n");
@@ -64,7 +64,7 @@ unsigned get_current_slot(struct boot_control_module *module)
 	return 0;
 }
 
-int mark_boot_successful(struct boot_control_module *module)
+int mark_boot_successful(struct boot_control_module *module __unused)
 {
 	BrilloBootInfo info;
 	unsigned current_slot;
@@ -93,13 +93,14 @@ int mark_boot_successful(struct boot_control_module *module)
 	return 0;
 }
 
-int set_active_boot_slot(struct boot_control_module *module, unsigned slot)
+int set_active_boot_slot(struct boot_control_module *module __unused,
+                         unsigned slot)
 {
 	BrilloBootInfo info;
 	unsigned other_slot;
 	int i;
 
-	if (slot >= 2)
+	if (slot >= MAX_SLOTS)
 		return -EINVAL;
 
 	if (!boot_info_load(&info)) {
@@ -129,11 +130,12 @@ int set_active_boot_slot(struct boot_control_module *module, unsigned slot)
 	return 0;
 }
 
-int set_slot_as_unbootable(struct boot_control_module *module, unsigned slot)
+int set_slot_as_unbootable(struct boot_control_module *module __unused,
+                           unsigned slot)
 {
 	BrilloBootInfo info;
 
-	if (slot >= 2)
+	if (slot >= MAX_SLOTS)
 		return -EINVAL;
 
 	if (!boot_info_load(&info)) {
@@ -159,11 +161,12 @@ int set_slot_as_unbootable(struct boot_control_module *module, unsigned slot)
 	return 0;
 }
 
-int is_slot_bootable(struct boot_control_module *module, unsigned slot)
+int is_slot_bootable(struct boot_control_module *module __unused,
+                     unsigned slot)
 {
 	BrilloBootInfo info;
 
-	if (slot >= 2)
+	if (slot >= MAX_SLOTS)
 		return -EINVAL;
 
 	if (!boot_info_load(&info)) {
@@ -179,14 +182,36 @@ int is_slot_bootable(struct boot_control_module *module, unsigned slot)
 	return info.slot_info[slot].bootable;
 }
 
-const char* get_suffix(struct boot_control_module *module, unsigned slot)
+const char* get_suffix(struct boot_control_module *module __unused,
+                       unsigned slot)
 {
-	static const char* suffix[2] = {"_a", "_b"};
+	static const char* suffix[MAX_SLOTS] = {"_a", "_b"};
 
-	if (slot >= 2)
+	if (slot >= MAX_SLOTS)
 		return NULL;
 
 	return suffix[slot];
+}
+
+int is_slot_marked_successful(struct boot_control_module *module __unused,
+                              unsigned slot)
+{
+	BrilloBootInfo info;
+
+	if (slot >= MAX_SLOTS)
+		return -EINVAL;
+
+	if (!boot_info_load(&info)) {
+		fprintf(stderr, "WARNING: Error loading boot-info. Resetting.\n");
+		boot_info_reset(&info);
+	} else {
+		if (!boot_info_validate(&info)) {
+			fprintf(stderr, "WARNING: boot-info is invalid. Resetting.\n");
+			boot_info_reset(&info);
+		}
+	}
+
+	return info.slot_info[slot].boot_successful;
 }
 
 static struct hw_module_methods_t boot_control_module_methods = {
@@ -212,4 +237,5 @@ struct boot_control_module HAL_MODULE_INFO_SYM = {
 	.setSlotAsUnbootable = set_slot_as_unbootable,
 	.isSlotBootable = is_slot_bootable,
 	.getSuffix = get_suffix,
+	.isSlotMarkedSuccessful = is_slot_marked_successful,
 };

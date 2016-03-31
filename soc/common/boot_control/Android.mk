@@ -19,7 +19,7 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := bootctrl.mrvl
 LOCAL_MODULE_RELATIVE_PATH := hw
 LOCAL_MODULE_TAGS := optional
-LOCAL_SRC_FILES := boot_control.c bootinfo.h bootinfo.c
+LOCAL_SRC_FILES := boot_control.c bootinfo.c
 LOCAL_C_INCLUDES := system/core/mkbootimg bootable/recovery
 LOCAL_SHARED_LIBRARIES := liblog
 LOCAL_SHARED_LIBRARIES := libcutils

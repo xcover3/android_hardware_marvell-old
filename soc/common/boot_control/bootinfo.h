@@ -20,6 +20,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#define MAX_SLOTS	2
+
 typedef struct brillo_slot_info {
 	// Flag mean that the slot can bootable or not.
 	uint8_t bootable :1;
