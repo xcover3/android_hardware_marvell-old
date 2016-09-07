@@ -3,8 +3,8 @@ include $(CLEAR_VARS)
 
 LOCAL_C_INCLUDES := \
     $(LOCAL_PATH)/../include/ \
-    vendor/marvell/generic/graphics/user/include \
-    vendor/marvell/generic/graphics/include
+    hardware/marvell/pxa1088/graphics/user/include \
+    hardware/marvell/pxa1088/graphics/include
 
 LOCAL_SRC_FILES:= \
     sample_image_effect.cpp \
@@ -29,8 +29,8 @@ include $(CLEAR_VARS)
 
 LOCAL_C_INCLUDES := \
     $(LOCAL_PATH)/../include/ \
-    vendor/marvell/generic/graphics/user/include \
-    vendor/marvell/generic/graphics/include
+    hardware/marvell/pxa1088/graphics/user/include \
+    hardware/marvell/pxa1088/graphics/include
 
 LOCAL_SRC_FILES:= \
     sample_rgb2uyvy.cpp \

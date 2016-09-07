@@ -5,9 +5,9 @@ include $(CLEAR_VARS)
 LOCAL_C_INCLUDES += \
         $(LOCAL_PATH)   \
         $(JNI_H_INCLUDE) \
-        vendor/marvell/generic/libstagefrighthw/renderer \
-        vendor/marvell/generic/ipplib/openmax/include \
-        vendor/marvell/generic/marvell-gralloc \
+        hardware/marvell/pxa1088/libstagefrighthw/renderer \
+        hardware/marvell/pxa1088/ipplib/openmax/include \
+        hardware/marvell/pxa1088/marvell-gralloc \
         frameworks/base/include \
         frameworks/base/media/libstagefright/include \
         hardware/libhardware/include \

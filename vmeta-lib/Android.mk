@@ -19,11 +19,11 @@ LOCAL_PATH:= $(call my-dir)
 include $(CLEAR_VARS)
 
 LOCAL_C_INCLUDES := \
-	vendor/marvell/generic/phycontmem-lib/phycontmem/
+	hardware/marvell/pxa1088/phycontmem-lib/phycontmem/
 
 ifeq ($(BOARD_ENABLE_VPU_NEW_POWEROPT_SOLUTION), true)
 LOCAL_C_INCLUDES += \
-        vendor/marvell/generic/cpufreqd_plugins/xpu
+        hardware/marvell/pxa1088/cpufreqd_plugins/xpu
 
 LOCAL_CFLAGS += -DNEW_POWEROPT_SOLUTION
 endif

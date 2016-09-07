@@ -51,7 +51,7 @@ int insmod(const char *filename, const char *args);
 int rmmod(const char *modname);
 int check_driver_loaded(const char *modname);
 
-int enable_bt_8787();
+int enable_bt_8887();
 int hci_is_up();
 int up_hci_device();
 int down_hci_device();

@@ -119,7 +119,7 @@ static const char* WIFI_DRIVER_MODULE_1_PATH = "/system/lib/modules/mlan.ko";
 static const char* WIFI_DRIVER_MODULE_1_NAME =     "mlan";
 static const char* WIFI_DRIVER_MODULE_1_ARG =      "";
 
-static const char* WIFI_DRIVER_MODULE_2_PATH = "/system/lib/modules/sd8787.ko";
+static const char* WIFI_DRIVER_MODULE_2_PATH = "/system/lib/modules/sd8887.ko";
 static const char* WIFI_DRIVER_MODULE_2_NAME =    "sd8xxx";
 //5: DRV_MODE_STA|DRV_MODE_WIFIDIRECT,  4:STA_CFG80211_MASK
 static const char* WIFI_DRIVER_MODULE_2_ARG =       "drv_mode=5 cfg80211_wext=12 sta_name=wlan wfd_name=p2p max_vir_bss=1";
@@ -349,7 +349,7 @@ int wifi_enable(void)
         property_set(DRIVER_PROP_NAME, "timeout");
         goto out;
     }
-#ifdef SD8787_NEED_CALIBRATE
+#ifdef SD8887_NEED_CALIBRATE
     ret = wifi_calibrate();
 #endif
 out:
@@ -390,7 +390,7 @@ int uap_enable(void)
     if(ret < 0)goto out;
     ret = wait_interface_ready (WIFI_UAP_DRIVER_IFAC_NAME, 1000, 2000);
     if(ret < 0)goto out;
-#ifdef SD8787_NEED_CALIBRATE
+#ifdef SD8887_NEED_CALIBRATE
     ret = wifi_calibrate();        
 #endif
 out:
@@ -420,7 +420,7 @@ int bt_set_drv_arg(char * bt_drv_arg) {
 }
 
 
-#ifdef SD8787_NEED_CALIBRATE
+#ifdef SD8887_NEED_CALIBRATE
 int wifi_calibrate(void)
 {
     int ret = 0;
@@ -579,7 +579,7 @@ int wifi_uap_enable(const char* driver_module_arg)
         strcat(arg_buf, country_code);
     }
 
-#ifdef SD8787_CAL_ON_BOARD
+#ifdef SD8887_CAL_ON_BOARD
     if (check_cfg_file(WIFI_DRIVER_MODULE_INIT_CFG_STORE_PATH))
     {
         ALOGD("The wifi config file exists");
@@ -701,7 +701,7 @@ int bt_fm_enable(void)
     ALOGD("bt_fm_enable");
     memset(arg_buf, 0, MAX_BUFFER_SIZE);
 
-#ifdef SD8787_CAL_ON_BOARD
+#ifdef SD8887_CAL_ON_BOARD
     if (check_cfg_file(BT_DRIVER_MODULE_INIT_CFG_STORE_PATH))
     {
         ALOGD("The bluetooth config file exists");

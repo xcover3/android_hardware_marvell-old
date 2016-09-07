@@ -18,9 +18,6 @@ LOCAL_PATH:= $(call my-dir)
 # hw/<COPYPIX_HARDWARE_MODULE_ID>.<ro.board.platform>.so
 include $(CLEAR_VARS)
 
-# By default, ENABLE_HWC_GC_PATH should be false, as for most platforms it should be disabled.
-# To Enable HWC GC path, should define ENABLE_HWC_GC_PATH as true in BoardConfig.mk
-ENABLE_HWC_GC_PATH   ?= false
 BOARD_ENABLE_WFD_OPTIMIZATION ?= true 
 BOARD_ENABLE_OVERLAY ?= false
 
@@ -28,10 +25,8 @@ LOCAL_SRC_FILES := \
     hwcomposer.cpp \
     HWCDisplayEventMonitor.cpp
 
-ifeq ($(ENABLE_HWC_GC_PATH), true)
 LOCAL_SRC_FILES += \
     HWBaselayComposer.cpp
-endif
 
 ifeq ($(BOARD_ENABLE_OVERLAY), true)
 LOCAL_SRC_FILES += \
@@ -50,12 +45,12 @@ endif
 
 LOCAL_C_INCLUDES := \
     hardware/libhardware/include \
-    vendor/marvell/generic/marvell-gralloc \
-    vendor/marvell/generic/graphics/user/include 
+    hardware/marvell/pxa1088/marvell-gralloc \
+    hardware/marvell/pxa1088/graphics/user/include 
 
 ifeq ($(BOARD_ENABLE_OVERLAY), true)
 LOCAL_C_INCLUDES += \
-    vendor/marvell/generic/hwcomposer/OverlayDisplayEngine 
+    hardware/marvell/pxa1088/hwcomposer/OverlayDisplayEngine 
 endif
 
 ifeq ($(BOARD_ENABLE_WFD_OPTIMIZATION), true)
@@ -93,12 +88,10 @@ ifeq ($(BOARD_ENABLE_WFD_OPTIMIZATION), true)
 LOCAL_CFLAGS += -DENABLE_WFD_OPTIMIZATION
 endif
 
-ifeq ($(ENABLE_HWC_GC_PATH), true)
-LOCAL_C_INCLUDES += vendor/marvell/generic/hwcomposerGC
+LOCAL_C_INCLUDES += hardware/marvell/pxa1088/hwcomposerGC
 LOCAL_SHARED_LIBRARIES += libHWComposerGC
 LOCAL_CFLAGS += -DENABLE_HWC_GC_PATH
 LOCAL_CFLAGS += -DINTEGRATED_WITH_MARVELL
-endif
 
 LOCAL_CFLAGS += -g
 
@@ -120,8 +113,8 @@ LOCAL_SRC_FILES += \
 
 LOCAL_C_INCLUDES := \
     hardware/libhardware/include \
-    vendor/marvell/generic/marvell-gralloc \
-    vendor/marvell/generic/graphics/user/include 
+    hardware/marvell/pxa1088/marvell-gralloc \
+    hardware/marvell/pxa1088/graphics/user/include 
 
 
 LOCAL_CFLAGS += -g

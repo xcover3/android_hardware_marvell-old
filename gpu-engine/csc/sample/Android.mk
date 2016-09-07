@@ -4,10 +4,10 @@ include $(CLEAR_VARS)
 LOCAL_C_INCLUDES := \
     $(LOCAL_PATH)/../include \
     $(LOCAL_PATH)/../source \
-	vendor/marvell/generic/graphics/user/include \
-	vendor/marvell/generic/graphics/include \
-	vendor/marvell/generic/graphics \
-	vendor/marvell/generic/graphics/user
+	hardware/marvell/pxa1088/graphics/user/include \
+	hardware/marvell/pxa1088/graphics/include \
+	hardware/marvell/pxa1088/graphics \
+	hardware/marvell/pxa1088/graphics/user
 
 LOCAL_SRC_FILES := \
     copy8888.c \
@@ -29,10 +29,10 @@ include $(CLEAR_VARS)
 LOCAL_C_INCLUDES := \
     $(LOCAL_PATH)/../include \
     $(LOCAL_PATH)/../source \
-	vendor/marvell/generic/graphics/user/include \
-	vendor/marvell/generic/graphics/include \
-	vendor/marvell/generic/graphics \
-	vendor/marvell/generic/graphics/user
+	hardware/marvell/pxa1088/graphics/user/include \
+	hardware/marvell/pxa1088/graphics/include \
+	hardware/marvell/pxa1088/graphics \
+	hardware/marvell/pxa1088/graphics/user
 
 LOCAL_SRC_FILES := \
     copy8888.c \
@@ -53,10 +53,10 @@ include $(CLEAR_VARS)
 LOCAL_C_INCLUDES := \
     $(LOCAL_PATH)/../include \
     $(LOCAL_PATH)/../source \
-	vendor/marvell/generic/graphics/user/include \
-	vendor/marvell/generic/graphics/include \
-	vendor/marvell/generic/graphics \
-	vendor/marvell/generic/graphics/user
+	hardware/marvell/pxa1088/graphics/user/include \
+	hardware/marvell/pxa1088/graphics/include \
+	hardware/marvell/pxa1088/graphics \
+	hardware/marvell/pxa1088/graphics/user
 
 LOCAL_SRC_FILES := \
 	sample_ARGBToYUV3.c
@@ -75,10 +75,10 @@ include $(CLEAR_VARS)
 LOCAL_C_INCLUDES := \
     $(LOCAL_PATH)/../include \
     $(LOCAL_PATH)/../source \
-	vendor/marvell/generic/graphics/user/include \
-	vendor/marvell/generic/graphics/include \
-	vendor/marvell/generic/graphics \
-	vendor/marvell/generic/graphics/user
+	hardware/marvell/pxa1088/graphics/user/include \
+	hardware/marvell/pxa1088/graphics/include \
+	hardware/marvell/pxa1088/graphics \
+	hardware/marvell/pxa1088/graphics/user
 
 LOCAL_SRC_FILES := \
 	sample_ARGBToYUV4.c

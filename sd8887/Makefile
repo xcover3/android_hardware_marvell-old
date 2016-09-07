@@ -13,10 +13,10 @@ bt:
 
 install:
 	adb push wlan_src/mlan.ko /system/lib/modules/mlan.ko
-	adb push wlan_src/sd8xxx.ko /system/lib/modules/sd8787.ko
+	adb push wlan_src/sd8xxx.ko /system/lib/modules/sd8887.ko
 	adb push mbtc_src/mbt8xxx.ko /system/lib/modules/mbt8xxx.ko
-	adb push FwImage/sd8787_uapsta_w1.bin /system/etc/firmware/mrvl/sd8787_uapsta_w1.bin
-	adb push FwImage/sd8787_uapsta.bin /system/etc/firmware/mrvl/sd8787_uapsta.bin
+	adb push FwImage/sd8887_uapsta_w1.bin /system/etc/firmware/mrvl/sd8887_uapsta_w1.bin
+	adb push FwImage/sd8887_uapsta.bin /system/etc/firmware/mrvl/sd8887_uapsta.bin
 
 clean: wlan_clean bt_clean
 

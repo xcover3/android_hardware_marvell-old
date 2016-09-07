@@ -124,7 +124,7 @@ ARCH ?= arm
 
 LD += -S
 
-BINDIR = ../bin_sd87xx
+BINDIR = ../bin_sd88xx
 APPDIR= $(shell if test -d "mapp"; then echo mapp; fi)
 
 #############################################################################
@@ -482,7 +482,7 @@ install: default
 
 	cp -f mlan.$(MODEXT) $(INSTALLDIR)/mlan$(DBG).$(MODEXT)
 	cp -f sd8xxx.$(MODEXT) $(INSTALLDIR)/sd87xx$(DBG).$(MODEXT)
-	echo "sd87xx Driver Installed"
+	echo "sd88xx Driver Installed"
 
 distclean:
 	-find . -name "*.o" -exec rm {} \;

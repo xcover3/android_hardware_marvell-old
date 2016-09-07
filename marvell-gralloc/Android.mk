@@ -58,18 +58,18 @@ LOCAL_CFLAGS := \
 	-DDISABLE_FRONT_BUFFER \
 	-DFRAMEBUFFER_PIXEL_FORMAT=$(FRAMEBUFFER_PIXEL_FORMAT)
 
-LOCAL_C_INCLUDES += vendor/marvell/generic/displayservice/include \
-                    vendor/marvell/generic/graphics/user/include \
-                    vendor/marvell/generic/graphics/user/user/hal/inc \
-                    vendor/marvell/generic/graphics/user/user/hal/user \
-                    vendor/marvell/generic/graphics/user/user/hal/os/linux/user \
-                    vendor/marvell/generic/graphics/user
+LOCAL_C_INCLUDES += hardware/marvell/pxa1088/displayservice/include \
+                    hardware/marvell/pxa1088/graphics/user/include \
+                    hardware/marvell/pxa1088/graphics/user/user/hal/inc \
+                    hardware/marvell/pxa1088/graphics/user/user/hal/user \
+                    hardware/marvell/pxa1088/graphics/user/user/hal/os/linux/user \
+                    hardware/marvell/pxa1088/graphics/user
 
 LOCAL_SHARED_LIBRARIES += libgcu libutils libbinder
 
 ifeq ($(strip $(BOARD_ENABLE_MULTI_DISPLAYS)),true)
     LOCAL_SHARED_LIBRARIES += libdisplaymodel
-    LOCAL_C_INCLUDES += vendor/marvell/generic/displayservice
+    LOCAL_C_INCLUDES += hardware/marvell/pxa1088/displayservice
     LOCAL_CFLAGS += -DMRVL_SUPPORT_DISPLAY_MODEL=1
 endif
 

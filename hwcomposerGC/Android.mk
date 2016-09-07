@@ -18,12 +18,6 @@ LOCAL_PATH:= $(call my-dir)
 # hw/<COPYPIX_HARDWARE_MODULE_ID>.<ro.board.platform>.so
 include $(CLEAR_VARS)
 
-# By default, ENABLE_HWC_GC_PATH should be false, as for most platforms it should be disabled.
-# To Enable HWC GC path, should define ENABLE_HWC_GC_PATH as true in BoardConfig.mk
-ENABLE_HWC_GC_PATH   ?= false
-
-ifeq ($(ENABLE_HWC_GC_PATH), true)
-
 include $(CLEAR_VARS)
 LOCAL_PREBUILT_LIBS := libHWComposerGC.a
 LOCAL_MODULE_TAGS := optional
@@ -55,5 +49,3 @@ LOCAL_CFLAGS := -DENABLE_HWC_GC_PATH -DINTEGRATED_WITH_MARVELL -g
 LOCAL_MODULE_TAGS := optional
 
 include $(BUILD_SHARED_LIBRARY)
-
-endif

@@ -10,9 +10,7 @@ include $(CLEAR_VARS)
 LOCAL_C_INCLUDES := \
     $(LOCAL_PATH)/../include
 
-ifeq ($(ARCH_ARM_HAVE_NEON),true)
-    LOCAL_CFLAGS += -D_MRVL_NEON_OPT
-endif
+LOCAL_CFLAGS += -D_MRVL_NEON_OPT
 
 LOCAL_SHARED_LIBRARIES := libcutils
 

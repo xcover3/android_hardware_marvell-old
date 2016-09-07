@@ -6,11 +6,7 @@ BUILD_OPTION_USE_GPUTEX ?= 1
 #
 # copy egl.cfg to /system/lib/egl
 #
-ifeq ($(strip $(MRVL_GCU2D_V3)),true)
-GCU_LIB := libgcu3
-else
 GCU_LIB := libgcu
-endif
 
 include $(CLEAR_VARS)
 
@@ -52,9 +48,7 @@ LOCAL_WHOLE_STATIC_LIBRARIES := \
 
 LOCAL_SHARED_LIBRARIES := libcutils libutils libdl liblog
 
-ifeq ($(strip $(BUILD_OPTION_USE_GPUTEX)),1)
 LOCAL_SHARED_LIBRARIES += libgputex
-endif
 
 LOCAL_LDLIBS := -ldl -llog
 LOCAL_MODULE:= libGAL
@@ -184,7 +178,3 @@ endif
 
 # !!! hack to resolve the dependency of libGLESv2_MRVL.so on libEGL_MRVL.so
 $(TARGET_OUT_SHARED_LIBRARIES)/libEGL_$(TAG).so:$(TARGET_OUT_SHARED_LIBRARIES)/egl/libEGL_$(TAG).so
-
-
-
-

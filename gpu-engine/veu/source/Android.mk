@@ -15,8 +15,8 @@ LOCAL_SHARED_LIBRARIES := \
 
 LOCAL_C_INCLUDES += \
     $(LOCAL_PATH)/../include \
-    vendor/marvell/generic/graphics/user/include \
-    vendor/marvell/generic/graphics/include \
+    hardware/marvell/pxa1088/graphics/user/include \
+    hardware/marvell/pxa1088/graphics/include \
     frameworks/av/libvideoeditor/vss/common/inc \
     frameworks/av/libvideoeditor/vss/mcs/inc \
     frameworks/av/libvideoeditor/vss/inc \

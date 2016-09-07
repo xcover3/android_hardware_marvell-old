@@ -21,13 +21,13 @@ LOCAL_SRC_FILES := \
     V4L2Overlay.cpp \
 
 LOCAL_C_INCLUDES := \
-        vendor/marvell/generic/ipplib/include \
-        vendor/marvell/generic/graphics/ \
-        vendor/marvell/generic/phycontmem-lib/phycontmem/ \
-        vendor/marvell/generic/graphics/galcore_src/hal/inc/ \
-        vendor/marvell/generic/hwcomposer/OverlayDisplayEngine \
-        vendor/marvell/generic/hwcomposer/ \
-        vendor/marvell/generic/marvell-gralloc/ \
+        hardware/marvell/pxa1088/ipplib/include \
+        hardware/marvell/pxa1088/graphics/ \
+        hardware/marvell/pxa1088/phycontmem-lib/phycontmem/ \
+        hardware/marvell/pxa1088/graphics/galcore_src/hal/inc/ \
+        hardware/marvell/pxa1088/hwcomposer/OverlayDisplayEngine \
+        hardware/marvell/pxa1088/hwcomposer/ \
+        hardware/marvell/pxa1088/marvell-gralloc/ \
 
 
 LOCAL_SHARED_LIBRARIES := liblog libui libcutils libutils libbinder libGAL libphycontmem

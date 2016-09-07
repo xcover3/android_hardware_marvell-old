@@ -41,6 +41,4 @@ PRODUCT_PACKAGES += \
 #
 # copy sd8xxx_uapsta.bin to /etc/firmware/mrvl
 #
-PRODUCT_COPY_FILES += vendor/marvell/generic/sd8787/FwImage/sd8787_uapsta.bin:system/etc/firmware/mrvl/sd8787_uapsta.bin
-
-PRODUCT_COPY_FILES += vendor/marvell/generic/sd8787/FwImage/sd8777_uapsta.bin:system/etc/firmware/mrvl/sd8777_uapsta.bin
+PRODUCT_COPY_FILES += hardware/marvell/pxa1088/sd8887/FwImage/sd8887_uapsta.bin:system/etc/firmware/mrvl/sd8887_uapsta.bin

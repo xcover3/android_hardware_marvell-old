@@ -75,7 +75,7 @@ EXTRA_CFLAGS += -I$(M)/../mbtchar_src
 EXTRA_CFLAGS += -I$(M)/bt
 LD += -S
 
-BINDIR = ../bin_sd87xx_btchar
+BINDIR = ../bin_sd88xx_btchar
 
 #############################################################################
 # Compiler Flags
