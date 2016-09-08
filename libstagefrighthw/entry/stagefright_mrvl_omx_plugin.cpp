@@ -1,7 +1,19 @@
-/***************************************************************************************** 
- * Copyright (c) 2009, Marvell International Ltd. 
- * All Rights Reserved.
- *****************************************************************************************/
+/*
+ * Copyright (C) 2016 Android For Marvell Project <ctx.xda@gmail.com>
+ * Copyright (c) 2009 Marvell International Ltd. 
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 #include "stagefright_mrvl_omx_plugin.h"
 #include <media/stagefright/foundation/ADebug.h> /* Define CHECK_EQ */
@@ -11,8 +23,8 @@
 #include <sys/ioctl.h>
 #include <cutils/properties.h>
 #ifdef USE_ION
-#include <linux/ion.h>
-#include <linux/pxa_ion.h>
+#include <android/ion/ion.h>
+#include <android/ion/pxa/pxa_ion.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>

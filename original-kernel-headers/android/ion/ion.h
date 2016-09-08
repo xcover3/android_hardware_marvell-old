@@ -1,6 +1,7 @@
 /*
  * drivers/staging/android/ion/ion.h
  *
+ * Copyright (C) 2016 Android For Marvell Project <ctx.xda@gmail.com>
  * Copyright (C) 2011 Google, Inc.
  *
  * This software is licensed under the terms of the GNU General Public
@@ -126,7 +127,7 @@ struct ion_handle *ion_alloc(struct ion_client *client, size_t len,
  *
  * Free the provided handle.
  */
-void ion_free(struct ion_client *client, struct ion_handle *handle);
+// void ion_free(struct ion_client *client, struct ion_handle *handle); EXCLUDED: onflicts with a function in ion_helper_lib.h c that has the same name but a different type
 
 /**
  * ion_phys - returns the physical address and len of a handle

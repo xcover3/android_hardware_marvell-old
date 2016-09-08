@@ -4,7 +4,7 @@
  */
 
 #include <pthread.h>
-#include <linux/pxa_ion.h>
+#include <android/ion/pxa/pxa_ion.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>

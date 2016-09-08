@@ -1,4 +1,5 @@
 /*
+ * Copyright (C) 2016 Android For Marvell Project <ctx.xda@gmail.com>
  * Copyright 2012 Marvell International Ltd.
  *
  * This software is licensed under the terms of the GNU General Public
@@ -22,6 +23,9 @@ struct ion_pxa_region {
 	unsigned long addr;
 	size_t len;
 };
+
+#define ION_PXA_PHYS		1
+#define ION_PXA_SYNC		2
 
 enum {
 	PXA_DMA_BIDIRECTIONAL = 0,
