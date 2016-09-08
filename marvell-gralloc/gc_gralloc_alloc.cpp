@@ -40,6 +40,7 @@
 
 #include "gc_gralloc_priv.h"
 #include "gc_gralloc_gr.h"
+#include "mrvl_pxl_formats.h"
 
 #include <gc_hal_user.h>
 #include <gc_hal_base.h>
