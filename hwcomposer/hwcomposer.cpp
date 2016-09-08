@@ -64,6 +64,9 @@
 
 #include "HWBaselayComposer.h"
 #include "HWCDisplayEventMonitor.h"
+
+#include "hwcomposer_defs_mrvl.h"
+
 #include "gralloc_priv.h"
 
 #define ATRACE_TAG ATRACE_TAG_GRAPHICS
