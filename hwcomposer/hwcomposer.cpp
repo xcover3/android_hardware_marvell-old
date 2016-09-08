@@ -62,10 +62,7 @@
 #endif
 #include "HWCFenceManager.h"
 
-#ifdef ENABLE_HWC_GC_PATH
 #include "HWBaselayComposer.h"
-#endif
-
 #include "HWCDisplayEventMonitor.h"
 #include "gralloc_priv.h"
 
