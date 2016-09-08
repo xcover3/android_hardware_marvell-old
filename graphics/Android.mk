@@ -16,24 +16,17 @@
 
 LOCAL_PATH := $(call my-dir)
 
-ifeq ($(TARGET_BOARD_PLATFORM), mrvl)
-ifeq ($(TARGET_SOC), pxa1088)
+graphics_dirs := \
+	libEGL \
+	libGAL \
+	libGLES \
+	libgcu
 
-pxa1088_dirs := \
-	MarvellWirelessDaemon \
-	gpu-engine \
-	graphics \
-	hwcomposer \
-	hwcomposerGC \
-	ipplib \
-	libMarvellWireless \
-	libstagefrighthw \
-	marvell-gralloc \
-	phycontmem-lib \
-	sd8787 \
-	vmeta-lib
-
-include $(call all-named-subdir-makefiles,$(pxa1088_dirs))
-
+ifeq ($(USE_OPENCL),true)
+graphics_dirs += libOpenCL
 endif
-endif
+
+include $(call all-named-subdir-makefiles,$(graphics_dirs))
+
+# !!! hack to resolve the dependency of libGLESv2_MRVL.so on libEGL_MRVL.so
+$(TARGET_OUT_SHARED_LIBRARIES)/libEGL_MRVL.so:$(TARGET_OUT_SHARED_LIBRARIES)/egl/libEGL_MRVL.so

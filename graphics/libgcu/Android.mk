@@ -16,24 +16,17 @@
 
 LOCAL_PATH := $(call my-dir)
 
-ifeq ($(TARGET_BOARD_PLATFORM), mrvl)
-ifeq ($(TARGET_SOC), pxa1088)
+include $(CLEAR_VARS)
+LOCAL_PREBUILT_LIBS := libgcu.a
+LOCAL_MODULE_TAGS := optional
+include $(BUILD_MULTI_PREBUILT)
 
-pxa1088_dirs := \
-	MarvellWirelessDaemon \
-	gpu-engine \
-	graphics \
-	hwcomposer \
-	hwcomposerGC \
-	ipplib \
-	libMarvellWireless \
-	libstagefrighthw \
-	marvell-gralloc \
-	phycontmem-lib \
-	sd8787 \
-	vmeta-lib
-
-include $(call all-named-subdir-makefiles,$(pxa1088_dirs))
-
-endif
-endif
+include $(CLEAR_VARS)
+LOCAL_WHOLE_STATIC_LIBRARIES := libgcu
+LOCAL_SHARED_LIBRARIES := libcutils libutils libdl libGAL
+LOCAL_LDLIBS := -ldl -llog
+LOCAL_MODULE_PATH := $(TARGET_OUT_SHARED_LIBRARIES)/
+LOCAL_MODULE:= libgcu
+LOCAL_MODULE_TAGS := optional
+LOCAL_PRELINK_MODULE := false
+include $(BUILD_SHARED_LIBRARY)
