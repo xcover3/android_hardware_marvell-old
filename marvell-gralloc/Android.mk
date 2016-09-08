@@ -1,7 +1,5 @@
-##############################################################################
-#  
 #
-#
+#  Copyright (C) 2016 Android For Marvell Project <ctx.xda@gmail.com>
 #  Copyright 2006, The Android Open Source Project
 #
 #  Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,11 +13,7 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.  
-##############################################################################
-#  
-#  
-##############################################################################
-
+#
 
 LOCAL_PATH	:= $(call my-dir)
 include $(LOCAL_PATH)/Android.mk.def
@@ -48,7 +42,7 @@ LOCAL_C_INCLUDES := \
 
 # See hardware/libhardware/modules/README.android to see how this is named.
 
-LOCAL_MODULE := gralloc.xo4
+LOCAL_MODULE := gralloc.mrvl
 
 # With front buffer rendering, gralloc always provides the same buffer 
 # when GRALLOC_USAGE_HW_FB. Obviously there is no synchronization with the display.
@@ -58,20 +52,13 @@ LOCAL_CFLAGS := \
 	-DDISABLE_FRONT_BUFFER \
 	-DFRAMEBUFFER_PIXEL_FORMAT=$(FRAMEBUFFER_PIXEL_FORMAT)
 
-LOCAL_C_INCLUDES += hardware/marvell/pxa1088/displayservice/include \
-                    hardware/marvell/pxa1088/graphics/user/include \
-                    hardware/marvell/pxa1088/graphics/user/user/hal/inc \
-                    hardware/marvell/pxa1088/graphics/user/user/hal/user \
-                    hardware/marvell/pxa1088/graphics/user/user/hal/os/linux/user \
-                    hardware/marvell/pxa1088/graphics/user
+LOCAL_C_INCLUDES += hardware/marvell/pxa1088/graphics/include \
+                    hardware/marvell/pxa1088/graphics/hal/inc \
+                    hardware/marvell/pxa1088/graphics/hal/user \
+                    hardware/marvell/pxa1088/graphics/hal/os/linux/user \
+                    hardware/marvell/pxa1088/graphics
 
 LOCAL_SHARED_LIBRARIES += libgcu libutils libbinder
-
-ifeq ($(strip $(BOARD_ENABLE_MULTI_DISPLAYS)),true)
-    LOCAL_SHARED_LIBRARIES += libdisplaymodel
-    LOCAL_C_INCLUDES += hardware/marvell/pxa1088/displayservice
-    LOCAL_CFLAGS += -DMRVL_SUPPORT_DISPLAY_MODEL=1
-endif
 
 LOCAL_CFLAGS += -DUSE_ION
 
