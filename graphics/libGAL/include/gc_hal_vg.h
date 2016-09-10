@@ -39,6 +39,10 @@ extern "C" {
     typedef void *              gctTHREADFUNCRESULT;
     typedef gctPOINTER          gctTHREADFUNCPARAMETER;
 #   define  gctTHREADFUNCTYPE
+#else
+    typedef gctINT              gctTHREADFUNCRESULT;
+    typedef gctPOINTER          gctTHREADFUNCPARAMETER;
+#   define  gctTHREADFUNCTYPE
 #endif
 
 typedef gctTHREADFUNCRESULT (gctTHREADFUNCTYPE * gctTHREADFUNC) (
