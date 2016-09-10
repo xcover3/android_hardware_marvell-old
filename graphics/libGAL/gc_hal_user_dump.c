@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -9,8 +9,6 @@
 *    without the express written permission of Vivante Corporation.
 *
 *****************************************************************************/
-
-
 
 
 #include "gc_hal_user_precomp.h"
@@ -22,9 +20,8 @@ static gctINT32 previousTime = 0;
 static gctINT32 totalTicks = 0;
 #endif
 
-#if defined(ANDROID) && gcdDUMP_API
+#if defined(ANDROID)
 #include <android/log.h>
-#include <linux/spinlock.h>
 #include <pthread.h>
 #include <sys/syscall.h>
 #include "utils/Log.h"
@@ -35,17 +32,19 @@ static gctPOINTER dump_mutex = gcvNULL;
 #define gcmLOCKDUMP() \
 { \
     if (dump_mutex == gcvNULL) \
-        gcoOS_CreateMutex(gcvNULL, &dump_mutex); \
-    gcoOS_AcquireMutex(gcvNULL, dump_mutex, gcvINFINITE); \
+        gcmVERIFY_OK(gcoOS_CreateMutex(gcvNULL, &dump_mutex)); \
+    gcmVERIFY_OK(gcoOS_AcquireMutex(gcvNULL, dump_mutex, gcvINFINITE)); \
 }
 
 #define gcmUNLOCKDUMP() \
-  gcoOS_ReleaseMutex(gcvNULL, dump_mutex);
+  gcmVERIFY_OK(gcoOS_ReleaseMutex(gcvNULL, dump_mutex));
 
 #define gcmGETTHREADID() \
     (gctUINT32)pthread_self()
 
 #endif
+
+static gctBOOL setDumpFlag  = gcvFALSE;
 
 /* Zone used for header/footer. */
 #define _GC_OBJ_ZONE    gcvZONE_HAL
@@ -63,7 +62,7 @@ struct _gcoDUMP
     /* Frame information. */
     gctINT32        frameCount;
     gctUINT32       frameStart;
-    gctUINT32       frameLength;
+    gctSIZE_T       frameLength;
 };
 
 /*******************************************************************************
@@ -672,6 +671,36 @@ gcoDUMP_Delete(
 ** New dump code.
 */
 
+/*******************************************************************************
+**
+**  gcoDUMP_SetDumpFlag
+**
+**  Enabel dump or not
+**
+**  INPUT:
+**
+**      gctBOOL DumpState
+**          Dump state to set.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoDUMP_SetDumpFlag(
+    IN gctBOOL DumpState
+    )
+{
+    gcmHEADER_ARG("DumpState=%d", DumpState);
+
+    setDumpFlag = DumpState;
+
+    /* Success. */
+    gcmFOOTER_NO();
+
+    return gcvSTATUS_OK;
+}
+
 /* While dumping command buffers in kernel,
    we want to enable gcmDUMP only when called from gcvDUMP_BUFFER.
 */
@@ -688,13 +717,19 @@ gcfDump(
     ...
     )
 {
-#ifndef __QNXNTO__
+
     gctUINT offset = 0;
     gctARGUMENTS args;
-
 #if gcdDUMP_IN_KERNEL
     gcsHAL_INTERFACE ioctl;
+#else
+    char buffer[80];
+#endif
 
+    if (!setDumpFlag)
+        return gcvSTATUS_OK;
+
+#if gcdDUMP_IN_KERNEL
     gcmARGUMENTS_START(args, Message);
     gcmVERIFY_OK(gcoOS_PrintStrVSafe(ioctl.u.Debug.message,
                                      gcmSIZEOF(ioctl.u.Debug.message),
@@ -716,7 +751,6 @@ gcfDump(
                                      &ioctl, gcmSIZEOF(ioctl),
                                      &ioctl, gcmSIZEOF(ioctl)));
 #else
-    char buffer[80];
 
     gcmARGUMENTS_START(args, Message);
     gcmVERIFY_OK(gcoOS_PrintStrVSafe(buffer, gcmSIZEOF(buffer),
@@ -725,7 +759,6 @@ gcfDump(
     gcmARGUMENTS_END(args);
 
     gcoOS_Print("%s", buffer);
-#endif
 #endif
 
     return gcvSTATUS_OK;
@@ -739,9 +772,11 @@ gcfDumpData(
     IN gctSIZE_T Bytes
     )
 {
-#ifndef __QNXNTO__
     gctUINT32_PTR ptr = (gctUINT32_PTR) Logical;
     gctSIZE_T bytes   = gcmALIGN(Bytes, 4);
+
+    if (!setDumpFlag)
+        return gcvSTATUS_OK;
 
     while (bytes >= 16)
     {
@@ -769,7 +804,6 @@ gcfDumpData(
     }
 
     gcmDUMP(Os, "] -- %s", Tag);
-#endif
 
     return gcvSTATUS_OK;
 }
@@ -784,12 +818,16 @@ gcfDumpBuffer(
     IN gctSIZE_T Bytes
     )
 {
-#ifndef __QNXNTO__
+
     gctUINT32_PTR ptr = (gctUINT32_PTR) Logical + (Offset >> 2);
     gctSIZE_T bytes   = gcmALIGN(Bytes + (Offset & 3), 4);
-
 #if gcdDUMP_COMMAND
     static gctPOINTER   dumpLock;
+#endif
+    if (!setDumpFlag)
+        return gcvSTATUS_OK;
+
+#if gcdDUMP_COMMAND
 
     if (dumpLock == gcvNULL)
     {
@@ -834,8 +872,6 @@ gcfDumpBuffer(
     gcmVERIFY_OK(gcoOS_ReleaseMutex(Os, dumpLock));
 #endif
 
-#endif
-
     return gcvSTATUS_OK;
 }
 #else
@@ -865,24 +901,23 @@ gcfDumpBuffer(
 
 gceSTATUS
 gcfDumpFrameRate(
-	void
-	)
+    void
+    )
 {
 #if gcdDUMP_FRAMERATE
-	gctINT32 averageFPS = 0;
-	gctINT32 currentTime = gcoOS_GetTicks();
-	if (totalFrames > 0) {
-		gctINT32 timePassed = currentTime - previousTime;
-		totalTicks += timePassed;
-		averageFPS = 1000 / (totalTicks/totalFrames);
-		gcoOS_Print("Average FPS is :%d for %d frames", averageFPS, totalFrames);
-	}
-	totalFrames ++;
-	previousTime = currentTime;
+    gctINT32 averageFPS = 0;
+    gctINT32 currentTime = gcoOS_GetTicks();
+    if (totalFrames > 0) {
+        gctINT32 timePassed = currentTime - previousTime;
+        totalTicks += timePassed;
+        averageFPS = 1000 / (totalTicks/totalFrames);
+        gcoOS_Print("Average FPS is :%d for %d frames", averageFPS, totalFrames);
+    }
+    totalFrames ++;
+    previousTime = currentTime;
 #endif
     return gcvSTATUS_OK;
 }
-
 
 gceSTATUS
 gcfDumpApi(
@@ -890,17 +925,18 @@ gcfDumpApi(
     ...
     )
 {
-#if gcdDUMP_API
-
     char buffer[256];
     gctUINT offset = 0;
     gctARGUMENTS args;
+
+    if (!setDumpFlag)
+        return gcvSTATUS_OK;
 
 #ifdef ANDROID
     gctUINT32 threadID;
 
     if (!Message)
-	return gcvSTATUS_OK;
+    return gcvSTATUS_OK;
 
     threadID = gcmGETTHREADID();
     if ((prevThreadID != 0) && (prevThreadID != threadID))
@@ -911,7 +947,7 @@ gcfDumpApi(
     prevThreadID = threadID;
 
     if (strncmp(Message, "${", 2) == 0)
-		gcmLOCKDUMP();
+        gcmLOCKDUMP();
 
     gcmARGUMENTS_START(args, Message);
     gcmVERIFY_OK(gcoOS_PrintStrVSafe(buffer, gcmSIZEOF(buffer),
@@ -921,7 +957,7 @@ gcfDumpApi(
     gcoOS_Print(buffer);
 
     if (strstr(Message, "}"))
-		gcmUNLOCKDUMP();
+        gcmUNLOCKDUMP();
 
 #else
     gcmARGUMENTS_START(args, Message);
@@ -930,8 +966,6 @@ gcfDumpApi(
                                      Message, args));
     gcmARGUMENTS_END(args);
     gcoOS_Print(buffer);
-#endif
-
 #endif
 
     return gcvSTATUS_OK;
@@ -943,8 +977,10 @@ gcfDumpArray(
     IN gctUINT32 Size
     )
 {
-#if gcdDUMP_API
     const gctUINT32_PTR data = (gctUINT32_PTR) Data;
+
+    if (!setDumpFlag)
+        return gcvSTATUS_OK;
 
     if (Size > 0)
     {
@@ -987,7 +1023,6 @@ gcfDumpArray(
 
         gcfDumpApi("$$ **********");
     }
-#endif
 
     return gcvSTATUS_OK;
 }
@@ -998,8 +1033,10 @@ gcfDumpArrayToken(
     IN gctUINT32 Termination
     )
 {
-#if gcdDUMP_API
     const gctUINT32_PTR data = (gctUINT32_PTR) Data;
+
+    if (!setDumpFlag)
+        return gcvSTATUS_OK;
 
     if (Data == gcvNULL)
     {
@@ -1018,7 +1055,6 @@ gcfDumpArrayToken(
     }
 
     gcfDumpApi("$$ **********");
-#endif
 
     return gcvSTATUS_OK;
 }
@@ -1029,11 +1065,10 @@ gcfDumpApiData(
     IN gctSIZE_T Size
     )
 {
-#if gcdDUMP_API
     const gctUINT8_PTR data = (gctUINT8_PTR) Data;
-	gceSTATUS status = gcvSTATUS_OK;
 
-    gcmHEADER_ARG("Data=0x%x Size=%d", Data, Size);
+    if (!setDumpFlag)
+        return gcvSTATUS_OK;
 
     if (Data == gcvNULL)
     {
@@ -1043,11 +1078,9 @@ gcfDumpApiData(
     {
         gctSIZE_T index;
 
-
         if (Size == 0)
         {
-            gcmERR_RETURN(gcoOS_StrLen(Data, &Size));
-            Size += 1;
+            Size = gcoOS_StrLen(Data, gcvNULL) + 1;
         }
 
         for (index = 0; index < Size;)
@@ -1120,9 +1153,288 @@ gcfDumpApiData(
     }
 
     gcfDumpApi("$$ **********");
-    gcmFOOTER();
-#endif
 
     return gcvSTATUS_OK;
 }
 
+#if gcdDUMP_2D
+
+typedef struct _gcsDumpMemInfoNode
+{
+    gctUINT32                   gpuAddress;
+    gctPOINTER                  logical;
+    gctUINT32                   physical;
+    gctUINT32                   size;
+    struct _gcsDumpMemInfoNode *prev;
+    struct _gcsDumpMemInfoNode *next;
+}
+gcsDumpMemInfoNode;
+
+static gcsDumpMemInfoNode dumpMemInfoList = {
+    0, gcvNULL, gcvINVALID_ADDRESS, 0, &dumpMemInfoList, &dumpMemInfoList,
+};
+
+gctPOINTER dumpMemInfoListMutex = gcvNULL;
+gctBOOL    dump2DFlag           = gcv2D_STATE_PROFILE_ALL;
+
+gceSTATUS
+gcfDump2DCommand(
+    IN gctUINT32_PTR Command,
+    IN gctUINT32 Size
+    )
+{
+    gctUINT32 index;
+
+    if (!(dump2DFlag & gcv2D_STATE_PROFILE_COMMAND))
+    {
+        return gcvSTATUS_OK;
+    }
+
+    /* Dump the 2D command buffer. */
+    gcfDumpApi("$$[2D Command Buffer, size = %d bytes]", Size * 4);
+
+    for (index = 0; index < Size; index++)
+    {
+        gcfDumpApi("$$ 0x%08X", Command[index]);
+    }
+
+    gcfDumpApi("$$ **********");
+
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcfDump2DSurface(
+    IN gctBOOL Src,
+    IN gctUINT32 Address
+    )
+{
+    gceSTATUS status;
+    gcsDumpMemInfoNode *pMemory;
+
+    gctUINT32 physical = 0;
+    gctUINT32 size = 0, offset = 0, index = 0;
+    gctPOINTER logical = gcvNULL;
+    gctUINT32_PTR data;
+    gctBOOL mapped = gcvFALSE;
+
+    if (!(dump2DFlag & gcv2D_STATE_PROFILE_SURFACE))
+    {
+        return gcvSTATUS_OK;
+    }
+
+    /* Acquire the mutex. */
+    gcmONERROR(gcoOS_AcquireMutex(gcvNULL, dumpMemInfoListMutex, gcvINFINITE));
+
+    /* Loop the list to query the logical address. */
+    for (pMemory = dumpMemInfoList.next; pMemory != &dumpMemInfoList; pMemory = pMemory->next)
+    {
+        size = pMemory->size;
+
+        if ((Address >= pMemory->gpuAddress) && (Address < (pMemory->gpuAddress + size)))
+        {
+            offset = Address - pMemory->gpuAddress;
+            size   = size - offset;
+
+            if (pMemory->logical != gcvNULL)
+            {
+                physical = 0;
+                logical  = gcmINT2PTR(gcmPTR2INT32(pMemory->logical) + offset);
+            }
+            else
+            {
+                physical = pMemory->physical + offset;
+                logical  = gcvNULL;
+            }
+
+            gcmONERROR(gcoOS_ReleaseMutex(gcvNULL, dumpMemInfoListMutex));
+            goto Found;
+        }
+    }
+
+    /* Release the mutex. */
+    gcmONERROR(gcoOS_ReleaseMutex(gcvNULL, dumpMemInfoListMutex));
+
+    /* Not found. */
+    gcmONERROR(gcvSTATUS_NOT_FOUND);
+
+Found:
+    /* Map it into the user space if we only have the physical address. */
+    if (logical == gcvNULL)
+    {
+        gcmONERROR(gcoHAL_MapMemory(gcvNULL, (gctPHYS_ADDR)physical, size, &logical));
+        mapped = gcvTRUE;
+    }
+
+    /* Dump the 2D surface. */
+    gcfDumpApi("$$[2D %s Surface, GPU Address = 0x%08X, offset = %d, size = %d bytes]",
+        Src ? "Src" : "Dst", Address, offset, size);
+
+    size /= 4;
+    data = (gctUINT32_PTR)logical;
+
+    while (index < size)
+    {
+        switch (size - index)
+        {
+        case 1:
+            gcfDumpApi("$$ 0x%08X", data[index]);
+            index += 1;
+            break;
+        case 2:
+            gcfDumpApi("$$ 0x%08X 0x%08X", data[index], data[index + 1]);
+            index += 2;
+            break;
+        case 3:
+            gcfDumpApi("$$ 0x%08X 0x%08X 0x%08X",
+                    data[index], data[index + 1], data[index + 2]);
+            index += 3;
+            break;
+        default:
+            gcfDumpApi("$$ 0x%08X 0x%08X 0x%08X 0x%08X",
+                    data[index], data[index + 1], data[index + 2], data[index + 3]);
+            index += 4;
+            break;
+        }
+    }
+
+    gcfDumpApi("$$ **********");
+
+    /* Unmap the memory. */
+    if (mapped)
+    {
+        gcmVERIFY_OK(gcoHAL_UnmapMemory(gcvNULL, (gctPHYS_ADDR)physical, size, logical));
+    }
+
+    return gcvSTATUS_OK;
+
+OnError:
+    /* Dump the info. */
+    gcfDumpApi("$$[2D %s Surface, GPU Address = 0x%08X -- not found]",
+        Src ? "Src" : "Dst", Address);
+    gcfDumpArray(gcvNULL, 0);
+
+    return status;
+}
+
+gceSTATUS
+gcfAddMemoryInfo(
+    IN gctUINT32 GPUAddress,
+    IN gctPOINTER Logical,
+    IN gctUINT32 Physical,
+    IN gctUINT32 Size
+    )
+{
+    gceSTATUS status;
+    gcsDumpMemInfoNode *pNode, *prev;
+    gctPOINTER pointer = gcvNULL;
+
+    gcmASSERT(dumpMemInfoListMutex != gcvNULL);
+
+    /* Allocate the node structure. */
+    gcmONERROR(gcoOS_Allocate(gcvNULL, gcmSIZEOF(*pNode), &pointer));
+
+    pNode = pointer;
+
+    /* Setup the structure. */
+    pNode->gpuAddress = GPUAddress;
+    pNode->logical    = Logical;
+    pNode->physical   = Physical;
+    pNode->size       = Size;
+
+    /* Acquire the mutex. */
+    gcmONERROR(gcoOS_AcquireMutex(gcvNULL, dumpMemInfoListMutex, gcvINFINITE));
+
+    /* Add the new node into the list. */
+    prev                 = dumpMemInfoList.prev;
+
+    dumpMemInfoList.prev = pNode;
+    pNode->next          = &dumpMemInfoList;
+    pNode->prev          = prev;
+    prev->next           = pNode;
+
+    /* Release the mutex. */
+    gcmONERROR(gcoOS_ReleaseMutex(gcvNULL, dumpMemInfoListMutex));
+
+    return gcvSTATUS_OK;
+
+OnError:
+    return status;
+}
+
+gceSTATUS
+gcfDelMemoryInfo(
+    IN gctUINT32 Address
+    )
+{
+    gceSTATUS status;
+    gcsDumpMemInfoNode *pNode, *prev, *next;
+
+    /* Acquire the mutex. */
+    gcmONERROR(gcoOS_AcquireMutex(gcvNULL, dumpMemInfoListMutex, gcvINFINITE));
+
+    /* Loop the list. */
+    for (pNode = dumpMemInfoList.next; pNode != &dumpMemInfoList; pNode = pNode->next)
+    {
+        /* Delete the node from the list. */
+        if (pNode->gpuAddress == Address)
+        {
+            prev       = pNode->prev;
+            next       = pNode->next;
+            next->prev = prev;
+            prev->next = next;
+
+            gcoOS_Free(gcvNULL, pNode);
+            break;
+        }
+    }
+
+    /* Release the mutex. */
+    gcmONERROR(gcoOS_ReleaseMutex(gcvNULL, dumpMemInfoListMutex));
+
+    return gcvSTATUS_OK;
+
+OnError:
+    return status;
+}
+
+#else
+
+gceSTATUS
+gcfDump2DCommand(
+    IN gctUINT32_PTR Command,
+    IN gctUINT32 Size
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcfDump2DSurface(
+    IN gctBOOL Src,
+    IN gctUINT32 Address
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcfAddMemoryInfo(
+    IN gctUINT32 GPUAddress,
+    IN gctPOINTER Logical,
+    IN gctUINT32 Physical,
+    IN gctUINT32 Size
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcfDelMemoryInfo(
+    IN gctUINT32 Address
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+#endif /* gcdDUMP_2D */

@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -11,12 +11,9 @@
 *****************************************************************************/
 
 
-
-
 #include "gc_hal_user_hardware_precomp.h"
-#include "gc_hal_compiler.h"
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
 
 /* Zone used for header/footer. */
 #define _GC_OBJ_ZONE        gcvZONE_COMPOSITION
@@ -550,7 +547,7 @@ _TranslateTargetFormat(
         return gcvSTATUS_OK;
 
     case gcvSURF_YUY2:
-        if (((((gctUINT32) (Hardware->chipFeatures)) >> (0 ? 24:24) & ((gctUINT32) ((((1 ? 24:24) - (0 ? 24:24) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:24) - (0 ? 24:24) + 1)))))) == (0x1 & ((gctUINT32) ((((1 ? 24:24) - (0 ? 24:24) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:24) - (0 ? 24:24) + 1))))))))
+        if (((((gctUINT32) (Hardware->config->chipFeatures)) >> (0 ? 24:24) & ((gctUINT32) ((((1 ? 24:24) - (0 ? 24:24) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:24) - (0 ? 24:24) + 1)))))) == (0x1 & ((gctUINT32) ((((1 ? 24:24) - (0 ? 24:24) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:24) - (0 ? 24:24) + 1))))))))
         {
             *TargetFormat = 0x7;
             *TargetSwizzle
@@ -2670,38 +2667,12 @@ _FreeTemporarySurface(
     if (tempBuffer->node.pool != gcvPOOL_UNKNOWN)
     {
         /* Unlock the node. */
-        gcmONERROR(gcoHARDWARE_Unlock(
-            &tempBuffer->node, tempBuffer->type
-            ));
+        gcmONERROR(gcoHARDWARE_Unlock(&tempBuffer->node, tempBuffer->type));
 
-        /* Schedule deletion. */
-        if (Synchronized)
-        {
-            gcmONERROR(gcoHARDWARE_ScheduleVideoMemory(
-                &tempBuffer->node
-                ));
-        }
-
-        /* Not synchronized --> delete immediately. */
-        else
-        {
-            gcsHAL_INTERFACE iface;
-
-            /* Free the video memory. */
-            iface.command = gcvHAL_FREE_VIDEO_MEMORY;
-            iface.u.FreeVideoMemory.node = tempBuffer->node.u.normal.node;
-
-            /* Call kernel service. */
-            gcmONERROR(gcoOS_DeviceControl(
-                gcvNULL,
-                IOCTL_GCHAL_INTERFACE,
-                &iface, gcmSIZEOF(gcsHAL_INTERFACE),
-                &iface, gcmSIZEOF(gcsHAL_INTERFACE)
-                ));
-        }
+        gcmONERROR(gcoHARDWARE_ScheduleVideoMemory(&tempBuffer->node));
 
         /* Reset the temporary surface. */
-        gcmONERROR(gcoOS_ZeroMemory(tempBuffer, sizeof(gcsSURF_INFO)));
+        gcoOS_ZeroMemory(tempBuffer, sizeof(gcsSURF_INFO));
     }
 
 OnError:
@@ -2720,7 +2691,6 @@ _AllocateTemporarySurface(
     )
 {
     gceSTATUS status;
-    gcsHAL_INTERFACE iface;
     gcsSURF_INFO_PTR tempBuffer;
     gcsCOMPOSITION_LAYER_PTR tempLayer;
     gcsSURF_FORMAT_INFO_PTR format[2];
@@ -2741,6 +2711,8 @@ _AllocateTemporarySurface(
     }
     else
     {
+        gctUINT32 size;
+
         /* Delete existing buffer. */
         gcmONERROR(_FreeTemporarySurface(Hardware, gcvTRUE));
 
@@ -2752,47 +2724,34 @@ _AllocateTemporarySurface(
 
         /* Align the width and height. */
         gcmONERROR(gcoHARDWARE_AlignToTile(
+            Hardware,
             Type,
             Format,
             &tempBuffer->alignedWidth,
             &tempBuffer->alignedHeight,
-            gcvNULL
+            1,
+            gcvNULL, gcvNULL
             ));
 
-        /* Init the interface structure. */
-        iface.command = gcvHAL_ALLOCATE_LINEAR_VIDEO_MEMORY;
-        iface.u.AllocateLinearVideoMemory.bytes     = tempBuffer->alignedWidth
-                                                    * format[0]->bitsPerPixel / 8
-                                                    * tempBuffer->alignedHeight;
-        iface.u.AllocateLinearVideoMemory.alignment = 64;
-        iface.u.AllocateLinearVideoMemory.pool      = gcvPOOL_DEFAULT;
-        iface.u.AllocateLinearVideoMemory.type      = Type;
+        size = tempBuffer->alignedWidth
+             * format[0]->bitsPerPixel / 8
+             * tempBuffer->alignedHeight;
 
-        /* Call kernel service. */
-        gcmONERROR(gcoOS_DeviceControl(
-            gcvNULL, IOCTL_GCHAL_INTERFACE,
-            &iface, sizeof(gcsHAL_INTERFACE),
-            &iface, sizeof(gcsHAL_INTERFACE)
+        gcmONERROR(gcsSURF_NODE_Construct(
+            &tempBuffer->node,
+            size,
+            64,
+            Type,
+            gcvALLOC_FLAG_NONE,
+            gcvPOOL_DEFAULT
             ));
-
-        /* Validate the return value. */
-        gcmONERROR(iface.status);
 
         /* Set the new parameters. */
         tempBuffer->type                = Type;
         tempBuffer->format              = Format;
         tempBuffer->stride              = tempBuffer->alignedWidth
                                         * format[0]->bitsPerPixel / 8;
-        tempBuffer->size                = iface.u.AllocateLinearVideoMemory.bytes;
-        tempBuffer->node.valid          = gcvFALSE;
-        tempBuffer->node.lockCount      = 0;
-        tempBuffer->node.lockedInKernel = gcvFALSE;
-        tempBuffer->node.logical        = gcvNULL;
-        tempBuffer->node.physical       = ~0U;
-
-        tempBuffer->node.pool               = iface.u.AllocateLinearVideoMemory.pool;
-        tempBuffer->node.u.normal.node      = iface.u.AllocateLinearVideoMemory.node;
-        tempBuffer->node.u.normal.cacheable = gcvFALSE;
+        tempBuffer->size                = size;
 
         tempBuffer->samples.x = 1;
         tempBuffer->samples.y = 1;
@@ -2945,10 +2904,10 @@ _AllocateBuffer(
         ));
 
     /* Set the buffer address. */
-    Buffer->size      = iface.u.AllocateContiguousMemory.bytes;
-    Buffer->physical  = iface.u.AllocateContiguousMemory.physical;
+    Buffer->size      = (gctSIZE_T) iface.u.AllocateContiguousMemory.bytes;
+    Buffer->physical  = gcmINT2PTR(iface.u.AllocateContiguousMemory.physical);
     Buffer->address   = iface.u.AllocateContiguousMemory.address;
-    Buffer->logical   = (gctUINT32_PTR) iface.u.AllocateContiguousMemory.logical;
+    Buffer->logical   = gcmUINT64_TO_PTR(iface.u.AllocateContiguousMemory.logical);
 
     /* Initialize the current buffer (reserve space for the contol state). */
     Buffer->head      = Buffer->logical;
@@ -2980,8 +2939,8 @@ _FinalizeBuffer(
 
     /* Compute the unaligned size. */
     unaligned
-        = (gctUINT8_PTR) Buffer->tail
-        - (gctUINT8_PTR) Buffer->head;
+        = (gctUINT32)((gctUINT8_PTR) Buffer->tail
+        - (gctUINT8_PTR) Buffer->head);
 
     /* Reserve space for EVENT. */
     if (!Hardware->composition.synchronous)
@@ -3031,8 +2990,8 @@ _FinalizeBuffer(
     {
         /* Compute the offset from beginning of the buffer. */
         offset
-            = (gctUINT8_PTR) Buffer->head
-            - (gctUINT8_PTR) Buffer->logical;
+            = (gctUINT32)((gctUINT8_PTR) Buffer->head
+            - (gctUINT8_PTR) Buffer->logical);
         gcmASSERT((offset & 63) == 0);
 
         /* Determine the size of the buffer to reserve. */
@@ -3044,7 +3003,7 @@ _FinalizeBuffer(
         /* Reserve space in the command buffer. */
         gcmBEGINSTATEBUFFER(Hardware, reserve, stateDelta, memory, reserveSize);
 
-        {    gcmASSERT(((memory - (gctUINT32_PTR) reserve->lastReserve) & 1) == 0);    gcmVERIFYLOADSTATEDONE(reserve);    gcmSTORELOADSTATE(reserve, memory, 0x0C02, 2 );    *memory++ = ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 31:27) - (0 ? 31:27) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:27) - (0 ? 31:27) + 1))))))) << (0 ? 31:27))) | (((gctUINT32) (0x01 & ((gctUINT32) ((((1 ? 31:27) - (0 ? 31:27) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:27) - (0 ? 31:27) + 1))))))) << (0 ? 31:27))) | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 26:26) - (0 ? 26:26) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:26) - (0 ? 26:26) + 1))))))) << (0 ? 26:26))) | (((gctUINT32) ((gctUINT32) (gcvFALSE) & ((gctUINT32) ((((1 ? 26:26) - (0 ? 26:26) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:26) - (0 ? 26:26) + 1))))))) << (0 ? 26:26))) | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 25:16) - (0 ? 25:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:16) - (0 ? 25:16) + 1))))))) << (0 ? 25:16))) | (((gctUINT32) ((gctUINT32) (2 ) & ((gctUINT32) ((((1 ? 25:16) - (0 ? 25:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:16) - (0 ? 25:16) + 1))))))) << (0 ? 25:16))) | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0))) | (((gctUINT32) ((gctUINT32) (0x0C02) & ((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0)));gcmSKIPSECUREUSER();};
+        {    gcmASSERT(((memory - gcmUINT64_TO_TYPE(reserve->lastReserve, gctUINT32_PTR)) & 1) == 0);    gcmASSERT((gctUINT32)2  <= 1024);    gcmVERIFYLOADSTATEDONE(reserve);    gcmSTORELOADSTATE(reserve, memory, 0x0C02, 2 );    *memory++ = ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 31:27) - (0 ? 31:27) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:27) - (0 ? 31:27) + 1))))))) << (0 ? 31:27))) | (((gctUINT32) (0x01 & ((gctUINT32) ((((1 ? 31:27) - (0 ? 31:27) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:27) - (0 ? 31:27) + 1))))))) << (0 ? 31:27))) | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 26:26) - (0 ? 26:26) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:26) - (0 ? 26:26) + 1))))))) << (0 ? 26:26))) | (((gctUINT32) ((gctUINT32) (gcvFALSE) & ((gctUINT32) ((((1 ? 26:26) - (0 ? 26:26) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:26) - (0 ? 26:26) + 1))))))) << (0 ? 26:26))) | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 25:16) - (0 ? 25:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:16) - (0 ? 25:16) + 1))))))) << (0 ? 25:16))) | (((gctUINT32) ((gctUINT32) (2 ) & ((gctUINT32) ((((1 ? 25:16) - (0 ? 25:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:16) - (0 ? 25:16) + 1))))))) << (0 ? 25:16))) | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0))) | (((gctUINT32) ((gctUINT32) (0x0C02) & ((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0)));gcmSKIPSECUREUSER();};
 
             /* Set buffer location. */
             gcmSETSTATEDATA(
@@ -3067,21 +3026,21 @@ _FinalizeBuffer(
             );
 
         /* Validate the state buffer. */
-        gcmENDSTATEBUFFER(reserve, memory, reserveSize);
+        gcmENDSTATEBUFFER(Hardware, reserve, memory, reserveSize);
     }
     else
     {
         /* Submit the buffer. */
         iface.command = gcvHAL_COMPOSE;
-        iface.u.Compose.physical    = Buffer->physical;
-        iface.u.Compose.logical     = Buffer->logical;
+        iface.u.Compose.physical    = gcmPTR_TO_UINT64(Buffer->physical);
+        iface.u.Compose.logical     = gcmPTR_TO_UINT64(Buffer->logical);
         iface.u.Compose.offset      = offset;
         iface.u.Compose.size        = executeSize;
-        iface.u.Compose.signal      = Buffer->signal;
-        iface.u.Compose.process     = gcoOS_GetCurrentProcessID();
-        iface.u.Compose.userProcess = Hardware->composition.process;
-        iface.u.Compose.userSignal1 = Hardware->composition.signal1;
-        iface.u.Compose.userSignal2 = Hardware->composition.signal2;
+        iface.u.Compose.signal      = gcmPTR_TO_UINT64(Buffer->signal);
+        iface.u.Compose.process     = gcmPTR_TO_UINT64(gcoOS_GetCurrentProcessID());
+        iface.u.Compose.userProcess = gcmPTR_TO_UINT64(Hardware->composition.process);
+        iface.u.Compose.userSignal1 = gcmPTR_TO_UINT64(Hardware->composition.signal1);
+        iface.u.Compose.userSignal2 = gcmPTR_TO_UINT64(Hardware->composition.signal2);
 
         gcmONERROR(gcoOS_DeviceControl(
             gcvNULL, IOCTL_GCHAL_INTERFACE,
@@ -3116,27 +3075,27 @@ _ExecuteBuffer(
         if (Hardware->composition.signal1 != gcvNULL)
         {
             iface.command            = gcvHAL_SIGNAL;
-            iface.u.Signal.signal    = Hardware->composition.signal1;
-            iface.u.Signal.auxSignal = gcvNULL;
-            iface.u.Signal.process   = Hardware->composition.process;
+            iface.u.Signal.signal    = gcmPTR_TO_UINT64(Hardware->composition.signal1);
+            iface.u.Signal.auxSignal = 0;
+            iface.u.Signal.process   = gcmPTR_TO_UINT64(Hardware->composition.process);
             iface.u.Signal.fromWhere = gcvKERNEL_PIXEL;
 
-            gcmONERROR(gcoHARDWARE_CallEvent(&iface));
+            gcmONERROR(gcoHARDWARE_CallEvent(Hardware, &iface));
         }
 
         if (Hardware->composition.signal2 != gcvNULL)
         {
             iface.command            = gcvHAL_SIGNAL;
-            iface.u.Signal.signal    = Hardware->composition.signal2;
-            iface.u.Signal.auxSignal = gcvNULL;
-            iface.u.Signal.process   = Hardware->composition.process;
+            iface.u.Signal.signal    = gcmPTR_TO_UINT64(Hardware->composition.signal2);
+            iface.u.Signal.auxSignal = 0;
+            iface.u.Signal.process   = gcmPTR_TO_UINT64(Hardware->composition.process);
             iface.u.Signal.fromWhere = gcvKERNEL_PIXEL;
 
-            gcmONERROR(gcoHARDWARE_CallEvent(&iface));
+            gcmONERROR(gcoHARDWARE_CallEvent(Hardware, &iface));
         }
 
         /* Execute the buffer. */
-        gcmONERROR(gcoHARDWARE_Commit());
+        gcmONERROR(gcoHARDWARE_Commit(Hardware));
 
         /* Update buffer pointers. */
         buffer->head       = buffer->tail;
@@ -3154,7 +3113,7 @@ OnError:
 static gceSTATUS
 _ProbeBuffer(
     IN gcoHARDWARE Hardware,
-    IN gctINT Size,
+    IN gctUINT Size,
     OUT gcsCOMPOSITION_STATE_BUFFER_PTR * Buffer
     )
 {
@@ -3183,7 +3142,7 @@ _ProbeBuffer(
 
         /* Last incompleted rectangle. */
         gctUINT32_PTR start = buffer->rectangle;
-        gctUINT       count = (buffer->tail - buffer->rectangle) / 2;
+        gctUINT       count = (gctUINT32)((buffer->tail - buffer->rectangle) / 2);
 
         /* We should never run out in asynchronous mode. */
         if (!Hardware->composition.synchronous)
@@ -3237,13 +3196,13 @@ _ProbeBuffer(
 
         /* Schedule an event for the current buffer. */
         iface.command            = gcvHAL_SIGNAL;
-        iface.u.Signal.signal    = buffer->signal;
-        iface.u.Signal.auxSignal = gcvNULL;
-        iface.u.Signal.process   = Hardware->composition.process;
+        iface.u.Signal.signal    = gcmPTR_TO_UINT64(buffer->signal);
+        iface.u.Signal.auxSignal = 0;
+        iface.u.Signal.process   = gcmPTR_TO_UINT64(Hardware->composition.process);
         iface.u.Signal.fromWhere = gcvKERNEL_PIXEL;
 
-        gcmONERROR(gcoHARDWARE_CallEvent(&iface));
-        gcmONERROR(gcoHARDWARE_Commit());
+        gcmONERROR(gcoHARDWARE_CallEvent(Hardware, &iface));
+        gcmONERROR(gcoHARDWARE_Commit(Hardware));
 
         /* Switch to the next buffer. */
         Hardware->composition.compStateBufferCurrent = buffer = next;
@@ -3356,15 +3315,15 @@ _SetAsyncronousMode(
             gcmBEGINSTATEBUFFER(Hardware, reserve, stateDelta, memory, reserveSize);
 
             /* Set buffer location. */
-            {    {    gcmASSERT(((memory - (gctUINT32_PTR) reserve->lastReserve) & 1) == 0);    gcmVERIFYLOADSTATEDONE(reserve);    gcmSTORELOADSTATE(reserve, memory, 0x0C02, 1);    *memory++ = ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 31:27) - (0 ? 31:27) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:27) - (0 ? 31:27) + 1))))))) << (0 ? 31:27))) | (((gctUINT32) (0x01 & ((gctUINT32) ((((1 ? 31:27) - (0 ? 31:27) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:27) - (0 ? 31:27) + 1))))))) << (0 ? 31:27))) | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 26:26) - (0 ? 26:26) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:26) - (0 ? 26:26) + 1))))))) << (0 ? 26:26))) | (((gctUINT32) ((gctUINT32) (gcvFALSE) & ((gctUINT32) ((((1 ? 26:26) - (0 ? 26:26) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:26) - (0 ? 26:26) + 1))))))) << (0 ? 26:26))) | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 25:16) - (0 ? 25:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:16) - (0 ? 25:16) + 1))))))) << (0 ? 25:16))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 25:16) - (0 ? 25:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:16) - (0 ? 25:16) + 1))))))) << (0 ? 25:16))) | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0))) | (((gctUINT32) ((gctUINT32) (0x0C02) & ((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0)));gcmSKIPSECUREUSER();};    gcmSETSTATEDATA(stateDelta, reserve, memory, gcvFALSE, 0x0C02, buffer->address );     gcmENDSTATEBATCH(reserve, memory);};
+            {    {    gcmASSERT(((memory - gcmUINT64_TO_TYPE(reserve->lastReserve, gctUINT32_PTR)) & 1) == 0);    gcmASSERT((gctUINT32)1 <= 1024);    gcmVERIFYLOADSTATEDONE(reserve);    gcmSTORELOADSTATE(reserve, memory, 0x0C02, 1);    *memory++ = ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 31:27) - (0 ? 31:27) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:27) - (0 ? 31:27) + 1))))))) << (0 ? 31:27))) | (((gctUINT32) (0x01 & ((gctUINT32) ((((1 ? 31:27) - (0 ? 31:27) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:27) - (0 ? 31:27) + 1))))))) << (0 ? 31:27))) | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 26:26) - (0 ? 26:26) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:26) - (0 ? 26:26) + 1))))))) << (0 ? 26:26))) | (((gctUINT32) ((gctUINT32) (gcvFALSE) & ((gctUINT32) ((((1 ? 26:26) - (0 ? 26:26) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:26) - (0 ? 26:26) + 1))))))) << (0 ? 26:26))) | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 25:16) - (0 ? 25:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:16) - (0 ? 25:16) + 1))))))) << (0 ? 25:16))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 25:16) - (0 ? 25:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:16) - (0 ? 25:16) + 1))))))) << (0 ? 25:16))) | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0))) | (((gctUINT32) ((gctUINT32) (0x0C02) & ((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0)));gcmSKIPSECUREUSER();};    gcmSETSTATEDATA(stateDelta, reserve, memory, gcvFALSE, 0x0C02, buffer->address );     gcmENDSTATEBATCH(reserve, memory);};
 
             /* Validate the state buffer. */
-            gcmENDSTATEBUFFER(reserve, memory, reserveSize);
+            gcmENDSTATEBUFFER(Hardware, reserve, memory, reserveSize);
 
             /* Execute the buffer and wait for completion. */
-            gcmONERROR(gcoHARDWARE_Commit());
+            gcmONERROR(gcoHARDWARE_Commit(Hardware));
 
-            gcmONERROR(gcoHARDWARE_Stall());
+            gcmONERROR(gcoHARDWARE_Stall(Hardware));
 
             /* Make sure the composition is done. */
             gcmONERROR(gcoOS_Signal(gcvNULL, buffer->signal, gcvTRUE));
@@ -3409,8 +3368,8 @@ _TriggerComposition(
     gcmiCOMPOSITIONSTATE(
         buffer,
         0x0C04,
-          ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 11:0) - (0 ? 11:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 11:0) - (0 ? 11:0) + 1))))))) << (0 ? 11:0))) | (((gctUINT32) ((gctUINT32) (startPC) & ((gctUINT32) ((((1 ? 11:0) - (0 ? 11:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 11:0) - (0 ? 11:0) + 1))))))) << (0 ? 11:0)))
-        | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 27:16) - (0 ? 27:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 27:16) - (0 ? 27:16) + 1))))))) << (0 ? 27:16))) | (((gctUINT32) ((gctUINT32) (endPC) & ((gctUINT32) ((((1 ? 27:16) - (0 ? 27:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 27:16) - (0 ? 27:16) + 1))))))) << (0 ? 27:16)))
+          ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0))) | (((gctUINT32) ((gctUINT32) (startPC) & ((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0)))
+        | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 31:16) - (0 ? 31:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:16) - (0 ? 31:16) + 1))))))) << (0 ? 31:16))) | (((gctUINT32) ((gctUINT32) (endPC) & ((gctUINT32) ((((1 ? 31:16) - (0 ? 31:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:16) - (0 ? 31:16) + 1))))))) << (0 ? 31:16)))
         );
 
     gcmTRACE_ZONE(
@@ -3547,9 +3506,6 @@ _SetCompositionTarget(
     };
 
     gceSTATUS status = gcvSTATUS_OK;
-
-    gctUINT32 bankOffsetBytes = 0;
-
     gctUINT32 tiling;
     gctUINT32 sampling;
     gctUINT samples;
@@ -3577,12 +3533,12 @@ _SetCompositionTarget(
         + gcmSIZEOF(gctUINT32) * 2      /* 0x0C07 */
         + gcmSIZEOF(gctUINT32) * 2;     /* 0x0C08 */
 
-    if ((Target == Hardware->colorStates.surface) && !Target->tileStatusDisabled)
+    if ((Target == Hardware->colorStates.target[0].surface) && !Target->tileStatusDisabled)
     {
         requiredSize += gcmSIZEOF(gctUINT32) * 2;
     }
 
-    if (Hardware->pixelPipes > 1)
+    if (Hardware->config->pixelPipes > 1)
     {
         requiredSize += gcmSIZEOF(gctUINT32) * 2;
     }
@@ -3591,7 +3547,7 @@ _SetCompositionTarget(
     gcmONERROR(_ProbeBuffer(Hardware, requiredSize, &buffer));
 
     /* Is this the current target surface? */
-    if ((Target == Hardware->colorStates.surface) &&
+    if ((Target == Hardware->colorStates.target[0].surface) &&
         !Target->tileStatusDisabled)
     {
         /* Mark as disabled. */
@@ -3675,7 +3631,7 @@ _SetCompositionTarget(
         0x0C05,
           ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 16:0) - (0 ? 16:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 16:0) - (0 ? 16:0) + 1))))))) << (0 ? 16:0))) | (((gctUINT32) ((gctUINT32) (Target->stride) & ((gctUINT32) ((((1 ? 16:0) - (0 ? 16:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 16:0) - (0 ? 16:0) + 1))))))) << (0 ? 16:0)))
         | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 21:20) - (0 ? 21:20) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 21:20) - (0 ? 21:20) + 1))))))) << (0 ? 21:20))) | (((gctUINT32) ((gctUINT32) (tiling) & ((gctUINT32) ((((1 ? 21:20) - (0 ? 21:20) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 21:20) - (0 ? 21:20) + 1))))))) << (0 ? 21:20)))
-        | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 28:24) - (0 ? 28:24) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 28:24) - (0 ? 28:24) + 1))))))) << (0 ? 28:24))) | (((gctUINT32) ((gctUINT32) (format) & ((gctUINT32) ((((1 ? 28:24) - (0 ? 28:24) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 28:24) - (0 ? 28:24) + 1))))))) << (0 ? 28:24)))
+        | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 29:24) - (0 ? 29:24) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:24) - (0 ? 29:24) + 1))))))) << (0 ? 29:24))) | (((gctUINT32) ((gctUINT32) (format) & ((gctUINT32) ((((1 ? 29:24) - (0 ? 29:24) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:24) - (0 ? 29:24) + 1))))))) << (0 ? 29:24)))
         | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 31:30) - (0 ? 31:30) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:30) - (0 ? 31:30) + 1))))))) << (0 ? 31:30))) | (((gctUINT32) ((gctUINT32) (sampling) & ((gctUINT32) ((((1 ? 31:30) - (0 ? 31:30) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:30) - (0 ? 31:30) + 1))))))) << (0 ? 31:30)))
         | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 23:22) - (0 ? 23:22) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 23:22) - (0 ? 23:22) + 1))))))) << (0 ? 23:22))) | (((gctUINT32) (0x0 & ((gctUINT32) ((((1 ? 23:22) - (0 ? 23:22) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 23:22) - (0 ? 23:22) + 1))))))) << (0 ? 23:22)))
         );
@@ -3686,6 +3642,12 @@ _SetCompositionTarget(
         swizzle
         );
 
+    gcmiCOMPOSITIONSTATE(
+        buffer,
+        0x0C08,
+        Target->node.physical
+        );
+
     gcmTRACE_ZONE(
         gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION,
         "%s(%d): trgPhysical1=0x%08X\n",
@@ -3693,68 +3655,20 @@ _SetCompositionTarget(
         Target->node.physical
         );
 
-    gcmiCOMPOSITIONSTATE(
-        buffer,
-        0x0C08,
-        Target->node.physical
-        );
-
-    if (Hardware->pixelPipes > 1)
+    if (Hardware->config->pixelPipes > 1)
     {
-        if (Target->type == gcvSURF_RENDER_TARGET)
-        {
-            gctINT height, half;
+        gcmiCOMPOSITIONSTATE(
+            buffer,
+            0x0C08 + 1,
+            Target->node.physicalBottom
+            );
 
-            height = gcmALIGN(
-                Target->alignedHeight / 2, Target->superTiled ? 64 : 4
-                );
-
-            half = height * Target->stride;
-
-            /* Extra pages needed to offset sub-buffers to different banks. */
-#if gcdENABLE_BANK_ALIGNMENT
-            gcmONERROR(gcoSURF_GetBankOffsetBytes(
-                gcvNULL,
-                Target->type, half, &bankOffsetBytes
-                ));
-
-            /* If surface doesn't have enough padding, then don't offset it. */
-            if (Target->size <
-                ((Target->alignedHeight * Target->stride) + bankOffsetBytes))
-            {
-                bankOffsetBytes = 0;
-            }
-#endif
-            half += bankOffsetBytes;
-
-            gcmiCOMPOSITIONSTATE(
-                buffer,
-                0x0C08 + 1,
-                Target->node.physical + half
-                );
-
-            gcmTRACE_ZONE(
-                gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION,
-                "%s(%d): trgPhysical2=0x%08X (half)\n",
-                __FUNCTION__, __LINE__,
-                Target->node.physical + half
-                );
-        }
-        else
-        {
-            gcmiCOMPOSITIONSTATE(
-                buffer,
-                0x0C08 + 1,
-                Target->node.physical
-                );
-
-            gcmTRACE_ZONE(
-                gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION,
-                "%s(%d): trgPhysical2=0x%08X\n",
-                __FUNCTION__, __LINE__,
-                Target->node.physical
-                );
-        }
+        gcmTRACE_ZONE(
+            gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION,
+            "%s(%d): trgPhysical2=0x%08X (half)\n",
+            __FUNCTION__, __LINE__,
+            Target->node.physicalBottom
+            );
     }
 
     /* Set current target. */
@@ -3879,8 +3793,6 @@ _SetCompositionSampler(
 {
     gceSTATUS status = gcvSTATUS_OK;
 
-    gctUINT32 bankOffsetBytes = 0;
-
     gctFLOAT texLeft   = 0.0f;
     gctFLOAT texRight  = 1.0f;
     gctFLOAT texTop    = 0.0f;
@@ -3938,7 +3850,7 @@ _SetCompositionSampler(
             +  gcmSIZEOF(gctUINT32) * 2                 /* 0x0C80 */
             +  gcmSIZEOF(gctUINT32) * 2;                /* 0x0C68 */
 
-        if (Hardware->pixelPipes > 1)
+        if (Hardware->config->pixelPipes > 1)
         {
             requiredSize
                 += gcmSIZEOF(gctUINT32) * 2;
@@ -4195,7 +4107,7 @@ _SetCompositionSampler(
             gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION,
             "%s(%d): layer=0x%08X type=%d format=%d.\n",
             __FUNCTION__, __LINE__,
-            (gctUINT32) Layer, Layer->type, Layer->format
+            Layer, Layer->type, Layer->format
             );
 
         /* Determine surface alignment and addressing. */
@@ -4204,7 +4116,7 @@ _SetCompositionSampler(
         case gcvSURF_RENDER_TARGET:
             if (Layer->surface->superTiled)
             {
-                if (Hardware->pixelPipes == 1)
+                if (Hardware->config->pixelPipes == 1)
                 {
                     srcAddressing = 0x0;
                     srcAlignment = 0x2;
@@ -4231,7 +4143,7 @@ _SetCompositionSampler(
             }
             else
             {
-                if (Hardware->pixelPipes == 1)
+                if (Hardware->config->pixelPipes == 1)
                 {
                     srcAddressing = 0x0;
                     srcAlignment = 0x1;
@@ -4268,7 +4180,7 @@ _SetCompositionSampler(
 
             case gcvTILED:
                 /* Textures can be better aligned. */
-                hAlignmentAvailable = ((((gctUINT32) (Hardware->chipMinorFeatures1)) >> (0 ? 20:20) & ((gctUINT32) ((((1 ? 20:20) - (0 ? 20:20) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 20:20) - (0 ? 20:20) + 1)))))) == (0x1  & ((gctUINT32) ((((1 ? 20:20) - (0 ? 20:20) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 20:20) - (0 ? 20:20) + 1)))))));
+                hAlignmentAvailable = ((((gctUINT32) (Hardware->config->chipMinorFeatures1)) >> (0 ? 20:20) & ((gctUINT32) ((((1 ? 20:20) - (0 ? 20:20) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 20:20) - (0 ? 20:20) + 1)))))) == (0x1  & ((gctUINT32) ((((1 ? 20:20) - (0 ? 20:20) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 20:20) - (0 ? 20:20) + 1)))))));
 
                 srcAddressing = 0x0;
                 srcAlignment  = hAlignmentAvailable
@@ -4410,64 +4322,20 @@ _SetCompositionSampler(
             Layer->surface->node.physical
             );
 
-        if (Hardware->pixelPipes > 1)
+        if (Hardware->config->pixelPipes > 1)
         {
-            if (Layer->type == gcvSURF_RENDER_TARGET)
-            {
-                gctINT height, half;
+            gcmiCOMPOSITIONSTATE(
+                buffer,
+                0x0C80 + sampler * 8 + 1,
+                Layer->surface->node.physicalBottom
+                );
 
-                height = gcmALIGN(
-                    Layer->surface->alignedHeight / 2, Layer->surface->superTiled ? 64 : 4
-                    );
-
-                half = height * Layer->stride;
-
-                /* Extra pages needed to offset sub-buffers to different banks. */
-#if gcdENABLE_BANK_ALIGNMENT
-                gcmONERROR(gcoSURF_GetBankOffsetBytes(
-                    gcvNULL,
-                    Layer->type, half, &bankOffsetBytes
-                    ));
-
-                /* If surface doesn't have enough padding, then don't offset it. */
-                if (Layer->surface->size <
-                    ((Layer->surface->alignedHeight * Layer->surface->stride)
-                    + bankOffsetBytes))
-                {
-                    bankOffsetBytes = 0;
-                }
-#endif
-
-                half += bankOffsetBytes;
-
-                gcmiCOMPOSITIONSTATE(
-                    buffer,
-                    0x0C80 + sampler * 8 + 1,
-                    Layer->surface->node.physical + half
-                    );
-
-                gcmTRACE_ZONE(
-                    gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION,
-                    "%s(%d): srcPhysical2=0x%08X (half).\n",
-                    __FUNCTION__, __LINE__,
-                    Layer->surface->node.physical + half
-                    );
-            }
-            else
-            {
-                gcmiCOMPOSITIONSTATE(
-                    buffer,
-                    0x0C80 + sampler * 8 + 1,
-                    Layer->surface->node.physical
-                    );
-
-                gcmTRACE_ZONE(
-                    gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION,
-                    "%s(%d): srcPhysical2=0x%08X.\n",
-                    __FUNCTION__, __LINE__,
-                    Layer->surface->node.physical
-                    );
-            }
+            gcmTRACE_ZONE(
+                gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION,
+                "%s(%d): srcPhysical2=0x%08X (half).\n",
+                __FUNCTION__, __LINE__,
+                Layer->surface->node.physicalBottom
+                );
         }
 
         /***********************************************************************
@@ -4517,7 +4385,7 @@ _SetCompositionSampler(
             gcmiCOMPOSITIONSTATE(
                 buffer,
                 0x0C78 + sampler,
-                Layer->surface->clearValue
+                Layer->surface->clearValue[0]
                 );
         }
     }
@@ -5022,7 +4890,7 @@ _GenerateFilter(
     ** center.
     */
 
-    gcmTRACE_ZONE(gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION,"%s(%d): [%d] REP\n",Resources->currPC,__FUNCTION__, __LINE__);gcmONERROR(_SetShader(Hardware, Resources, buffer,((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0))) | (((gctUINT32) (0x1F & ((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0))),0,/* Loop info. */((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 6:6) - (0 ? 6:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 6:6) - (0 ? 6:6) + 1))))))) << (0 ? 6:6))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 6:6) - (0 ? 6:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 6:6) - (0 ? 6:6) + 1))))))) << (0 ? 6:6)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:7) - (0 ? 15:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:7) - (0 ? 15:7) + 1))))))) << (0 ? 15:7))) | (((gctUINT32) ((gctUINT32) (Parameters->loop1Info.address) & ((gctUINT32) ((((1 ? 15:7) - (0 ? 15:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:7) - (0 ? 15:7) + 1))))))) << (0 ? 15:7)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 24:17) - (0 ? 24:17) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:17) - (0 ? 24:17) + 1))))))) << (0 ? 24:17))) | (((gctUINT32) ((gctUINT32) (Parameters->loop1Info.swizzle) & ((gctUINT32) ((((1 ? 24:17) - (0 ? 24:17) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:17) - (0 ? 24:17) + 1))))))) << (0 ? 24:17)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 25:25) - (0 ? 25:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:25) - (0 ? 25:25) + 1))))))) << (0 ? 25:25))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 25:25) - (0 ? 25:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:25) - (0 ? 25:25) + 1))))))) << (0 ? 25:25))),((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0))) | (((gctUINT32) ((gctUINT32) (0x2) & ((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0)))/* Label. */| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 18:7) - (0 ? 18:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 18:7) - (0 ? 18:7) + 1))))))) << (0 ? 18:7))) | (((gctUINT32) ((gctUINT32) (Resources->currPC + 6 ) & ((gctUINT32) ((((1 ? 18:7) - (0 ? 18:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 18:7) - (0 ? 18:7) + 1))))))) << (0 ? 18:7)))));
+    gcmTRACE_ZONE(gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION,"%s(%d): [%d] REP\n",Resources->currPC,__FUNCTION__, __LINE__);gcmONERROR(_SetShader(Hardware, Resources, buffer,((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0))) | (((gctUINT32) (0x1F & ((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0))),0,/* Loop info. */((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 6:6) - (0 ? 6:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 6:6) - (0 ? 6:6) + 1))))))) << (0 ? 6:6))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 6:6) - (0 ? 6:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 6:6) - (0 ? 6:6) + 1))))))) << (0 ? 6:6)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:7) - (0 ? 15:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:7) - (0 ? 15:7) + 1))))))) << (0 ? 15:7))) | (((gctUINT32) ((gctUINT32) (Parameters->loop1Info.address) & ((gctUINT32) ((((1 ? 15:7) - (0 ? 15:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:7) - (0 ? 15:7) + 1))))))) << (0 ? 15:7)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 24:17) - (0 ? 24:17) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:17) - (0 ? 24:17) + 1))))))) << (0 ? 24:17))) | (((gctUINT32) ((gctUINT32) (Parameters->loop1Info.swizzle) & ((gctUINT32) ((((1 ? 24:17) - (0 ? 24:17) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:17) - (0 ? 24:17) + 1))))))) << (0 ? 24:17)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 25:25) - (0 ? 25:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:25) - (0 ? 25:25) + 1))))))) << (0 ? 25:25))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 25:25) - (0 ? 25:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:25) - (0 ? 25:25) + 1))))))) << (0 ? 25:25))),((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0))) | (((gctUINT32) ((gctUINT32) (0x2) & ((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0)))/* Label. */| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 26:7) - (0 ? 26:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:7) - (0 ? 26:7) + 1))))))) << (0 ? 26:7))) | (((gctUINT32) ((gctUINT32) (Resources->currPC + 6 ) & ((gctUINT32) ((((1 ? 26:7) - (0 ? 26:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:7) - (0 ? 26:7) + 1))))))) << (0 ? 26:7)))));
 
         gcmTRACE_ZONE(gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION,"%s(%d): [%d] TEXLD r%d, s%d, " gcmiSOURCEFORMAT "\n",__FUNCTION__, __LINE__,Resources->currPC,color , SrcLayer->samplerNumber,gcmiSOURCENEG(0),(0x0 == 0x0) ? "r" : (0x0 == 0x2) ? "c" : "<?>",current,gcmiSOURCESWIZZLE(gcSL_SWIZZLE_XYYY));gcmONERROR(_SetShader(Hardware, Resources, buffer,((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0))) | (((gctUINT32) (0x18 & ((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0)))/* Destination. */| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 12:12) - (0 ? 12:12) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 12:12) - (0 ? 12:12) + 1))))))) << (0 ? 12:12))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 12:12) - (0 ? 12:12) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 12:12) - (0 ? 12:12) + 1))))))) << (0 ? 12:12)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 22:16) - (0 ? 22:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 22:16) - (0 ? 22:16) + 1))))))) << (0 ? 22:16))) | (((gctUINT32) ((gctUINT32) (color ) & ((gctUINT32) ((((1 ? 22:16) - (0 ? 22:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 22:16) - (0 ? 22:16) + 1))))))) << (0 ? 22:16)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 26:23) - (0 ? 26:23) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:23) - (0 ? 26:23) + 1))))))) << (0 ? 26:23))) | (((gctUINT32) ((gctUINT32) (0xF) & ((gctUINT32) ((((1 ? 26:23) - (0 ? 26:23) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:23) - (0 ? 26:23) + 1))))))) << (0 ? 26:23)))/* Sampler. */| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 31:27) - (0 ? 31:27) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:27) - (0 ? 31:27) + 1))))))) << (0 ? 31:27))) | (((gctUINT32) ((gctUINT32) (SrcLayer->samplerNumber) & ((gctUINT32) ((((1 ? 31:27) - (0 ? 31:27) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:27) - (0 ? 31:27) + 1))))))) << (0 ? 31:27))),((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 10:3) - (0 ? 10:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 10:3) - (0 ? 10:3) + 1))))))) << (0 ? 10:3))) | (((gctUINT32) ((gctUINT32) (gcSL_SWIZZLE_XYZW) & ((gctUINT32) ((((1 ? 10:3) - (0 ? 10:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 10:3) - (0 ? 10:3) + 1))))))) << (0 ? 10:3)))/* Coord.xy */| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 11:11) - (0 ? 11:11) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 11:11) - (0 ? 11:11) + 1))))))) << (0 ? 11:11))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 11:11) - (0 ? 11:11) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 11:11) - (0 ? 11:11) + 1))))))) << (0 ? 11:11)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 20:12) - (0 ? 20:12) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 20:12) - (0 ? 20:12) + 1))))))) << (0 ? 20:12))) | (((gctUINT32) ((gctUINT32) (current) & ((gctUINT32) ((((1 ? 20:12) - (0 ? 20:12) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 20:12) - (0 ? 20:12) + 1))))))) << (0 ? 20:12)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 29:22) - (0 ? 29:22) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:22) - (0 ? 29:22) + 1))))))) << (0 ? 29:22))) | (((gctUINT32) ((gctUINT32) (gcSL_SWIZZLE_XYYY) & ((gctUINT32) ((((1 ? 29:22) - (0 ? 29:22) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:22) - (0 ? 29:22) + 1))))))) << (0 ? 29:22)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 30:30) - (0 ? 30:30) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:30) - (0 ? 30:30) + 1))))))) << (0 ? 30:30))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 30:30) - (0 ? 30:30) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:30) - (0 ? 30:30) + 1))))))) << (0 ? 30:30))),((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 5:3) - (0 ? 5:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:3) - (0 ? 5:3) + 1))))))) << (0 ? 5:3))) | (((gctUINT32) ((gctUINT32) (0x0) & ((gctUINT32) ((((1 ? 5:3) - (0 ? 5:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:3) - (0 ? 5:3) + 1))))))) << (0 ? 5:3))),0));
 
@@ -5032,7 +4900,7 @@ _GenerateFilter(
 
         gcmTRACE_ZONE(gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION,"%s(%d): [%d] SELECT.""LE""r%d, "gcmiSOURCEFORMAT ", " gcmiSOURCEFORMAT ", " gcmiSOURCEFORMAT "d\n",__FUNCTION__, __LINE__,Resources->currPC,current,gcmiSOURCENEG(0),(0x2 == 0x0) ? "r" : (0x2 == 0x2) ? "c" : "<?>",Parameters->zero.address,gcmiSOURCESWIZZLE(Parameters->zero.swizzle),gcmiSOURCENEG(0),(0x0 == 0x0) ? "r" : (0x0 == 0x2) ? "c" : "<?>",temp,gcmiSOURCESWIZZLE(coordSwizzle),gcmiSOURCENEG(0),(0x0 == 0x0) ? "r" : (0x0 == 0x2) ? "c" : "<?>",current,gcmiSOURCESWIZZLE(coordSwizzle));gcmONERROR(_SetShader(Hardware, Resources, buffer,((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0))) | (((gctUINT32) (0x0F & ((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0)))/* Destination. */| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 12:12) - (0 ? 12:12) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 12:12) - (0 ? 12:12) + 1))))))) << (0 ? 12:12))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 12:12) - (0 ? 12:12) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 12:12) - (0 ? 12:12) + 1))))))) << (0 ? 12:12)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 22:16) - (0 ? 22:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 22:16) - (0 ? 22:16) + 1))))))) << (0 ? 22:16))) | (((gctUINT32) ((gctUINT32) (current) & ((gctUINT32) ((((1 ? 22:16) - (0 ? 22:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 22:16) - (0 ? 22:16) + 1))))))) << (0 ? 22:16)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 26:23) - (0 ? 26:23) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:23) - (0 ? 26:23) + 1))))))) << (0 ? 26:23))) | (((gctUINT32) ((gctUINT32) (coordEnable ) & ((gctUINT32) ((((1 ? 26:23) - (0 ? 26:23) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:23) - (0 ? 26:23) + 1))))))) << (0 ? 26:23)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 10:6) - (0 ? 10:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 10:6) - (0 ? 10:6) + 1))))))) << (0 ? 10:6))) | (((gctUINT32) (0x04 & ((gctUINT32) ((((1 ? 10:6) - (0 ? 10:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 10:6) - (0 ? 10:6) + 1))))))) << (0 ? 10:6))),/* Check value. */((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 11:11) - (0 ? 11:11) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 11:11) - (0 ? 11:11) + 1))))))) << (0 ? 11:11))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 11:11) - (0 ? 11:11) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 11:11) - (0 ? 11:11) + 1))))))) << (0 ? 11:11)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 20:12) - (0 ? 20:12) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 20:12) - (0 ? 20:12) + 1))))))) << (0 ? 20:12))) | (((gctUINT32) ((gctUINT32) (Parameters->zero.address) & ((gctUINT32) ((((1 ? 20:12) - (0 ? 20:12) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 20:12) - (0 ? 20:12) + 1))))))) << (0 ? 20:12)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 29:22) - (0 ? 29:22) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:22) - (0 ? 29:22) + 1))))))) << (0 ? 29:22))) | (((gctUINT32) ((gctUINT32) (Parameters->zero.swizzle) & ((gctUINT32) ((((1 ? 29:22) - (0 ? 29:22) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:22) - (0 ? 29:22) + 1))))))) << (0 ? 29:22)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 30:30) - (0 ? 30:30) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:30) - (0 ? 30:30) + 1))))))) << (0 ? 30:30))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 30:30) - (0 ? 30:30) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:30) - (0 ? 30:30) + 1))))))) << (0 ? 30:30))),((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 5:3) - (0 ? 5:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:3) - (0 ? 5:3) + 1))))))) << (0 ? 5:3))) | (((gctUINT32) ((gctUINT32) (0x2) & ((gctUINT32) ((((1 ? 5:3) - (0 ? 5:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:3) - (0 ? 5:3) + 1))))))) << (0 ? 5:3)))/* Select1 */| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 6:6) - (0 ? 6:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 6:6) - (0 ? 6:6) + 1))))))) << (0 ? 6:6))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 6:6) - (0 ? 6:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 6:6) - (0 ? 6:6) + 1))))))) << (0 ? 6:6)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:7) - (0 ? 15:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:7) - (0 ? 15:7) + 1))))))) << (0 ? 15:7))) | (((gctUINT32) ((gctUINT32) (temp) & ((gctUINT32) ((((1 ? 15:7) - (0 ? 15:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:7) - (0 ? 15:7) + 1))))))) << (0 ? 15:7)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 24:17) - (0 ? 24:17) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:17) - (0 ? 24:17) + 1))))))) << (0 ? 24:17))) | (((gctUINT32) ((gctUINT32) (coordSwizzle) & ((gctUINT32) ((((1 ? 24:17) - (0 ? 24:17) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:17) - (0 ? 24:17) + 1))))))) << (0 ? 24:17)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 25:25) - (0 ? 25:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:25) - (0 ? 25:25) + 1))))))) << (0 ? 25:25))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 25:25) - (0 ? 25:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:25) - (0 ? 25:25) + 1))))))) << (0 ? 25:25))),((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0))) | (((gctUINT32) ((gctUINT32) (0x0) & ((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0)))/* Select2 */| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 3:3) - (0 ? 3:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 3:3) - (0 ? 3:3) + 1))))))) << (0 ? 3:3))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 3:3) - (0 ? 3:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 3:3) - (0 ? 3:3) + 1))))))) << (0 ? 3:3)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 12:4) - (0 ? 12:4) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 12:4) - (0 ? 12:4) + 1))))))) << (0 ? 12:4))) | (((gctUINT32) ((gctUINT32) (current) & ((gctUINT32) ((((1 ? 12:4) - (0 ? 12:4) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 12:4) - (0 ? 12:4) + 1))))))) << (0 ? 12:4)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 21:14) - (0 ? 21:14) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 21:14) - (0 ? 21:14) + 1))))))) << (0 ? 21:14))) | (((gctUINT32) ((gctUINT32) (coordSwizzle) & ((gctUINT32) ((((1 ? 21:14) - (0 ? 21:14) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 21:14) - (0 ? 21:14) + 1))))))) << (0 ? 21:14)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 22:22) - (0 ? 22:22) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 22:22) - (0 ? 22:22) + 1))))))) << (0 ? 22:22))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 22:22) - (0 ? 22:22) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 22:22) - (0 ? 22:22) + 1))))))) << (0 ? 22:22)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 30:28) - (0 ? 30:28) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:28) - (0 ? 30:28) + 1))))))) << (0 ? 30:28))) | (((gctUINT32) ((gctUINT32) (0x0) & ((gctUINT32) ((((1 ? 30:28) - (0 ? 30:28) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:28) - (0 ? 30:28) + 1))))))) << (0 ? 30:28)))));
 
-    gcmTRACE_ZONE(gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION,"%s(%d): [%d] ENDREP\n",__FUNCTION__, __LINE__,Resources->currPC);gcmONERROR(_SetShader(Hardware, Resources, buffer,((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0))) | (((gctUINT32) (0x20 & ((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0))),0,/* Loop info. */((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 6:6) - (0 ? 6:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 6:6) - (0 ? 6:6) + 1))))))) << (0 ? 6:6))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 6:6) - (0 ? 6:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 6:6) - (0 ? 6:6) + 1))))))) << (0 ? 6:6)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:7) - (0 ? 15:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:7) - (0 ? 15:7) + 1))))))) << (0 ? 15:7))) | (((gctUINT32) ((gctUINT32) (Parameters->loop1Info.address) & ((gctUINT32) ((((1 ? 15:7) - (0 ? 15:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:7) - (0 ? 15:7) + 1))))))) << (0 ? 15:7)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 24:17) - (0 ? 24:17) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:17) - (0 ? 24:17) + 1))))))) << (0 ? 24:17))) | (((gctUINT32) ((gctUINT32) (Parameters->loop1Info.swizzle) & ((gctUINT32) ((((1 ? 24:17) - (0 ? 24:17) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:17) - (0 ? 24:17) + 1))))))) << (0 ? 24:17)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 25:25) - (0 ? 25:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:25) - (0 ? 25:25) + 1))))))) << (0 ? 25:25))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 25:25) - (0 ? 25:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:25) - (0 ? 25:25) + 1))))))) << (0 ? 25:25))), ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0))) | (((gctUINT32) ((gctUINT32) (0x2) & ((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0)))/* RepeatLabel. */| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 18:7) - (0 ? 18:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 18:7) - (0 ? 18:7) + 1))))))) << (0 ? 18:7))) | (((gctUINT32) ((gctUINT32) (Resources->currPC - 4 ) & ((gctUINT32) ((((1 ? 18:7) - (0 ? 18:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 18:7) - (0 ? 18:7) + 1))))))) << (0 ? 18:7)))));
+    gcmTRACE_ZONE(gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION,"%s(%d): [%d] ENDREP\n",__FUNCTION__, __LINE__,Resources->currPC);gcmONERROR(_SetShader(Hardware, Resources, buffer,((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0))) | (((gctUINT32) (0x20 & ((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0))),0,/* Loop info. */((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 6:6) - (0 ? 6:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 6:6) - (0 ? 6:6) + 1))))))) << (0 ? 6:6))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 6:6) - (0 ? 6:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 6:6) - (0 ? 6:6) + 1))))))) << (0 ? 6:6)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:7) - (0 ? 15:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:7) - (0 ? 15:7) + 1))))))) << (0 ? 15:7))) | (((gctUINT32) ((gctUINT32) (Parameters->loop1Info.address) & ((gctUINT32) ((((1 ? 15:7) - (0 ? 15:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:7) - (0 ? 15:7) + 1))))))) << (0 ? 15:7)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 24:17) - (0 ? 24:17) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:17) - (0 ? 24:17) + 1))))))) << (0 ? 24:17))) | (((gctUINT32) ((gctUINT32) (Parameters->loop1Info.swizzle) & ((gctUINT32) ((((1 ? 24:17) - (0 ? 24:17) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:17) - (0 ? 24:17) + 1))))))) << (0 ? 24:17)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 25:25) - (0 ? 25:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:25) - (0 ? 25:25) + 1))))))) << (0 ? 25:25))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 25:25) - (0 ? 25:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:25) - (0 ? 25:25) + 1))))))) << (0 ? 25:25))), ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0))) | (((gctUINT32) ((gctUINT32) (0x2) & ((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0)))/* RepeatLabel. */| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 26:7) - (0 ? 26:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:7) - (0 ? 26:7) + 1))))))) << (0 ? 26:7))) | (((gctUINT32) ((gctUINT32) (Resources->currPC - 4 ) & ((gctUINT32) ((((1 ? 26:7) - (0 ? 26:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:7) - (0 ? 26:7) + 1))))))) << (0 ? 26:7)))));
 
     /***********************************************************************
     ** Set the initial coordinate.
@@ -5044,7 +4912,7 @@ _GenerateFilter(
     ** Compute the sums of the right part of the kernel.
     */
 
-    gcmTRACE_ZONE(gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION,"%s(%d): [%d] REP\n",Resources->currPC,__FUNCTION__, __LINE__);gcmONERROR(_SetShader(Hardware, Resources, buffer,((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0))) | (((gctUINT32) (0x1F & ((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0))),0,/* Loop info. */((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 6:6) - (0 ? 6:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 6:6) - (0 ? 6:6) + 1))))))) << (0 ? 6:6))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 6:6) - (0 ? 6:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 6:6) - (0 ? 6:6) + 1))))))) << (0 ? 6:6)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:7) - (0 ? 15:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:7) - (0 ? 15:7) + 1))))))) << (0 ? 15:7))) | (((gctUINT32) ((gctUINT32) (Parameters->loop2Info.address) & ((gctUINT32) ((((1 ? 15:7) - (0 ? 15:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:7) - (0 ? 15:7) + 1))))))) << (0 ? 15:7)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 24:17) - (0 ? 24:17) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:17) - (0 ? 24:17) + 1))))))) << (0 ? 24:17))) | (((gctUINT32) ((gctUINT32) (Parameters->loop2Info.swizzle) & ((gctUINT32) ((((1 ? 24:17) - (0 ? 24:17) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:17) - (0 ? 24:17) + 1))))))) << (0 ? 24:17)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 25:25) - (0 ? 25:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:25) - (0 ? 25:25) + 1))))))) << (0 ? 25:25))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 25:25) - (0 ? 25:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:25) - (0 ? 25:25) + 1))))))) << (0 ? 25:25))),((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0))) | (((gctUINT32) ((gctUINT32) (0x2) & ((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0)))/* Label. */| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 18:7) - (0 ? 18:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 18:7) - (0 ? 18:7) + 1))))))) << (0 ? 18:7))) | (((gctUINT32) ((gctUINT32) (Resources->currPC + 6 ) & ((gctUINT32) ((((1 ? 18:7) - (0 ? 18:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 18:7) - (0 ? 18:7) + 1))))))) << (0 ? 18:7)))));
+    gcmTRACE_ZONE(gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION,"%s(%d): [%d] REP\n",Resources->currPC,__FUNCTION__, __LINE__);gcmONERROR(_SetShader(Hardware, Resources, buffer,((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0))) | (((gctUINT32) (0x1F & ((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0))),0,/* Loop info. */((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 6:6) - (0 ? 6:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 6:6) - (0 ? 6:6) + 1))))))) << (0 ? 6:6))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 6:6) - (0 ? 6:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 6:6) - (0 ? 6:6) + 1))))))) << (0 ? 6:6)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:7) - (0 ? 15:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:7) - (0 ? 15:7) + 1))))))) << (0 ? 15:7))) | (((gctUINT32) ((gctUINT32) (Parameters->loop2Info.address) & ((gctUINT32) ((((1 ? 15:7) - (0 ? 15:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:7) - (0 ? 15:7) + 1))))))) << (0 ? 15:7)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 24:17) - (0 ? 24:17) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:17) - (0 ? 24:17) + 1))))))) << (0 ? 24:17))) | (((gctUINT32) ((gctUINT32) (Parameters->loop2Info.swizzle) & ((gctUINT32) ((((1 ? 24:17) - (0 ? 24:17) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:17) - (0 ? 24:17) + 1))))))) << (0 ? 24:17)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 25:25) - (0 ? 25:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:25) - (0 ? 25:25) + 1))))))) << (0 ? 25:25))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 25:25) - (0 ? 25:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:25) - (0 ? 25:25) + 1))))))) << (0 ? 25:25))),((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0))) | (((gctUINT32) ((gctUINT32) (0x2) & ((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0)))/* Label. */| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 26:7) - (0 ? 26:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:7) - (0 ? 26:7) + 1))))))) << (0 ? 26:7))) | (((gctUINT32) ((gctUINT32) (Resources->currPC + 6 ) & ((gctUINT32) ((((1 ? 26:7) - (0 ? 26:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:7) - (0 ? 26:7) + 1))))))) << (0 ? 26:7)))));
 
         gcmTRACE_ZONE(gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION,"%s(%d): [%d] ADD r%d, " gcmiSOURCEFORMAT ", " gcmiSOURCEFORMAT "\n",__FUNCTION__, __LINE__,Resources->currPC,temp,gcmiSOURCENEG(0),(0x0 == 0x0) ? "r" : (0x0 == 0x2) ? "c" : "<?>",current,gcmiSOURCESWIZZLE(coordSwizzle),gcmiSOURCENEG(0),(0x2 == 0x0) ? "r" : (0x2 == 0x2) ? "c" : "<?>",coordStep->address,gcmiSOURCESWIZZLE(coordStep->swizzle));gcmONERROR(_SetShader(Hardware, Resources, buffer,((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0))) | (((gctUINT32) (0x01 & ((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0)))/* Destination. */| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 12:12) - (0 ? 12:12) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 12:12) - (0 ? 12:12) + 1))))))) << (0 ? 12:12))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 12:12) - (0 ? 12:12) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 12:12) - (0 ? 12:12) + 1))))))) << (0 ? 12:12)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 22:16) - (0 ? 22:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 22:16) - (0 ? 22:16) + 1))))))) << (0 ? 22:16))) | (((gctUINT32) ((gctUINT32) (temp) & ((gctUINT32) ((((1 ? 22:16) - (0 ? 22:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 22:16) - (0 ? 22:16) + 1))))))) << (0 ? 22:16)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 26:23) - (0 ? 26:23) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:23) - (0 ? 26:23) + 1))))))) << (0 ? 26:23))) | (((gctUINT32) ((gctUINT32) (coordEnable ) & ((gctUINT32) ((((1 ? 26:23) - (0 ? 26:23) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:23) - (0 ? 26:23) + 1))))))) << (0 ? 26:23))),/* Source1. */((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 11:11) - (0 ? 11:11) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 11:11) - (0 ? 11:11) + 1))))))) << (0 ? 11:11))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 11:11) - (0 ? 11:11) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 11:11) - (0 ? 11:11) + 1))))))) << (0 ? 11:11)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 20:12) - (0 ? 20:12) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 20:12) - (0 ? 20:12) + 1))))))) << (0 ? 20:12))) | (((gctUINT32) ((gctUINT32) (current) & ((gctUINT32) ((((1 ? 20:12) - (0 ? 20:12) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 20:12) - (0 ? 20:12) + 1))))))) << (0 ? 20:12)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 29:22) - (0 ? 29:22) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:22) - (0 ? 29:22) + 1))))))) << (0 ? 29:22))) | (((gctUINT32) ((gctUINT32) (coordSwizzle) & ((gctUINT32) ((((1 ? 29:22) - (0 ? 29:22) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:22) - (0 ? 29:22) + 1))))))) << (0 ? 29:22)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 30:30) - (0 ? 30:30) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:30) - (0 ? 30:30) + 1))))))) << (0 ? 30:30))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 30:30) - (0 ? 30:30) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:30) - (0 ? 30:30) + 1))))))) << (0 ? 30:30))),((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 5:3) - (0 ? 5:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:3) - (0 ? 5:3) + 1))))))) << (0 ? 5:3))) | (((gctUINT32) ((gctUINT32) (0x0) & ((gctUINT32) ((((1 ? 5:3) - (0 ? 5:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:3) - (0 ? 5:3) + 1))))))) << (0 ? 5:3))),/* Source2. */((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 3:3) - (0 ? 3:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 3:3) - (0 ? 3:3) + 1))))))) << (0 ? 3:3))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 3:3) - (0 ? 3:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 3:3) - (0 ? 3:3) + 1))))))) << (0 ? 3:3)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 12:4) - (0 ? 12:4) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 12:4) - (0 ? 12:4) + 1))))))) << (0 ? 12:4))) | (((gctUINT32) ((gctUINT32) (coordStep->address) & ((gctUINT32) ((((1 ? 12:4) - (0 ? 12:4) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 12:4) - (0 ? 12:4) + 1))))))) << (0 ? 12:4)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 21:14) - (0 ? 21:14) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 21:14) - (0 ? 21:14) + 1))))))) << (0 ? 21:14))) | (((gctUINT32) ((gctUINT32) (coordStep->swizzle) & ((gctUINT32) ((((1 ? 21:14) - (0 ? 21:14) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 21:14) - (0 ? 21:14) + 1))))))) << (0 ? 21:14)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 22:22) - (0 ? 22:22) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 22:22) - (0 ? 22:22) + 1))))))) << (0 ? 22:22))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 22:22) - (0 ? 22:22) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 22:22) - (0 ? 22:22) + 1))))))) << (0 ? 22:22)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 30:28) - (0 ? 30:28) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:28) - (0 ? 30:28) + 1))))))) << (0 ? 30:28))) | (((gctUINT32) ((gctUINT32) (0x2) & ((gctUINT32) ((((1 ? 30:28) - (0 ? 30:28) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:28) - (0 ? 30:28) + 1))))))) << (0 ? 30:28)))));
 
@@ -5054,7 +4922,7 @@ _GenerateFilter(
 
         gcmTRACE_ZONE(gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION,"%s(%d): [%d] MAD r%d, " gcmiSOURCEFORMAT ", " gcmiSOURCEFORMAT ", " gcmiSOURCEFORMAT "\n",__FUNCTION__, __LINE__,Resources->currPC,sum ,gcmiSOURCENEG(0),(0x0 == 0x0) ? "r" : (0x0 == 0x2) ? "c" : "<?>",color,gcmiSOURCESWIZZLE(gcSL_SWIZZLE_XYZW),gcmiSOURCENEG(0),(0x2 == 0x0) ? "r" : (0x2 == 0x2) ? "c" : "<?>",Parameters->coefficient0.address,gcmiSOURCESWIZZLE(Parameters->coefficient0.swizzle),gcmiSOURCENEG(0),(0x0 == 0x0) ? "r" : (0x0 == 0x2) ? "c" : "<?>",sum,gcmiSOURCESWIZZLE(gcSL_SWIZZLE_XYZW));gcmONERROR(_SetShader(Hardware, Resources, buffer,((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0))) | (((gctUINT32) (0x02 & ((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0)))/* Destination. */| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 12:12) - (0 ? 12:12) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 12:12) - (0 ? 12:12) + 1))))))) << (0 ? 12:12))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 12:12) - (0 ? 12:12) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 12:12) - (0 ? 12:12) + 1))))))) << (0 ? 12:12)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 22:16) - (0 ? 22:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 22:16) - (0 ? 22:16) + 1))))))) << (0 ? 22:16))) | (((gctUINT32) ((gctUINT32) (sum ) & ((gctUINT32) ((((1 ? 22:16) - (0 ? 22:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 22:16) - (0 ? 22:16) + 1))))))) << (0 ? 22:16)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 26:23) - (0 ? 26:23) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:23) - (0 ? 26:23) + 1))))))) << (0 ? 26:23))) | (((gctUINT32) ((gctUINT32) (0xF) & ((gctUINT32) ((((1 ? 26:23) - (0 ? 26:23) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:23) - (0 ? 26:23) + 1))))))) << (0 ? 26:23))),/* Source1. */((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 11:11) - (0 ? 11:11) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 11:11) - (0 ? 11:11) + 1))))))) << (0 ? 11:11))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 11:11) - (0 ? 11:11) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 11:11) - (0 ? 11:11) + 1))))))) << (0 ? 11:11)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 20:12) - (0 ? 20:12) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 20:12) - (0 ? 20:12) + 1))))))) << (0 ? 20:12))) | (((gctUINT32) ((gctUINT32) (color) & ((gctUINT32) ((((1 ? 20:12) - (0 ? 20:12) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 20:12) - (0 ? 20:12) + 1))))))) << (0 ? 20:12)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 29:22) - (0 ? 29:22) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:22) - (0 ? 29:22) + 1))))))) << (0 ? 29:22))) | (((gctUINT32) ((gctUINT32) (gcSL_SWIZZLE_XYZW) & ((gctUINT32) ((((1 ? 29:22) - (0 ? 29:22) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:22) - (0 ? 29:22) + 1))))))) << (0 ? 29:22)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 30:30) - (0 ? 30:30) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:30) - (0 ? 30:30) + 1))))))) << (0 ? 30:30))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 30:30) - (0 ? 30:30) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:30) - (0 ? 30:30) + 1))))))) << (0 ? 30:30))),((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0))) | (((gctUINT32) ((gctUINT32) (0x0) & ((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 5:3) - (0 ? 5:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:3) - (0 ? 5:3) + 1))))))) << (0 ? 5:3))) | (((gctUINT32) ((gctUINT32) (0x0) & ((gctUINT32) ((((1 ? 5:3) - (0 ? 5:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:3) - (0 ? 5:3) + 1))))))) << (0 ? 5:3)))/* Source2. */| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 6:6) - (0 ? 6:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 6:6) - (0 ? 6:6) + 1))))))) << (0 ? 6:6))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 6:6) - (0 ? 6:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 6:6) - (0 ? 6:6) + 1))))))) << (0 ? 6:6)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:7) - (0 ? 15:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:7) - (0 ? 15:7) + 1))))))) << (0 ? 15:7))) | (((gctUINT32) ((gctUINT32) (Parameters->coefficient0.address) & ((gctUINT32) ((((1 ? 15:7) - (0 ? 15:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:7) - (0 ? 15:7) + 1))))))) << (0 ? 15:7)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 24:17) - (0 ? 24:17) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:17) - (0 ? 24:17) + 1))))))) << (0 ? 24:17))) | (((gctUINT32) ((gctUINT32) (Parameters->coefficient0.swizzle) & ((gctUINT32) ((((1 ? 24:17) - (0 ? 24:17) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:17) - (0 ? 24:17) + 1))))))) << (0 ? 24:17)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 25:25) - (0 ? 25:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:25) - (0 ? 25:25) + 1))))))) << (0 ? 25:25))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 25:25) - (0 ? 25:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:25) - (0 ? 25:25) + 1))))))) << (0 ? 25:25)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 29:27) - (0 ? 29:27) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:27) - (0 ? 29:27) + 1))))))) << (0 ? 29:27))) | (((gctUINT32) ((gctUINT32) (0x5) & ((gctUINT32) ((((1 ? 29:27) - (0 ? 29:27) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:27) - (0 ? 29:27) + 1))))))) << (0 ? 29:27))),((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0))) | (((gctUINT32) ((gctUINT32) (0x2) & ((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0)))/* Source3. */| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 3:3) - (0 ? 3:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 3:3) - (0 ? 3:3) + 1))))))) << (0 ? 3:3))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 3:3) - (0 ? 3:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 3:3) - (0 ? 3:3) + 1))))))) << (0 ? 3:3)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 12:4) - (0 ? 12:4) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 12:4) - (0 ? 12:4) + 1))))))) << (0 ? 12:4))) | (((gctUINT32) ((gctUINT32) (sum) & ((gctUINT32) ((((1 ? 12:4) - (0 ? 12:4) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 12:4) - (0 ? 12:4) + 1))))))) << (0 ? 12:4)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 21:14) - (0 ? 21:14) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 21:14) - (0 ? 21:14) + 1))))))) << (0 ? 21:14))) | (((gctUINT32) ((gctUINT32) (gcSL_SWIZZLE_XYZW) & ((gctUINT32) ((((1 ? 21:14) - (0 ? 21:14) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 21:14) - (0 ? 21:14) + 1))))))) << (0 ? 21:14)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 22:22) - (0 ? 22:22) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 22:22) - (0 ? 22:22) + 1))))))) << (0 ? 22:22))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 22:22) - (0 ? 22:22) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 22:22) - (0 ? 22:22) + 1))))))) << (0 ? 22:22)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 27:25) - (0 ? 27:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 27:25) - (0 ? 27:25) + 1))))))) << (0 ? 27:25))) | (((gctUINT32) ((gctUINT32) (0x0) & ((gctUINT32) ((((1 ? 27:25) - (0 ? 27:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 27:25) - (0 ? 27:25) + 1))))))) << (0 ? 27:25)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 30:28) - (0 ? 30:28) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:28) - (0 ? 30:28) + 1))))))) << (0 ? 30:28))) | (((gctUINT32) ((gctUINT32) (0x0) & ((gctUINT32) ((((1 ? 30:28) - (0 ? 30:28) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:28) - (0 ? 30:28) + 1))))))) << (0 ? 30:28)))));
 
-    gcmTRACE_ZONE(gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION,"%s(%d): [%d] ENDREP\n",__FUNCTION__, __LINE__,Resources->currPC);gcmONERROR(_SetShader(Hardware, Resources, buffer,((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0))) | (((gctUINT32) (0x20 & ((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0))),0,/* Loop info. */((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 6:6) - (0 ? 6:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 6:6) - (0 ? 6:6) + 1))))))) << (0 ? 6:6))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 6:6) - (0 ? 6:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 6:6) - (0 ? 6:6) + 1))))))) << (0 ? 6:6)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:7) - (0 ? 15:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:7) - (0 ? 15:7) + 1))))))) << (0 ? 15:7))) | (((gctUINT32) ((gctUINT32) (Parameters->loop2Info.address) & ((gctUINT32) ((((1 ? 15:7) - (0 ? 15:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:7) - (0 ? 15:7) + 1))))))) << (0 ? 15:7)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 24:17) - (0 ? 24:17) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:17) - (0 ? 24:17) + 1))))))) << (0 ? 24:17))) | (((gctUINT32) ((gctUINT32) (Parameters->loop2Info.swizzle) & ((gctUINT32) ((((1 ? 24:17) - (0 ? 24:17) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:17) - (0 ? 24:17) + 1))))))) << (0 ? 24:17)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 25:25) - (0 ? 25:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:25) - (0 ? 25:25) + 1))))))) << (0 ? 25:25))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 25:25) - (0 ? 25:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:25) - (0 ? 25:25) + 1))))))) << (0 ? 25:25))), ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0))) | (((gctUINT32) ((gctUINT32) (0x2) & ((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0)))/* RepeatLabel. */| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 18:7) - (0 ? 18:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 18:7) - (0 ? 18:7) + 1))))))) << (0 ? 18:7))) | (((gctUINT32) ((gctUINT32) (Resources->currPC - 4 ) & ((gctUINT32) ((((1 ? 18:7) - (0 ? 18:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 18:7) - (0 ? 18:7) + 1))))))) << (0 ? 18:7)))));
+    gcmTRACE_ZONE(gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION,"%s(%d): [%d] ENDREP\n",__FUNCTION__, __LINE__,Resources->currPC);gcmONERROR(_SetShader(Hardware, Resources, buffer,((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0))) | (((gctUINT32) (0x20 & ((gctUINT32) ((((1 ? 5:0) - (0 ? 5:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:0) - (0 ? 5:0) + 1))))))) << (0 ? 5:0))),0,/* Loop info. */((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 6:6) - (0 ? 6:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 6:6) - (0 ? 6:6) + 1))))))) << (0 ? 6:6))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 6:6) - (0 ? 6:6) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 6:6) - (0 ? 6:6) + 1))))))) << (0 ? 6:6)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:7) - (0 ? 15:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:7) - (0 ? 15:7) + 1))))))) << (0 ? 15:7))) | (((gctUINT32) ((gctUINT32) (Parameters->loop2Info.address) & ((gctUINT32) ((((1 ? 15:7) - (0 ? 15:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:7) - (0 ? 15:7) + 1))))))) << (0 ? 15:7)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 24:17) - (0 ? 24:17) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:17) - (0 ? 24:17) + 1))))))) << (0 ? 24:17))) | (((gctUINT32) ((gctUINT32) (Parameters->loop2Info.swizzle) & ((gctUINT32) ((((1 ? 24:17) - (0 ? 24:17) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:17) - (0 ? 24:17) + 1))))))) << (0 ? 24:17)))| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 25:25) - (0 ? 25:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:25) - (0 ? 25:25) + 1))))))) << (0 ? 25:25))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 25:25) - (0 ? 25:25) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:25) - (0 ? 25:25) + 1))))))) << (0 ? 25:25))), ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0))) | (((gctUINT32) ((gctUINT32) (0x2) & ((gctUINT32) ((((1 ? 2:0) - (0 ? 2:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 2:0) - (0 ? 2:0) + 1))))))) << (0 ? 2:0)))/* RepeatLabel. */| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 26:7) - (0 ? 26:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:7) - (0 ? 26:7) + 1))))))) << (0 ? 26:7))) | (((gctUINT32) ((gctUINT32) (Resources->currPC - 4 ) & ((gctUINT32) ((((1 ? 26:7) - (0 ? 26:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:7) - (0 ? 26:7) + 1))))))) << (0 ? 26:7)))));
 
     /* Set the output register. */
     Resources->prevTemp = sum;
@@ -5166,14 +5034,14 @@ _DoBlur(
     gcmONERROR(_AllocateConstant(Resources, &parameters.coefficient4, 4));
 
     loop1Info
-        = ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 9:0) - (0 ? 9:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 9:0) - (0 ? 9:0) + 1))))))) << (0 ? 9:0))) | (((gctUINT32) ((gctUINT32) (5) & ((gctUINT32) ((((1 ? 9:0) - (0 ? 9:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 9:0) - (0 ? 9:0) + 1))))))) << (0 ? 9:0)))
-        | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 19:10) - (0 ? 19:10) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 19:10) - (0 ? 19:10) + 1))))))) << (0 ? 19:10))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 19:10) - (0 ? 19:10) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 19:10) - (0 ? 19:10) + 1))))))) << (0 ? 19:10)))
-        | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 30:21) - (0 ? 30:21) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:21) - (0 ? 30:21) + 1))))))) << (0 ? 30:21))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 30:21) - (0 ? 30:21) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:21) - (0 ? 30:21) + 1))))))) << (0 ? 30:21)));
+        = ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 8:0) - (0 ? 8:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 8:0) - (0 ? 8:0) + 1))))))) << (0 ? 8:0))) | (((gctUINT32) ((gctUINT32) (5) & ((gctUINT32) ((((1 ? 8:0) - (0 ? 8:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 8:0) - (0 ? 8:0) + 1))))))) << (0 ? 8:0)))
+        | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 18:10) - (0 ? 18:10) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 18:10) - (0 ? 18:10) + 1))))))) << (0 ? 18:10))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 18:10) - (0 ? 18:10) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 18:10) - (0 ? 18:10) + 1))))))) << (0 ? 18:10)))
+        | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 29:21) - (0 ? 29:21) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:21) - (0 ? 29:21) + 1))))))) << (0 ? 29:21))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 29:21) - (0 ? 29:21) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:21) - (0 ? 29:21) + 1))))))) << (0 ? 29:21)));
 
     loop2Info
-        = ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 9:0) - (0 ? 9:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 9:0) - (0 ? 9:0) + 1))))))) << (0 ? 9:0))) | (((gctUINT32) ((gctUINT32) (4) & ((gctUINT32) ((((1 ? 9:0) - (0 ? 9:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 9:0) - (0 ? 9:0) + 1))))))) << (0 ? 9:0)))
-        | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 19:10) - (0 ? 19:10) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 19:10) - (0 ? 19:10) + 1))))))) << (0 ? 19:10))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 19:10) - (0 ? 19:10) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 19:10) - (0 ? 19:10) + 1))))))) << (0 ? 19:10)))
-        | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 30:21) - (0 ? 30:21) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:21) - (0 ? 30:21) + 1))))))) << (0 ? 30:21))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 30:21) - (0 ? 30:21) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:21) - (0 ? 30:21) + 1))))))) << (0 ? 30:21)));
+        = ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 8:0) - (0 ? 8:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 8:0) - (0 ? 8:0) + 1))))))) << (0 ? 8:0))) | (((gctUINT32) ((gctUINT32) (4) & ((gctUINT32) ((((1 ? 8:0) - (0 ? 8:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 8:0) - (0 ? 8:0) + 1))))))) << (0 ? 8:0)))
+        | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 18:10) - (0 ? 18:10) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 18:10) - (0 ? 18:10) + 1))))))) << (0 ? 18:10))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 18:10) - (0 ? 18:10) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 18:10) - (0 ? 18:10) + 1))))))) << (0 ? 18:10)))
+        | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 29:21) - (0 ? 29:21) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:21) - (0 ? 29:21) + 1))))))) << (0 ? 29:21))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 29:21) - (0 ? 29:21) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:21) - (0 ? 29:21) + 1))))))) << (0 ? 29:21)));
 
     stepX = 1.0f / boundingRectWidth;
     stepY = 1.0f / boundingRectHeight;
@@ -5370,7 +5238,7 @@ gcoHARDWARE_InitializeComposition(
     gcmHEADER_ARG("Hardware=0x%08X", Hardware);
 
     /* Determine whether bug fixes #1 are present. */
-    bugFixes1 = ((((gctUINT32) (Hardware->chipMinorFeatures1)) >> (0 ? 3:3) & ((gctUINT32) ((((1 ? 3:3) - (0 ? 3:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 3:3) - (0 ? 3:3) + 1)))))) == (0x0 & ((gctUINT32) ((((1 ? 3:3) - (0 ? 3:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 3:3) - (0 ? 3:3) + 1)))))));
+    bugFixes1 = ((((gctUINT32) (Hardware->config->chipMinorFeatures1)) >> (0 ? 3:3) & ((gctUINT32) ((((1 ? 3:3) - (0 ? 3:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 3:3) - (0 ? 3:3) + 1)))))) == (0x0 & ((gctUINT32) ((((1 ? 3:3) - (0 ? 3:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 3:3) - (0 ? 3:3) + 1)))))));
 
     /* Determine the hardware event size. */
     Hardware->composition.eventSize = bugFixes1
@@ -5403,7 +5271,6 @@ gcoHARDWARE_InitializeComposition(
     /* Adjust the total number of constants available to regular programs. */
     if (Hardware->unifiedConst)
     {
-        Hardware->vsConstMax -= Hardware->composition.maxConstCount;
         Hardware->psConstMax -= Hardware->composition.maxConstCount;
         Hardware->constMax   -= Hardware->composition.maxConstCount;
     }
@@ -5542,10 +5409,10 @@ gcoHARDWARE_DestroyComposition(
             /* Use event to free the buffer. */
             iface.command = gcvHAL_FREE_CONTIGUOUS_MEMORY;
             iface.u.FreeContiguousMemory.bytes    = Hardware->composition.compStateBuffer[i].size;
-            iface.u.FreeContiguousMemory.physical = Hardware->composition.compStateBuffer[i].physical;
-            iface.u.FreeContiguousMemory.logical  = Hardware->composition.compStateBuffer[i].logical;
+            iface.u.FreeContiguousMemory.physical = gcmPTR2INT32(Hardware->composition.compStateBuffer[i].physical);
+            iface.u.FreeContiguousMemory.logical  = gcmPTR_TO_UINT64(Hardware->composition.compStateBuffer[i].logical);
 
-            gcmONERROR(gcoHARDWARE_CallEvent(&iface));
+            gcmONERROR(gcoHARDWARE_CallEvent(Hardware, &iface));
 
             /* Reset the buffer pointers. */
             Hardware->composition.compStateBuffer[i].size     = 0;
@@ -5566,13 +5433,12 @@ OnError:
 
 gceSTATUS
 gco3D_CompositionBegin(
-    void
+    gcoHARDWARE Hardware
     )
 {
     gceSTATUS status;
-    gcoHARDWARE Hardware;
 
-    gcmHEADER();
+    gcmHEADER_ARG("Hardware=0x%x", Hardware);
 
 #if _ENABLE_DUMPING
     gcoOS_SetDebugLevelZone(gcvLEVEL_VERBOSE, gcvZONE_COMPOSITION);
@@ -5612,33 +5478,33 @@ OnError:
 
 gceSTATUS
 gco3D_ProbeComposition(
+    gcoHARDWARE Hardware,
     gctBOOL ResetIfEmpty
     )
 {
     gceSTATUS status;
-    gcoHARDWARE hardware = gcvNULL;
 
-    gcmHEADER_ARG("ResetIfEmpty=%d", ResetIfEmpty);
+    gcmHEADER_ARG("Hardware=0x%x ResetIfEmpty=%d", Hardware, ResetIfEmpty);
 
-    gcmGETHARDWARE(hardware);
+    gcmGETHARDWARE(Hardware);
 
     /* Verify the arguments. */
-    gcmVERIFY_OBJECT(hardware, gcvOBJ_HARDWARE);
+    gcmVERIFY_OBJECT(Hardware, gcvOBJ_HARDWARE);
 
     /* Are we already in composition mode? */
-    if (!hardware->composition.enabled)
+    if (!Hardware->composition.enabled)
     {
         status = gcvSTATUS_INVALID_REQUEST;
         goto OnError;
     }
 
     /* Is there anything to compose. */
-    if (hardware->composition.head.next == &hardware->composition.head)
+    if (Hardware->composition.head.next == &Hardware->composition.head)
     {
         /* Reset composition enabled if requested. */
         if (ResetIfEmpty)
         {
-            hardware->composition.enabled = gcvFALSE;
+            Hardware->composition.enabled = gcvFALSE;
         }
 
         status = gcvSTATUS_NO_MORE_DATA;
@@ -5656,20 +5522,20 @@ OnError:
 
 gceSTATUS
 gco3D_ComposeLayer(
+    IN gcoHARDWARE Hardware,
     IN gcsCOMPOSITION_PTR Layer
     )
 {
     gceSTATUS status;
-    gcoHARDWARE hardware = gcvNULL;
     gcsCOMPOSITION_LAYER_PTR layer = gcvNULL;
 
-    gcmHEADER_ARG("Layer=0x%08X", Layer);
+    gcmHEADER_ARG("Hardware=0x%x Layer=0x%08X", Hardware, Layer);
 
     /* Retrieve the hardware object. */
-    gcmGETHARDWARE(hardware);
+    gcmGETHARDWARE(Hardware);
 
     /* Are we already in composition mode? */
-    if (!hardware->composition.enabled)
+    if (!Hardware->composition.enabled)
     {
         gcmONERROR(gcvSTATUS_INVALID_REQUEST);
     }
@@ -5682,7 +5548,7 @@ gco3D_ComposeLayer(
 
     /* Allocate new layer. */
     gcmONERROR(gcsCONTAINER_AllocateRecord(
-        &hardware->composition.freeLayers,
+        &Hardware->composition.freeLayers,
         (gctPOINTER *) &layer
         ));
 
@@ -5848,7 +5714,7 @@ gco3D_ComposeLayer(
     }
 
     /* Process layer. */
-    gcmONERROR(_ProcessLayer(hardware, layer, &layer->input.trgRect, gcvNULL));
+    gcmONERROR(_ProcessLayer(Hardware, layer, &layer->input.trgRect, gcvNULL));
 
     /* Success. */
     gcmFOOTER_NO();
@@ -5859,7 +5725,7 @@ OnError:
     if (layer != gcvNULL)
     {
         gcmVERIFY_OK(gcsCONTAINER_FreeRecord(
-            &hardware->composition.freeLayers, layer
+            &Hardware->composition.freeLayers, layer
             ));
     }
 
@@ -5870,28 +5736,28 @@ OnError:
 
 gceSTATUS
 gco3D_CompositionSignals(
+    IN gcoHARDWARE Hardware,
     IN gctHANDLE Process,
     IN gctSIGNAL Signal1,
     IN gctSIGNAL Signal2
     )
 {
-    gceSTATUS status;
-    gcoHARDWARE hardware;
+    gceSTATUS status = gcvSTATUS_OK;
 
     gcmHEADER_ARG(
-        "Process=0x%08X Signal1=0x%08X Signal2=0x%08X",
-        Process, Signal1, Signal2
+        "Hardware=0x%x Process=0x%08X Signal1=0x%08X Signal2=0x%08X",
+        Hardware, Process, Signal1, Signal2
         );
 
-    gcmGETHARDWARE(hardware);
+    gcmGETHARDWARE(Hardware);
 
     /* Verify the arguments. */
-    gcmVERIFY_OBJECT(hardware, gcvOBJ_HARDWARE);
+    gcmVERIFY_OBJECT(Hardware, gcvOBJ_HARDWARE);
 
     /* Store user signals. */
-    hardware->composition.process = Process;
-    hardware->composition.signal1 = Signal1;
-    hardware->composition.signal2 = Signal2;
+    Hardware->composition.process = Process;
+    Hardware->composition.signal1 = Signal1;
+    Hardware->composition.signal2 = Signal2;
 
 OnError:
     /* Return the status. */
@@ -5901,36 +5767,36 @@ OnError:
 
 gceSTATUS
 gco3D_CompositionEnd(
+    IN gcoHARDWARE Hardware,
     IN gcoSURF Target,
     IN gctBOOL Synchronous
     )
 {
     gceSTATUS status;
-    gcoHARDWARE hardware = gcvNULL;
     gcsCOMPOSITION_SET_PTR currSet;
     gcsCOMPOSITION_LAYER trgLayer;
     gcsiCOMPOSITION_RESOURCES resources;
 
-    gcmHEADER_ARG("Target=0x%08X", Target);
+    gcmHEADER_ARG("Hardware=0x%x Target=0x%08X Synchronous=%d", Hardware, Target, Synchronous);
 
-    gcmGETHARDWARE(hardware);
+    gcmGETHARDWARE(Hardware);
 
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Target, gcvOBJ_SURF);
-    gcmVERIFY_OBJECT(hardware, gcvOBJ_HARDWARE);
+    gcmVERIFY_OBJECT(Hardware, gcvOBJ_HARDWARE);
 
     /***************************************************************************
     ** We have to be in composition mode.
     */
 
     /* Are we already in composition mode? */
-    if (!hardware->composition.enabled)
+    if (!Hardware->composition.enabled)
     {
         gcmONERROR(gcvSTATUS_INVALID_REQUEST);
     }
 
     /* Is there anything to compose. */
-    if (hardware->composition.head.next == &hardware->composition.head)
+    if (Hardware->composition.head.next == &Hardware->composition.head)
     {
         status = gcvSTATUS_NO_MORE_DATA;
         goto OnError;
@@ -5942,15 +5808,15 @@ gco3D_CompositionEnd(
 
     if (Synchronous)
     {
-        gcmONERROR(_SetSyncronousMode(hardware));
+        gcmONERROR(_SetSyncronousMode(Hardware));
     }
     else
     {
-        gcmONERROR(_SetAsyncronousMode(hardware));
+        gcmONERROR(_SetAsyncronousMode(Hardware));
     }
 
-    hardware->composition.initDone = gcvFALSE;
-    hardware->composition.target   = gcvNULL;
+    Hardware->composition.initDone = gcvFALSE;
+    Hardware->composition.target   = gcvNULL;
 
     /***************************************************************************
     ** Initialize the target layer to be used as source.
@@ -5998,9 +5864,9 @@ gco3D_CompositionEnd(
     ** Compose accumulated layers.
     */
 
-    currSet = hardware->composition.head.next;
+    currSet = Hardware->composition.head.next;
 
-    while (currSet != &hardware->composition.head)
+    while (currSet != &Hardware->composition.head)
     {
         /* Blurring is done in two passes, therefore it cannot
            be combined with other layers. Compose all layers
@@ -6008,14 +5874,14 @@ gco3D_CompositionEnd(
         if (currSet->blur)
         {
             gcmONERROR(_DoBlur(
-                hardware, &resources, currSet, &trgLayer
+                Hardware, &resources, currSet, &trgLayer
                 ));
         }
         else
         {
             /* Compose the current layer. */
             gcmONERROR(_DoCompose(
-                hardware, &resources, currSet, &trgLayer
+                Hardware, &resources, currSet, &trgLayer
                 ));
         }
 
@@ -6023,25 +5889,25 @@ gco3D_CompositionEnd(
     }
 
     /* Execute accumulated composition. */
-    gcmONERROR(_ExecuteBuffer(hardware));
+    gcmONERROR(_ExecuteBuffer(Hardware));
 
     /* FIXME: This is to fix Holo Spiral flashing problem. */
-    gcmONERROR(gcoHARDWARE_Stall());
+    gcmONERROR(gcoHARDWARE_Stall(Hardware));
 
 OnError:
-    if (hardware != gcvNULL)
+    if (Hardware != gcvNULL)
     {
         /* Reset. */
-        gcmVERIFY_OK(gcsCONTAINER_FreeAll(&hardware->composition.freeSets));
-        gcmVERIFY_OK(gcsCONTAINER_FreeAll(&hardware->composition.freeNodes));
-        gcmVERIFY_OK(gcsCONTAINER_FreeAll(&hardware->composition.freeLayers));
+        gcmVERIFY_OK(gcsCONTAINER_FreeAll(&Hardware->composition.freeSets));
+        gcmVERIFY_OK(gcsCONTAINER_FreeAll(&Hardware->composition.freeNodes));
+        gcmVERIFY_OK(gcsCONTAINER_FreeAll(&Hardware->composition.freeLayers));
 
         /* Initialize the set linked list. */
-        hardware->composition.head.next = &hardware->composition.head;
-        hardware->composition.head.prev = &hardware->composition.head;
+        Hardware->composition.head.next = &Hardware->composition.head;
+        Hardware->composition.head.prev = &Hardware->composition.head;
 
         /* Reset composition enable. */
-        hardware->composition.enabled = gcvFALSE;
+        Hardware->composition.enabled = gcvFALSE;
     }
 
     /* Return the status. */
@@ -6049,5 +5915,6 @@ OnError:
     return status;
 }
 
-#endif  /* VIVANTE_NO_3D */
+#endif
+
 

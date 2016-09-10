@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -11,14 +11,13 @@
 *****************************************************************************/
 
 
-
-
 #include "gc_hal_user_precomp.h"
 #include "gc_hal_user_brush.h"
 
 /* Zone used for header/footer. */
 #define _GC_OBJ_ZONE    gcvZONE_2D
 
+#if gcdENABLE_2D
 /******************************************************************************\
 ********************************** Structures **********************************
 \******************************************************************************/
@@ -84,7 +83,7 @@ struct _gcoBRUSH_CACHE
     gcsBRUSH_LIST_PTR       brushTail;
 };
 
-const gcsCACHE_NODE_PTR CACHELESS = (gcsCACHE_NODE_PTR) ~0;
+const gcsCACHE_NODE_PTR CACHELESS = (gcsCACHE_NODE_PTR) gcvMAXUINTPTR_T;
 
 
 /******************************************************************************\
@@ -476,11 +475,13 @@ static gctBOOL _MoveToHead(
 
         /* Remove from the list. */
         _DisconnectNode(Head, Tail, Node);
+
+        /* Add to the top. */
+        _AddHeadNode(Head, Tail, Node);
+        return gcvTRUE;
     }
 
-    /* Add to the top. */
-    _AddHeadNode(Head, Tail, Node);
-    return gcvTRUE;
+    return gcvFALSE;
 }
 
 /*******************************************************************************
@@ -525,11 +526,13 @@ static gctBOOL _MoveToTail(
 
         /* Remove from the list. */
         _DisconnectNode(Head, Tail, Node);
+
+        /* Add to the top. */
+        _AddTailNode(Head, Tail, Node);
+        return gcvTRUE;
     }
 
-    /* Add to the top. */
-    _AddTailNode(Head, Tail, Node);
-    return gcvTRUE;
+    return gcvFALSE;
 }
 
 /*******************************************************************************
@@ -556,6 +559,7 @@ static gceSTATUS _GetCacheNode(
     gcsHAL_INTERFACE iface;
     gcsCACHE_NODE_PTR node;
     gcoOS os;
+    gctUINT32 bytes = 8 * 8 * 4;
 
     gcmHEADER_ARG("BrushCache=0x%x", BrushCache);
 
@@ -597,15 +601,14 @@ static gceSTATUS _GetCacheNode(
 
             node = pointer;
 
-            /* Allocate video memory. */
-            iface.command = gcvHAL_ALLOCATE_LINEAR_VIDEO_MEMORY;
-            iface.u.AllocateLinearVideoMemory.bytes     = 8 * 8 * 4;
-            iface.u.AllocateLinearVideoMemory.alignment = 64;
-            iface.u.AllocateLinearVideoMemory.pool      = gcvPOOL_DEFAULT;
-            iface.u.AllocateLinearVideoMemory.type      = gcvSURF_BITMAP;
-
-            /* Call kernel API. */
-            status = gcoHAL_Call(gcvNULL, &iface);
+            status = gcsSURF_NODE_Construct(
+                &node->patternNode,
+                bytes,
+                64,
+                gcvSURF_BITMAP,
+                gcvALLOC_FLAG_NONE,
+                gcvPOOL_DEFAULT
+                );
 
             if (status != gcvSTATUS_OK)
             {
@@ -616,15 +619,6 @@ static gceSTATUS _GetCacheNode(
                 break;
             }
 
-            /* Init node. */
-            node->patternNode.pool
-                = iface.u.AllocateLinearVideoMemory.pool;
-            node->patternNode.u.normal.node
-                = iface.u.AllocateLinearVideoMemory.node;
-
-            node->patternNode.valid          = gcvFALSE;
-            node->patternNode.lockCount      = 0;
-            node->patternNode.lockedInKernel = gcvFALSE;
             node->brushNode                  = gcvNULL;
 
             /* Lock the node. */
@@ -635,11 +629,18 @@ static gceSTATUS _GetCacheNode(
             gcmERR_BREAK(gcoHAL_Call(gcvNULL, &iface));
 
             node->patternNode.physical = iface.u.LockVideoMemory.address;
-            node->patternNode.logical  = iface.u.LockVideoMemory.memory;
+            node->patternNode.logical  = gcmUINT64_TO_PTR(iface.u.LockVideoMemory.memory);
             node->patternNode.valid = gcvTRUE;
             node->patternNode.lockedInKernel = gcvTRUE;
             gcmVERIFY_OK(gcoHAL_GetHardwareType(gcvNULL, &node->patternNode.lockedHardwareType));
             node->patternNode.lockCount++;
+
+            /* Add the memory info. */
+            gcmDUMP_ADD_MEMORY_INFO(
+                node->patternNode.physical,
+                node->patternNode.logical,
+                gcvINVALID_ADDRESS,
+                bytes);
 
             /* Add to the end of the list. */
             _AddTailNode(&BrushCache->cacheHead,
@@ -889,19 +890,16 @@ gceSTATUS gcoBRUSH_CACHE_SetBrushLimit(
                     currentTypeChanged = gcvTRUE;
                 }
 
+                /* Delete the mem info. */
+                gcmDUMP_DEL_MEMORY_INFO(node->patternNode.physical);
+
                 /* Unlock the memory. */
                 iface.command = gcvHAL_UNLOCK_VIDEO_MEMORY;
                 iface.u.UnlockVideoMemory.node = node->patternNode.u.normal.node;
                 iface.u.UnlockVideoMemory.type = gcvSURF_BITMAP;
                 gcmONERROR(gcoHAL_Call(gcvNULL, &iface));
 
-                /* Free the video memory. */
-                iface.command = gcvHAL_FREE_VIDEO_MEMORY;
-                iface.u.FreeVideoMemory.node = node->patternNode.u.normal.node;
-                iface.u.UnlockVideoMemory.asynchroneous = gcvFALSE;
-
-                /* Call kernel API. */
-                gcmONERROR(gcoHAL_Call(gcvNULL, &iface));
+                gcmONERROR(gcoHARDWARE_ScheduleVideoMemory(&node->patternNode));
 
                 if (currentTypeChanged)
                 {
@@ -1331,3 +1329,4 @@ gceSTATUS gcoBRUSH_CACHE_FlushBrush(
     gcmFOOTER();
     return status;
 }
+#endif  /* gcdENABLE_2D */

@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -9,8 +9,6 @@
 *    without the express written permission of Vivante Corporation.
 *
 *****************************************************************************/
-
-
 
 
 #ifndef __gc_hal_user_hardware_h_
@@ -32,6 +30,21 @@ extern "C" {
 #define gcdLOD_LEVELS               14
 #define gcdTEMP_SURFACE_NUMBER      3
 
+#define gcvINVALID_TEXTURE_FORMAT   ((gctUINT)(gceSURF_FORMAT) -1)
+#define gcvINVALID_RENDER_FORMAT    ((gctUINT)(gceSURF_FORMAT) -1)
+
+#if gcdMULTI_GPU
+#define gcmENABLE3DCORE(Memory, CoreId) \
+{ \
+    *Memory++ = gcmSETFIELDVALUE(0, GCCMD_CHIP_ENABLE_COMMAND, OPCODE, CHIP_ENABLE) \
+              | CoreId; \
+    \
+    Memory++; \
+    \
+    gcmDUMP(gcvNULL, "#[chip.enable 0x%04X]", CoreId); \
+}
+#endif
+
 /******************************************************************************\
 ********************************** Structures **********************************
 \******************************************************************************/
@@ -45,18 +58,42 @@ typedef enum
 }
 gceFILTER_BLIT_KERNEL;
 
-#ifndef VIVANTE_NO_3D
-typedef struct _gcsCOLOR_INFO
+#if gcdENABLE_3D
+
+typedef enum
 {
-    gctBOOL                     dirty;
+    gcvMSAA_DOWNSAMPLE_AVERAGE = 0,
+    gcvMSAA_DOWNSAMPLE_SAMPLE  = 1,
+}
+gceMSAA_DOWNSAMPLE_MODE;
+
+
+typedef struct _gcsCOLOR_TARGET
+{
     gctUINT32                   format;
     gctBOOL                     superTiled;
     gcsSURF_INFO_PTR            surface;
-    gctUINT32                   cacheMode;
-    gctUINT8                    rop;
+    /* offset to indicate where slice is */
+    gctUINT32                   offset;
+    /* layerIndx to indicate where layer is */
+    gctUINT32                   layerIndex;
+}
+gcsCOLOR_TARGET;
 
-    gctBOOL                     colorWrite;
+typedef struct _gcsCOLOR_INFO
+{
+    /* per-RT state */
+    gcsCOLOR_TARGET             target[gcdMAX_DRAW_BUFFERS];
+
+    /* cacheMode depend on MSAA, consistent between RTs. */
+    gctUINT32                   cacheMode;
+
+    /*True if either RT need compression*/
     gctBOOL                     colorCompression;
+
+    /* global color state */
+    gctUINT8                    rop;
+    gctBOOL                     colorWrite;
     gctUINT32                   destinationRead;
 }
 gcsCOLOR_INFO;
@@ -64,14 +101,19 @@ gcsCOLOR_INFO;
 typedef struct _gcsDEPTH_INFO
 {
     gcsSURF_INFO_PTR            surface;
+    gctUINT32                   offset;
     gctUINT32                   cacheMode;
 
-    /* Depth mode register value. */
-    gctUINT32                   config;
+    /* Some depth related register value */
+    gctUINT32                   regDepthConfig;
+    gctUINT32                   regControlHZ;
+    gctUINT32                   regRAControl;
+    gctUINT32                   regRAControlHZ;
 
     /* Depth config components. */
     gceDEPTH_MODE               mode;
     gctBOOL                     only;
+    gctBOOL                     realOnly;
     gctBOOL                     early;
     gctBOOL                     write;
     gceCOMPARE                  compare;
@@ -93,6 +135,8 @@ typedef struct _gcsPA_INFO
     gctBOOL                     pointSize;
     gctBOOL                     pointSprite;
     gceFILL                     fillMode;
+
+    gctBOOL                        wclip;
 }
 gcsPA_INFO;
 
@@ -205,7 +249,7 @@ typedef struct _gcsCOMPOSITION_STATE_BUFFER
 
     gctUINT32_PTR                   head;
     gctUINT32_PTR                   tail;
-    gctINT                          available;
+    gctSIZE_T                       available;
     gctUINT                         count;
     gctUINT32_PTR                   rectangle;
 
@@ -255,33 +299,58 @@ typedef struct _gcsCOMPOSITION_STATE
     gcsCOMPOSITION_SET              head;
 }
 gcsCOMPOSITION_STATE;
-#endif /* VIVANTE_NO_3D */
+#endif
 
-/* gcoHARDWARE object. */
-struct _gcoHARDWARE
+#if gcdSYNC
+typedef enum{
+    gcvFENCE_RLV,
+    gcvFENCE_OQ,
+    gcvFENCE_HW,
+}gctFENCE;
+
+struct _gcoFENCE
 {
-    /* Object. */
-    gcsOBJECT                   object;
+    gctBOOL                     fenceEnable;
+    gctUINT64                   fenceID;
+    gctUINT64                   fenceIDSend;
+    gctUINT64                   commitID;
+    gctBOOL                     addSync;
+    gctUINT64                   resetTimeStamp;
+    gctUINT                     loopCount;
+    gctUINT                     delayCount;
 
-    /* Pointer to gckCONTEXT object. */
-    gckCONTEXT                  context;
+    gctFENCE                    type;
+    union{
+        struct{
+            gcoSURF             fenceSurface;
+            gcoSURF             srcIDSurface;
+            gctUINT32           srcWidth,srcHeight;
+            gctUINT32           srcX,srcY;
+            gctUINT32           srcOffset;
+        }rlvFence;
 
-    /* Number of states managed by the context manager. */
-    gctSIZE_T                   stateCount;
+        struct{
+            gcoSURF             dstFenceSurface;
+            gctUINT32           dstWidth;
+            gctUINT32           dstHeight;
+            gctUINT32           dstSlotSize;
+            gctUINT32           nextSlot;
+            gctUINT32           commandSlot;
+            gctUINT32           commitSlot;
+        }oqFence;
 
-    /* Command buffer. */
-    gcoBUFFER                   buffer;
+        struct{
+            gcoSURF             dstSurface;
+            gctPOINTER          dstAddr;
+            gctUINT32           dstPhysic;
+        }hwFence;
+    }u;
+};
+#endif
 
-    /* Context buffer. */
-    gcePIPE_SELECT              currentPipe;
-
-    /* Event queue. */
-    gcoQUEUE                    queue;
-
-    /* List of state delta buffers. */
-    gcsSTATE_DELTA_PTR          delta;
-
-    /* Chip characteristics. */
+typedef struct _gcsHARDWARE_CONFIG
+{
+    /* Chip registers. */
     gceCHIPMODEL                chipModel;
     gctUINT32                   chipRevision;
     gctUINT32                   chipFeatures;
@@ -289,20 +358,42 @@ struct _gcoHARDWARE
     gctUINT32                   chipMinorFeatures1;
     gctUINT32                   chipMinorFeatures2;
     gctUINT32                   chipMinorFeatures3;
+    gctUINT32                   chipMinorFeatures4;
+    gctUINT32                   chipMinorFeatures5;
+    gctUINT32                   chipSpecs;
+    gctUINT32                   chipSpecs2;
+    gctUINT32                   chipSpecs3;
+    gctUINT32                   chipSpecs4;
 
-#ifndef VIVANTE_NO_3D
-    gctUINT32                   streamCount;
+    /* Data extracted from specs bits. */
+#if gcdENABLE_3D
+    /* gcChipSpecs. */
+    gctUINT32                   streamCount;    /* number of vertex streams */
     gctUINT32                   registerMax;
     gctUINT32                   threadCount;
-    gctUINT32                   shaderCoreCount;
     gctUINT32                   vertexCacheSize;
+    gctUINT32                   shaderCoreCount;
+#endif
+    gctUINT32                   pixelPipes;
+#if gcdENABLE_3D
     gctUINT32                   vertexOutputBufferSize;
+    /* gcChipSpecs2. */
+    gctUINT32                   bufferSize;     /* not used? */
     gctUINT32                   instructionCount;
     gctUINT32                   numConstants;
-    gctUINT32                   bufferSize;
-    gctINT                      needStriping;
-    gctBOOL                     mixedStreams;
+    /* gcChipSpecs3. */
+#if gcdMULTI_GPU
+    gctUINT32                   gpuCoreCount;
+#endif
+    gctUINT32                   varyingsCount;
+    gctUINT32                   localStorageSize;
+    gctUINT32                   l1CacheSize;
+    /* gcChipSpecs4. */
+    gctUINT32                   instructionMemory;
+    gctUINT32                   shaderPCLength;
+    /*gctUINT32                   streamCount1;     number of streams */
 
+    /* Derived data. */
     gctUINT                     unifiedConst;
     gctUINT                     vsConstBase;
     gctUINT                     psConstBase;
@@ -317,15 +408,279 @@ struct _gcoHARDWARE
     gctUINT                     psInstMax;
     gctUINT                     instMax;
 
-    gctUINT32                   renderTargets;
+    gctUINT32                   superTileMode;
+
+    /* Info not in features/specs. */
+#endif
+#if gcdENABLE_3D || gcdENABLE_VG
+    gctUINT32                   renderTargets; /* num of mRT */
+#endif
+    /* Special control bits for 2D chip. */
+    gctUINT32                   chip2DControl;
+
+    gctUINT32                   productID;
+
+    gceECO_FLAG                 ecoFlags;
+}
+gcsHARDWARE_CONFIG;
+
+
+#if gcdENABLE_3D
+
+#define gcmMAX_VARIATION_NUM 32
+
+#if !gcdSTATIC_LINK
+
+typedef struct _gscVSC_API
+{
+    gceSTATUS (*gcSHADER_Construct)(gcoHAL, gctINT, gcSHADER *);
+
+    gceSTATUS (*gcLinkShaders)(gcSHADER, gcSHADER, gceSHADER_FLAGS,
+                               gctUINT32 *, gctPOINTER *, gcsHINT_PTR * );
+
+    gceSTATUS (*gcSHADER_AddAttribute)(gcSHADER Shader, gctCONST_STRING Name,
+                                       gcSHADER_TYPE Type, gctSIZE_T Length,
+                                       gctBOOL IsTexture, gcSHADER_SHADERMODE ShaderMode,
+                                       gcATTRIBUTE * Attribute);
+
+    gceSTATUS (*gcSHADER_AddUniform)(gcSHADER Shader, gctCONST_STRING Name,
+                                     gcSHADER_TYPE Type, gctSIZE_T Length,
+                                     gcUNIFORM * Uniform);
+
+    gceSTATUS (*gcSHADER_AddOpcode)(gcSHADER Shader, gcSL_OPCODE Opcode,
+                                    gctUINT16 TempRegister, gctUINT8 Enable,
+                                    gcSL_FORMAT Format);
+
+    gceSTATUS (*gcSHADER_AddOpcodeConditional)(gcSHADER Shader, gcSL_OPCODE Opcode,
+                                               gcSL_CONDITION Condition, gctUINT Label);
+
+    gceSTATUS (*gcSHADER_AddSourceUniform)(gcSHADER Shader, gcUNIFORM Uniform,
+                                        gctUINT8 Swizzle, gctINT Index);
+
+    gceSTATUS (*gcSHADER_AddSourceAttribute)(gcSHADER Shader, gcATTRIBUTE Attribute,
+                                          gctUINT8 Swizzle, gctINT Index);
+
+    gceSTATUS (*gcSHADER_AddSourceConstant)(gcSHADER Shader, gctFLOAT Constant);
+
+    gceSTATUS (*gcSHADER_AddOutput)(gcSHADER Shader, gctCONST_STRING Name,
+                                 gcSHADER_TYPE Type, gctSIZE_T Length,
+                                 gctUINT16 TempRegister);
+
+    gceSTATUS (*gcSHADER_AddLocation)(gcSHADER Shader, gctINT Location, gctSIZE_T Length);
+
+    gceSTATUS (*gcSHADER_SetCompilerVersion)(gcSHADER Shader, gctUINT32 *Version);
+
+    gceSTATUS (*gcSHADER_Pack)(gcSHADER);
+
+    gceSTATUS (*gcSHADER_Destroy)(gcSHADER);
+
+    gceSTATUS (*gcSHADER_Copy)(gcSHADER, gcSHADER);
+
+    gceSTATUS (*gcSHADER_DynamicPatch)(gcSHADER, gcPatchDirective *);
+
+    gceSTATUS (*gcCreateOutputConversionDirective)(gctINT, gcsSURF_FORMAT_INFO_PTR, gcPatchDirective  **);
+
+    gceSTATUS (*gcCreateInputConversionDirective)(gcUNIFORM,
+                                                  gcsSURF_FORMAT_INFO_PTR,
+                                                  gctCONST_STRING,
+                                                  gceTEXTURE_SWIZZLE *,
+                                                  gcPatchDirective  **);
+
+    void (*gcSetGLSLCompiler)(gctGLSLCompiler Compiler);
+
+    gceSTATUS (*gcCompileShader)(gcoHAL Hal,
+                                 gctINT ShaderType,
+                                 gctUINT SourceSize,
+                                 gctCONST_STRING Source,
+                                 gcSHADER * Binary,
+                                 gctSTRING * Log);
+}gcsVSC_API;
+
 #endif
 
-    gctUINT32                   pixelPipes;
+
+typedef struct _gcsPROGRAM_STATE
+{
+    /* Shader program state buffer. */
+    gctUINT32                programSize;
+    gctPOINTER               programBuffer;
+    gcsHINT_PTR              hints;
+}
+gcsPROGRAM_STATE;
+
+/* All after-link state should be here */
+typedef struct _gcsPROGRAM_STATE_VARIATION
+{
+    gcsPROGRAM_STATE programState;
+    /* key for this variation */
+    gceSURF_FORMAT srcFmt;
+    gceSURF_FORMAT destFmt;
+
+    /* LRU list, not used for now */
+    gctINT32 prev;
+    gctINT32 next;
+}
+gcsPROGRAM_STATE_VARIATION;
+
+typedef struct _gcsHARDWARE_BLITDRAW
+{
+    gcSHADER vsShader[gcvBLITDRAW_NUM_TYPE];
+
+    gcSHADER psShader[gcvBLITDRAW_NUM_TYPE];
+
+    /* sampler uniform for blit shader */
+    gcUNIFORM  bliterSampler;
+
+    /* color uniform for clear shader */
+    gcUNIFORM  clearColorUnfiorm;
+
+    /* stream pointer.*/
+    gcoSTREAM dynamicStream;
+
+    gcsPROGRAM_STATE_VARIATION programState[gcvBLITDRAW_NUM_TYPE][gcmMAX_VARIATION_NUM];
+
+#if !gcdSTATIC_LINK
+
+    gcsVSC_API vscAPI;
+
+    gctHANDLE vscLib;
+    gctHANDLE glslcLib;
+#endif
+}
+gcsHARDWARE_BLITDRAW, * gcsHARDWARE_BLITDRAW_PTR;
+#endif
+
+
+#if gcdSTREAM_OUT_BUFFER
+
+typedef enum {
+
+    gcvSTREAM_OUT_STATUS_DISABLED = 0,
+    gcvSTREAM_OUT_STATUS_PHASE_1,
+    gcvSTREAM_OUT_STATUS_PHASE_1_PREPASS,
+    gcvSTREAM_OUT_STATUS_PHASE_2
+
+} gceSTREAM_OUT_STATUS;
+
+typedef enum {
+
+    gcvSTREAM_OUT_CHIP_LAYER_STATUS_DISABLED = 0,
+    gcvSTREAM_OUT_CHIP_LAYER_STATUS_PREPASS,
+    gcvSTREAM_OUT_CHIP_LAYER_STATUS_REPLAY,
+    gcvSTREAM_OUT_CHIP_LAYER_STATUS_PREPASS_AND_REPLAY
+
+} gceSTREAM_OUT_CHIP_LAYER_STATUS;
+
+typedef struct _gcoSTREAM_OUT_INDEX
+{
+    gctUINT32                       streamOutIndexAddress[(gcdMULTI_GPU > 0 ? gcdMULTI_GPU : 1)];
+    gcsSURF_NODE                    streamOutIndexNode[(gcdMULTI_GPU > 0 ? gcdMULTI_GPU : 1)];
+    gctUINT32                       originalAddress;
+    gctUINT32                       originalCount;
+    gctUINT32                       originalOffset;
+    gctBOOL                         usedOnce;
+    struct _gcoSTREAM_OUT_INDEX *   next;
+
+} gcoSTREAM_OUT_INDEX;
+
+typedef struct _gcoSTREAM_OUT_INDEX_CACHE
+{
+    gcoSTREAM_OUT_INDEX *       head;
+    gcoSTREAM_OUT_INDEX *       tail;
+    gctUINT                     count;
+
+} gcoSTREAM_OUT_INDEX_CACHE;
+
+#endif
+
+/* gcoHARDWARE object. */
+struct _gcoHARDWARE
+{
+    /* Object. */
+    gcsOBJECT                   object;
+
+    /* Default hardware object or not for this thread */
+    gctBOOL                     threadDefault;
+
+    /* Handle of gckCONTEXT object. */
+    gctUINT32                   context;
+
+    /* Number of states managed by the context manager. */
+    gctUINT32                   stateCount;
+
+    /* Command buffer. */
+    gcoBUFFER                   buffer;
+
+#if gcdSTREAM_OUT_BUFFER
+    gctBOOL                     streamOutInit;
+    gcoQUEUE                    streamOutEventQueue;
+    gcoSTREAM_OUT_INDEX_CACHE   streamOutIndexCache;
+    gceSTREAM_OUT_STATUS        streamOutStatus;
+    gctUINT32                   streamOutOriginalIndexAddess;
+    gctUINT32                   streamOutOriginalIndexOffset;
+    gctUINT32                   streamOutOriginalIndexCount;
+    gctBOOL                     streamOutDirty;
+    gctBOOL                     streamOutNeedSync;
+#endif
+
+    /* Context buffer. */
+    gcePIPE_SELECT              currentPipe;
+
+    /* Event queue. */
+    gcoQUEUE                    queue;
+
+    /* List of state delta buffers. */
+    gcsSTATE_DELTA_PTR          delta;
+
+    /* Chip configuration. */
+#if gcdUSE_HARDWARE_CONFIGURATION_TABLES
+    gcsHARDWARE_CONFIG *        config;
+    gctBOOL *                   features;
+    gctBOOL *                   swwas;
+#else
+    gcsHARDWARE_CONFIG          _config;
+    gcsHARDWARE_CONFIG *        config;
+    gctBOOL                     features[gcvFEATURE_COUNT];
+    gctBOOL                     swwas[gcvSWWA_COUNT];
+#endif
+
+#if gcdENABLE_3D
+    gctUINT                     unifiedConst;
+    gctUINT                     vsConstBase;
+    gctUINT                     psConstBase;
+    gctUINT                     vsConstMax;
+    gctUINT                     psConstMax;
+    gctUINT                     constMax;
+
+    gctUINT                     unifiedShader;
+    gctUINT                     vsInstBase;
+    gctUINT                     psInstBase;
+    gctUINT                     vsInstMax;
+    gctUINT                     psInstMax;
+    gctUINT                     instMax;
+#if gcdMULTI_GPU
+    gctUINT32                   gpuCoreCount;
+    gceMULTI_GPU_RENDERING_MODE gpuRenderingMode;
+    gceCORE_3D_MASK             chipEnable;
+    gceMULTI_GPU_MODE           gpuMode;
+    gctUINT                     interGpuSemaphoreId;
+#endif
+#endif
+
+    gctINT                      needStriping;
+    gctBOOL                     mixedStreams;
+
+    gctUINT32                   colorOutCount; /* num of mRT */
 
     /* Big endian */
     gctBOOL                     bigEndian;
 
-#ifndef VIVANTE_NO_3D
+    /* Special hint flag */
+    gctUINT32                   specialHint;
+
+    gctINT                      specialHintData;
+
+#if gcdENABLE_3D
     /* API type. */
     gceAPI                      api;
 
@@ -335,6 +690,9 @@ struct _gcoHARDWARE
 
     /* Temporary buffer parameters. */
     struct _gcsSURF_INFO        tempBuffer;
+
+    /* Temporary render target for MSAA/depth-only case */
+    struct _gcsSURF_INFO        tempRT;
 
     /* Temporary surface for 2D. */
     gcsSURF_INFO_PTR            temp2DSurf[gcdTEMP_SURFACE_NUMBER];
@@ -348,7 +706,7 @@ struct _gcoHARDWARE
         gctUINT32                   kernelAddress;
     } loadedKernel[gcvFILTER_BLIT_KERNEL_NUM];
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
     /* Flush state. */
     gctBOOL                     flushedColor;
     gctBOOL                     flushedDepth;
@@ -361,15 +719,28 @@ struct _gcoHARDWARE
     /* Depth states. */
     gctBOOL                     depthConfigDirty;
     gctBOOL                     depthRangeDirty;
+    gctBOOL                     depthNormalizationDirty;
     gctBOOL                     depthTargetDirty;
     gcsDEPTH_INFO               depthStates;
     gctBOOL                     disableAllEarlyDepth;
+    gctBOOL                     disableRAModifyZ;
+    gctBOOL                     disableRAPassZ;
+    gctBOOL                     disableAllEarlyDepthFromStatistics;
     gctBOOL                     previousPEDepth;
+    gctBOOL                     prevEarlyZ;
+    gceCOMPARE                  prevDepthCompare;
+
+    /* True if either one RT or DS bpp is <= 16 */
+    gctBOOL                     singleBuffer8x4;
 
     /* Primitive assembly states. */
     gctBOOL                     paConfigDirty;
     gctBOOL                     paLineDirty;
     gcsPA_INFO                  paStates;
+
+    /* Depth clipping plane in the clipping space. */
+    gcuFLOAT_UINT32             depthNear;
+    gcuFLOAT_UINT32             depthFar;
 
     /* Maximum depth value. */
     gctUINT32                   maxDepth;
@@ -381,8 +752,8 @@ struct _gcoHARDWARE
     gctBOOL                     stencilKeepBack[3];
 
     gctBOOL                     stencilDirty;
-    gctBOOL                     stencilNeedFlush;
     gcsSTENCIL_INFO             stencilStates;
+    gctINT                      prevStencilMode;
 
     /* Alpha states. */
     gctBOOL                     alphaDirty;
@@ -398,20 +769,28 @@ struct _gcoHARDWARE
     /* Shader states. */
     gctBOOL                     shaderDirty;
     gcsSHADER_INFO              shaderStates;
+    gcsPROGRAM_UNIFIED_STATUS   prevProgramUnfiedStatus;
 
-#endif /* VIVANTE_NO_3D */
+    gctUINT32                   samplerDirty;
+    gctBOOL                     textureDirty;
+
+    /* Rounding mode */
+    gctBOOL                     rtneRounding;
+
+    gcsHARDWARE_BLITDRAW_PTR    blitDraw;
+
+#endif /* gcdENABLE_3D */
 
     /* Stall before rendingering triangles. */
     gctBOOL                     stallPrimitive;
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
     /* Tile status information. */
     gctUINT32                   memoryConfig;
+    gctUINT32                   memoryConfigMRT[gcdMAX_DRAW_BUFFERS];
     gctBOOL                     paused;
     gctBOOL                     cacheDirty;
     gctBOOL                     inFlush;
-    gctUINT32                   physicalTileColor;
-    gctUINT32                   physicalTileDepth;
 
     /* Anti-alias mode. */
     gctBOOL                     msaaConfigDirty;
@@ -430,40 +809,99 @@ struct _gcoHARDWARE
     gctBOOL                     centroidsDirty;
 
     /* Dither. */
-    gctUINT32                   dither[2];
+    gctUINT32                   ditherTable[2][2];
     gctBOOL                     peDitherDirty;
-#endif /* VIVANTE_NO_3D */
+    gctUINT32                   ditherEnable;
+
+    /* Occlusion Query */
+    gctBOOL                     enableOQ;
+
+    gctBOOL                     indexDirty;
+    gctBOOL                     indexHeadDirty;
+    gctBOOL                     indexTailDirty;
+    gctUINT32                   indexHeadAddress;
+    gctUINT32                   indexTailAddress;
+    gctUINT32                   indexFormat;
+    gctUINT32                   indexEndian;
+    gctBOOL                     primitiveRestart;
+    gctUINT32                   restartElement;
+
+    /* ps output-> RT mapping
+    ** in:  sequential number from 0 to numRT-1;
+    ** out: RT index set up by APP.
+    */
+    gctINT32                    psOutputMapping[gcdMAX_DRAW_BUFFERS];
+
+
+    /* Flush shader L1 cache state */
+    gctBOOL                     flushSHL1;
+#endif
 
     /* Stall signal. */
     gctSIGNAL                   stallSignal;
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
     /* Multi-pixel pipe information. */
     gctUINT32                   resolveAlignmentX;
     gctUINT32                   resolveAlignmentY;
+    gctBOOL                     multiPipeResolve;
 
     /* Texture states. */
     gctBOOL                     hwTxDirty;
-    gctBOOL                     hwTxFlush;
-    gctUINT32                   hwTxSamplerModeDirty;
-    gctUINT32                   hwTxSamplerSizeDirty;
-    gctUINT32                   hwTxSamplerSizeLogDirty;
-    gctUINT32                   hwTxSamplerLODDirty;
-    gctUINT32                   hwTxSamplerTSDirty;
-    gctUINT32                   hwTxSamplerAddressDirty[gcdLOD_LEVELS];
+    gctBOOL                     hwTxFlushVS;
+    gctBOOL                     hwTxFlushPS;
+
+#if gcdSECURITY
+    gctUINT32                   txLodNums[gcdSAMPLERS];
+#endif
+
     gctUINT32                   hwTxSamplerMode[gcdSAMPLERS];
     gctUINT32                   hwTxSamplerModeEx[gcdSAMPLERS];
+    gctUINT32                   hwTxSamplerMode2[gcdSAMPLERS];
+    gctUINT32                   hwTxSamplerModeDirty;
+
     gctUINT32                   hwTxSamplerSize[gcdSAMPLERS];
+    gctUINT32                   hwTxSamplerSizeDirty;
+
     gctUINT32                   hwTxSamplerSizeLog[gcdSAMPLERS];
+    gctUINT32                   hwTxSamplerSizeLogDirty;
+
+    gctUINT32                   hwTxSampler3D[gcdSAMPLERS];
+    gctUINT32                   hwTxSampler3DDirty;
+
     gctUINT32                   hwTxSamplerLOD[gcdSAMPLERS];
+    gctUINT32                   hwTxSamplerLODDirty;
+
+    gctUINT32                   hwTxBaseLOD[gcdSAMPLERS];
+    gctUINT32                   hwTxBaseLODDirty;
+
     gctUINT32                   hwTxSamplerAddress[gcdLOD_LEVELS][gcdSAMPLERS];
+    gctUINT32                   hwTxSamplerAddressDirty[gcdLOD_LEVELS];
+
+    gctUINT32                   hwTxSamplerYUVControl[gcdSAMPLERS];
+    gctUINT32                   hwTxSamplerYUVControlDirty;
+
+    gctUINT32                   hwTxSamplerYUVStride[gcdSAMPLERS];
+    gctUINT32                   hwTxSamplerYUVStrideDirty;
+
+    gctUINT32                   hwTxSamplerLinearStride[gcdSAMPLERS];
+    gctUINT32                   hwTxSamplerLinearStrideDirty;
+
     gctUINT32                   hwTXSampleTSConfig[gcdSAMPLER_TS];
     gctUINT32                   hwTXSampleTSBuffer[gcdSAMPLER_TS];
     gctUINT32                   hwTXSampleTSClearValue[gcdSAMPLER_TS];
+    gctUINT32                   hwTXSampleTSClearValueUpper[gcdSAMPLER_TS];
+    gctUINT32                   hwTxSamplerTxBaseBuffer[gcdSAMPLER_TS];
+    gctUINT32                   hwTxSamplerTSDirty;
+
+    gctUINT32                   hwTxSamplerASTCSize[gcdLOD_LEVELS][gcdSAMPLERS];
+    gctUINT32                   hwTxSamplerASTCSRGB[gcdLOD_LEVELS][gcdSAMPLERS];
+    gctUINT32                   hwTxSamplerASTCDirty[gcdLOD_LEVELS];
 
     /* State to collect flushL2 requests, and process it at draw time. */
     gctBOOL                     flushL2;
-#endif /* VIVANTE_NO_3D */
+
+#endif
 
     /***************************************************************************
     ** 2D states.
@@ -478,20 +916,8 @@ struct _gcoHARDWARE
     /* Software 2D force flag. */
     gctBOOL                     sw2DEngine;
 
-    /* 2D hardware Pixel Engine 2.0 availability flag. */
-    gctBOOL                     hw2DPE20;
-
-    /* Enhancement for DFB features. */
-    gctBOOL                     hw2DFullDFB;
-
     /* Byte write capability. */
     gctBOOL                     byteWrite;
-
-    /* BitBlit rotation capability. */
-    gctBOOL                     fullBitBlitRotation;
-
-    /* FilterBlit rotation capability. */
-    gctBOOL                     fullFilterBlitRotation;
 
     /* Need to shadow RotAngleReg? */
     gctBOOL                     shadowRotAngleReg;
@@ -499,29 +925,11 @@ struct _gcoHARDWARE
     /* The shadow value. */
     gctUINT32                   rotAngleRegShadow;
 
-    /* Dither and filter+alpha capability. */
-    gctBOOL                     dither2DandAlphablendFilter;
-
-    /* Mirror extension. */
-    gctBOOL                     mirrorExtension;
-
-    /* Support one pass filter blit and tiled/YUV input&output for Blit/StretchBlit. */
-    gctBOOL                     hw2DOPF;
-
-    /* Support Multi-source blit. */
-    gctBOOL                     hw2DMultiSrcBlit;
-
-    /* This feature including 8 multi source, 2x2 minor tile, U/V separate stride,
-        AXI reorder, RGB non-8-pixel alignement. */
-    gctBOOL                     hw2DNewFeature0;
-
     /* Support L2 cache for 2D 420 input. */
     gctBOOL                     hw2D420L2Cache;
+    gctBOOL                     needOffL2Cache;
 
-    /* Not support index8 & Mono/Color brush. */
-    gctBOOL                     hw2DNoIndex8_Brush;
-
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
     /* OpenCL threadwalker in PS. */
     gctBOOL                     threadWalkerInPS;
 
@@ -535,17 +943,64 @@ struct _gcoHARDWARE
     /* Temp surface for fast clear */
     gcoSURF                     tempSurface;
 
+    /* Blt optimization. */
+    gceSURF_ROTATION            srcRot;
+    gceSURF_ROTATION            dstRot;
+    gctBOOL                     horMirror;
+    gctBOOL                     verMirror;
+    gcsRECT                     clipRect;
+    gctBOOL                     srcRelated;
+
     gctUINT32_PTR               hw2DCmdBuffer;
     gctUINT32                   hw2DCmdIndex;
     gctUINT32                   hw2DCmdSize;
 
-    gctBOOL                     hw2DAppendCacheFlush;
-	gcsSURF_INFO_PTR			hw2DCacheFlushSurf;
+    gctBOOL                     hw2DSplitRect;
 
-    gctUINT32                   hw2DWalkerVersion;
+    gctUINT32                   hw2DAppendCacheFlush;
+    gctUINT32                   hw2DCacheFlushAfterCompress;
+    gctUINT32_PTR               hw2DCacheFlushCmd;
+    gcsSURF_INFO_PTR            hw2DCacheFlushSurf;
+
+    gcsSURF_INFO_PTR            hw2DClearDummySurf;
+    gcsRECT_PTR                 hw2DClearDestRect;
+
+    gctBOOL                     hw2DCurrentRenderCompressed;
+    gcsSURF_INFO_PTR            hw2DDummySurf;
+
+    gctBOOL                     hw2DDoMultiDst;
+
+    gctBOOL                     hw2DBlockSize;
+
+    gctBOOL                     hw2DQuad;
+
+    gctUINT32                   mmuVersion;
+#if gcdENABLE_3D
+    gcePATCH_ID                 patchID;
+#endif
+
+#if gcdSYNC
+    gcoFENCE                    fence;
+    gctBOOL                     fenceEnabled;
+#endif
+
+   /* XRGB */
+    gctBOOL                     enableXRGB;
+
+    gcsSURF_INFO_PTR            clearSrcSurf;
+    gcsRECT                     clearSrcRect;
+
+    gctBOOL                     notAdjustRotation;
+
+#if gcdDUMP
+    gctUINT32                   contextPhysical[gcdCONTEXT_BUFFER_COUNT];
+    gctPOINTER                  contextLogical[gcdCONTEXT_BUFFER_COUNT];
+    gctUINT32                   contextBytes;
+    gctUINT8                    currentContext;
+#endif
 };
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
 gceSTATUS
 gcoHARDWARE_ComputeCentroids(
     IN gcoHARDWARE Hardware,
@@ -554,61 +1009,181 @@ gcoHARDWARE_ComputeCentroids(
     OUT gcsCENTROIDS_PTR Centroids
     );
 
+#if gcdMULTI_GPU
+
+#if gcdSTREAM_OUT_BUFFER
+gceSTATUS
+gcoHARDWARE_MultiGPUSemaphoreId (
+    IN gcoHARDWARE Hardware,
+    OUT gctUINT8_PTR SemaphoreId
+    );
+#endif
+
+#endif
+
 /* Flush the vertex caches. */
 gceSTATUS
 gcoHARDWARE_FlushL2Cache(
-    IN gcoHARDWARE Hardware
+    IN gcoHARDWARE Hardware,
+    INOUT gctPOINTER *Memory
     );
 
 gceSTATUS
 gcoHARDWARE_FlushViewport(
-    IN gcoHARDWARE Hardware
+    IN gcoHARDWARE Hardware,
+    INOUT gctPOINTER *Memory
     );
 
 gceSTATUS
 gcoHARDWARE_FlushScissor(
-    IN gcoHARDWARE Hardware
+    IN gcoHARDWARE Hardware,
+    INOUT gctPOINTER *Memory
     );
 
 gceSTATUS
 gcoHARDWARE_FlushAlpha(
-    IN gcoHARDWARE Hardware
+    IN gcoHARDWARE Hardware,
+    INOUT gctPOINTER *Memory
     );
 
 gceSTATUS
 gcoHARDWARE_FlushStencil(
-    IN gcoHARDWARE Hardware
+    IN gcoHARDWARE Hardware,
+    INOUT gctPOINTER *Memory
     );
 
 gceSTATUS
 gcoHARDWARE_FlushTarget(
-    IN gcoHARDWARE Hardware
+    IN gcoHARDWARE Hardware,
+    INOUT gctPOINTER *Memory
     );
 
 gceSTATUS
 gcoHARDWARE_FlushDepth(
-    IN gcoHARDWARE Hardware
+    IN gcoHARDWARE Hardware,
+    INOUT gctPOINTER *Memory
     );
 
 gceSTATUS
 gcoHARDWARE_FlushSampling(
-    IN gcoHARDWARE Hardware
+    IN gcoHARDWARE Hardware,
+    INOUT gctPOINTER *Memory
     );
 
 gceSTATUS
 gcoHARDWARE_FlushPA(
+    IN gcoHARDWARE Hardware,
+    INOUT gctPOINTER *Memory
+    );
+
+gceSTATUS
+gcoHARDWARE_FlushDepthOnly(
     IN gcoHARDWARE Hardware
     );
 
 gceSTATUS
 gcoHARDWARE_FlushShaders(
     IN gcoHARDWARE Hardware,
-    IN gcePRIMITIVE PrimitiveType
+    IN gcePRIMITIVE PrimitiveType,
+    INOUT gctPOINTER *Memory
     );
 
 gceSTATUS
-gcoHARDWARE_ProgramTexture(
+gcoHARDWARE_FastFlushUniforms(
+    IN gcoHARDWARE Hardware,
+    IN gcsFAST_FLUSH_PTR FastFlushInfo,
+    INOUT gctPOINTER *Memory
+    );
+
+gceSTATUS
+gcoHARDWARE_FastFlushStream(
+    IN gcoHARDWARE Hardware,
+    IN gcsFAST_FLUSH_PTR FastFlushInfo,
+    INOUT gctPOINTER *Memory
+    );
+
+gceSTATUS
+gcoHARDWARE_FastProgramIndex(
+    IN gcoHARDWARE Hardware,
+    IN gcsFAST_FLUSH_PTR FastFlushInfo,
+    INOUT gctPOINTER *Memory
+    );
+
+gceSTATUS
+gcoHARDWARE_FastFlushAlpha(
+    IN gcoHARDWARE Hardware,
+    IN gcsFAST_FLUSH_PTR FastFlushInfo,
+    INOUT gctPOINTER *Memory
+    );
+
+gceSTATUS
+gcoHARDWARE_FastFlushDepthCompare(
+    IN gcoHARDWARE Hardware,
+    IN gcsFAST_FLUSH_PTR FastFlushInfo,
+    INOUT gctPOINTER *Memory
+    );
+
+gceSTATUS
+gcoHARDWARE_FastDrawIndexedPrimitive(
+    IN gcoHARDWARE Hardware,
+    IN gcsFAST_FLUSH_PTR FastFlushInfo,
+    INOUT gctPOINTER *Memory
+    );
+
+#if gcdSTREAM_OUT_BUFFER
+
+gceSTATUS
+gcoHARDWARE_QueryStreamOutIndex(
+    IN gcoHARDWARE Hardware,
+    IN gctUINT32 IndexAddress,
+    IN gctUINT32 IndexOffset,
+    IN gctUINT32 IndexCount,
+    OUT gctBOOL_PTR Found
+);
+
+gceSTATUS gcoHARDWARE_FlushStreamOut(
+    IN gcoHARDWARE Hardware,
+    INOUT gctPOINTER *Memory
+    );
+
+gceSTATUS gcoHARDWARE_StopSignalStreamOut(
     IN gcoHARDWARE Hardware
+    );
+
+gceSTATUS gcoHARDWARE_ProgramIndexStreamOut(
+    IN gcoHARDWARE Hardware,
+    IN gctUINT32 CoreIndex,
+    IN gcoSTREAM_OUT_INDEX * Index,
+    INOUT gctPOINTER *Memory
+    );
+
+gceSTATUS
+gcoHARDWARE_SyncStreamOut (
+    IN gcoHARDWARE Hardware
+    );
+
+gceSTATUS
+gcoHARDWARE_AddStreamOutIndex (
+    IN gcoHARDWARE Hardware,
+    IN gctUINT32 Bytes
+    );
+
+gceSTATUS
+gcoHARDWARE_GetStreamOutIndex (
+    IN gcoHARDWARE Hardware,
+    OUT gcoSTREAM_OUT_INDEX ** Index
+    );
+
+gceSTATUS
+gcoHARDWARE_FreeStreamOutIndex (
+    IN gcoHARDWARE Hardware
+    );
+
+#endif
+
+gceSTATUS gcoHARDWARE_ProgramIndex(
+    IN gcoHARDWARE Hardware,
+    INOUT gctPOINTER *Memory
     );
 
 gceSTATUS
@@ -620,7 +1195,7 @@ gceSTATUS
 gcoHARDWARE_DestroyComposition(
     IN gcoHARDWARE Hardware
     );
-#endif /* VIVANTE_NO_3D */
+#endif
 
 gceSTATUS
 gcoHARDWARE_Load2DState32(
@@ -633,7 +1208,7 @@ gceSTATUS
 gcoHARDWARE_Load2DState(
     IN gcoHARDWARE Hardware,
     IN gctUINT32 Address,
-    IN gctSIZE_T Count,
+    IN gctUINT32 Count,
     IN gctPOINTER Data
     );
 
@@ -652,6 +1227,13 @@ gcoHARDWARE_TranslateSourceFormat(
     OUT gctUINT32* HwValue,
     OUT gctUINT32* HwSwizzleValue,
     OUT gctUINT32* HwIsYUVValue
+    );
+
+/* Translate API format to internal format . */
+gceSTATUS gcoHARDWARE_TranslateXRGBFormat(
+    IN gcoHARDWARE Hardware,
+    IN gceSURF_FORMAT InputFormat,
+    OUT gceSURF_FORMAT* OutputFormat
     );
 
 /* Translate API pattern color format to its hardware value. */
@@ -799,7 +1381,9 @@ gcoHARDWARE_SetColorSource(
     IN gcsSURF_INFO_PTR Surface,
     IN gctBOOL CoordRelative,
     IN gctUINT32 Transparency,
-    IN gce2D_YUV_COLOR_MODE Mode
+    IN gce2D_YUV_COLOR_MODE Mode,
+    IN gctBOOL DeGamma,
+    IN gctBOOL Filter
     );
 
 /* Configure masked color source. */
@@ -912,14 +1496,21 @@ gcoHARDWARE_SetMultiSourceEx(
     IN gcoHARDWARE Hardware,
     IN gctUINT RegGroupIndex,
     IN gctUINT SrcIndex,
-    IN gcs2D_State_PTR State
+    IN gcs2D_State_PTR State,
+    IN gctBOOL MultiDstRect
     );
 
 /* Configure destination. */
 gceSTATUS
 gcoHARDWARE_SetTarget(
     IN gcoHARDWARE Hardware,
-    IN gcsSURF_INFO_PTR Surface
+    IN gcsSURF_INFO_PTR Surface,
+    IN gctBOOL Filter,
+    IN gce2D_YUV_COLOR_MODE Mode,
+    IN gctINT32_PTR CscRGB2YUV,
+    IN gctUINT32_PTR GammaTable,
+    IN gctBOOL GdiStretch,
+    OUT gctUINT32_PTR DestConfig
     );
 
 gceSTATUS gcoHARDWARE_SetMultiTarget(
@@ -971,13 +1562,6 @@ gcoHARDWARE_LoadColorPattern(
     IN gctUINT64 Mask
     );
 
-/* Calculate stretch factor. */
-gctUINT32
-gcoHARDWARE_GetStretchFactor(
-    IN gctINT32 SrcSize,
-    IN gctINT32 DestSize
-    );
-
 /* Calculate and program the stretch factors. */
 gceSTATUS
 gcoHARDWARE_SetStretchFactors(
@@ -999,7 +1583,8 @@ gceSTATUS
 gcoHARDWARE_SetBitBlitMirror(
     IN gcoHARDWARE Hardware,
     IN gctBOOL HorizontalMirror,
-    IN gctBOOL VerticalMirror
+    IN gctBOOL VerticalMirror,
+    IN gctBOOL DstMirror
     );
 
 /* Enable alpha blending engine in the hardware and disengage the ROP engine. */
@@ -1014,13 +1599,14 @@ gcoHARDWARE_EnableAlphaBlend(
     IN gceSURF_BLEND_FACTOR_MODE DstFactorMode,
     IN gceSURF_PIXEL_COLOR_MODE SrcColorMode,
     IN gceSURF_PIXEL_COLOR_MODE DstColorMode,
-    IN gctUINT8 SrcGlobalAlphaValue,
-    IN gctUINT8 DstGlobalAlphaValue
+    IN gctUINT32 SrcGlobalAlphaValue,
+    IN gctUINT32 DstGlobalAlphaValue
     );
 
 /* Disable alpha blending engine in the hardware and engage the ROP engine. */
 gceSTATUS
 gcoHARDWARE_DisableAlphaBlend(
+    IN gcoHARDWARE Hardware
     );
 
 gceSTATUS
@@ -1046,23 +1632,6 @@ gcoHARDWARE_ColorPackFromARGB8(
     OUT gctUINT32_PTR Color
     );
 
-/* Software clear. */
-gceSTATUS
-gcoHARDWARE_ClearSoftware(
-    IN gcoHARDWARE Hardware,
-    IN gctPOINTER LogicalAddress,
-    IN gctUINT32 Stride,
-    IN gctINT32 Left,
-    IN gctINT32 Top,
-    IN gctINT32 Right,
-    IN gctINT32 Bottom,
-    IN gceSURF_FORMAT Format,
-    IN gctUINT32 ClearValue,
-    IN gctUINT8 ClearMask,
-    IN gctBOOL Stall,
-	IN gctUINT32 AlignedHeight
-    );
-
 /* Convert pixel format. */
 gceSTATUS
 gcoHARDWARE_ConvertPixel(
@@ -1072,13 +1641,16 @@ gcoHARDWARE_ConvertPixel(
     IN gctUINT TrgBitOffset,
     IN gcsSURF_FORMAT_INFO_PTR SrcFormat,
     IN gcsSURF_FORMAT_INFO_PTR TrgFormat,
-    IN gcsBOUNDARY_PTR SrcBoundary,
-    IN gcsBOUNDARY_PTR TrgBoundary
+    IN OPTIONAL gcsBOUNDARY_PTR SrcBoundary,
+    IN OPTIONAL gcsBOUNDARY_PTR TrgBoundary,
+    IN gctBOOL SrcPixelOdd,
+    IN gctBOOL TrgPixelOdd
     );
 
 /* Copy a rectangular area with format conversion. */
 gceSTATUS
 gcoHARDWARE_CopyPixels(
+    IN gcoHARDWARE Hardware,
     IN gcsSURF_INFO_PTR Source,
     IN gcsSURF_INFO_PTR Target,
     IN gctINT SourceX,
@@ -1092,6 +1664,7 @@ gcoHARDWARE_CopyPixels(
 /* Enable or disable anti-aliasing. */
 gceSTATUS
 gcoHARDWARE_SetAntiAlias(
+    IN gcoHARDWARE Hardware,
     IN gctBOOL Enable
     );
 
@@ -1104,7 +1677,7 @@ gcoHARDWARE_WriteBuffer(
     IN gctBOOL Aligned
     );
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
 typedef enum _gceTILE_STATUS_CONTROL
 {
     gcvTILE_STATUS_PAUSE,
@@ -1122,6 +1695,7 @@ gcoHARDWARE_PauseTileStatus(
 /* Compute the offset of the specified pixel location. */
 gceSTATUS
 gcoHARDWARE_ComputeOffset(
+    IN gcoHARDWARE Hardware,
     IN gctINT32 X,
     IN gctINT32 Y,
     IN gctUINT Stride,
@@ -1129,6 +1703,14 @@ gcoHARDWARE_ComputeOffset(
     IN gceTILING Tiling,
     OUT gctUINT32_PTR Offset
     );
+
+/* Adjust cache mode to make RS work fine with MSAA config switch*/
+gceSTATUS
+gcoHARDWARE_AdjustCacheMode(
+    IN gcoHARDWARE Hardware,
+    IN gcsSURF_INFO_PTR SrcInfo
+    );
+
 
 /* Query the tile size of the given surface. */
 gceSTATUS
@@ -1142,7 +1724,9 @@ gcoHARDWARE_GetSurfaceTileSize(
 gceSTATUS
 gcoHARDWARE_ProgramResolve(
     IN gcoHARDWARE Hardware,
-    IN gcsPOINT RectSize
+    IN gcsPOINT RectSize,
+    IN gctBOOL  MultiPipe,
+    IN gceMSAA_DOWNSAMPLE_MODE DownsampleMode
     );
 #endif /* VIVANTE_NO_3D */
 
@@ -1151,6 +1735,14 @@ gceSTATUS
 gcoHARDWARE_LoadState32(
     IN gcoHARDWARE Hardware,
     IN gctUINT32 Address,
+    IN gctUINT32 Data
+    );
+
+gceSTATUS
+gcoHARDWARE_LoadState32WithMask(
+    IN gcoHARDWARE Hardware,
+    IN gctUINT32 Address,
+    IN gctUINT32 Mask,
     IN gctUINT32 Data
     );
 
@@ -1165,6 +1757,7 @@ gcoHARDWARE_LoadState32x(
 /* Load one 64-bit load state. */
 gceSTATUS
 gcoHARDWARE_LoadState64(
+    IN gcoHARDWARE Hardware,
     IN gctUINT32 Address,
     IN gctUINT64 Data
     );
@@ -1175,17 +1768,167 @@ gcoHARDWARE_SetDither2D(
     IN gctBOOL Enable
     );
 
+gceSTATUS gcoHARDWARE_Begin2DRender(
+    IN gcoHARDWARE Hardware,
+    IN gcs2D_State_PTR State
+    );
+
+gceSTATUS gcoHARDWARE_End2DRender(
+     IN gcoHARDWARE Hardware
+     );
+
+gceSTATUS gcoHARDWARE_UploadCSCTable(
+    IN gcoHARDWARE Hardware,
+    IN gctBOOL YUV2RGB,
+    IN gctINT32_PTR Table
+    );
+
+/* About Compression. */
+gceSTATUS
+gcoHARDWARE_GetCompressionCmdSize(
+    IN gcoHARDWARE Hardware,
+    IN gcs2D_State_PTR State,
+    IN gcsSURF_INFO_PTR SrcSurface,
+    IN gcsSURF_INFO_PTR DstSurface,
+    IN gctUINT CompressNum,
+    IN gce2D_COMMAND Command,
+    OUT gctUINT32 *CmdSize
+    );
+
+gceSTATUS
+gcoHARDWARE_SetCompression(
+    IN gcoHARDWARE Hardware,
+    IN gcs2D_State_PTR State,
+    IN gcsSURF_INFO_PTR SrcSurface,
+    IN gcsSURF_INFO_PTR DstSurface,
+    IN gce2D_COMMAND Command,
+    IN gctBOOL AnyCompress
+    );
+
 /* Update the state delta. */
-gceSTATUS gcoHARDWARE_UpdateDelta(
+static gcmINLINE void gcoHARDWARE_UpdateDelta(
     IN gcsSTATE_DELTA_PTR StateDelta,
-    IN gctBOOL FixedPoint,
     IN gctUINT32 Address,
     IN gctUINT32 Mask,
     IN gctUINT32 Data
+    )
+{
+    gcsSTATE_DELTA_RECORD_PTR recordArray;
+    gcsSTATE_DELTA_RECORD_PTR recordEntry;
+    gctUINT32_PTR mapEntryID;
+    gctUINT32_PTR mapEntryIndex;
+    gctUINT deltaID;
+
+    /* Get the current record array. */
+    recordArray = gcmUINT64_TO_PTR(StateDelta->recordArray);
+
+    /* Get shortcuts to the fields. */
+    deltaID       = StateDelta->id;
+    mapEntryID    = gcmUINT64_TO_PTR(StateDelta->mapEntryID);
+    mapEntryIndex = gcmUINT64_TO_PTR(StateDelta->mapEntryIndex);
+
+    gcmASSERT(Address < (StateDelta->mapEntryIDSize / gcmSIZEOF(gctUINT)));
+
+    /* Has the entry been initialized? */
+    if (mapEntryID[Address] != deltaID)
+    {
+        /* No, initialize the map entry. */
+        mapEntryID    [Address] = deltaID;
+        mapEntryIndex [Address] = StateDelta->recordCount;
+
+        /* Get the current record. */
+        recordEntry = &recordArray[mapEntryIndex[Address]];
+
+        /* Add the state to the list. */
+        recordEntry->address = Address;
+        recordEntry->mask    = Mask;
+        recordEntry->data    = Data;
+
+        /* Update the number of valid records. */
+        StateDelta->recordCount += 1;
+    }
+
+    /* Regular (not masked) states. */
+    else if (Mask == 0)
+    {
+        /* Get the current record. */
+        recordEntry = &recordArray[mapEntryIndex[Address]];
+
+        /* Update the state record. */
+        recordEntry->mask = 0;
+        recordEntry->data = Data;
+    }
+
+    /* Masked states. */
+    else
+    {
+        /* Get the current record. */
+        recordEntry = &recordArray[mapEntryIndex[Address]];
+
+        /* Update the state record. */
+        recordEntry->mask |=  Mask;
+        recordEntry->data &= ~Mask;
+        recordEntry->data |= (Data & Mask);
+    }
+}
+
+gceSTATUS gcoHARDWARE_InitializeFormatArrayTable(
+    IN gcoHARDWARE Hardware
+    );
+
+gceSTATUS
+gcoHARDWARE_3DBlitCopy(
+    IN gcoHARDWARE Hardware,
+    IN gctUINT32 SrcAddress,
+    IN gctUINT32 DestAddress,
+    IN gctUINT32 CopySize
+    );
+
+gceSTATUS
+gcoHARDWARE_3DBlitBlt(
+    IN gcoHARDWARE Hardware,
+    IN gcsSURF_INFO_PTR SrcInfo,
+    IN gcsSURF_INFO_PTR DestInfo,
+    IN gcsPOINT_PTR SrcOrigin,
+    IN gcsPOINT_PTR DestOrigin,
+    IN gcsPOINT_PTR RectSize
     );
 
 gceSTATUS
 gcoHARDWARE_2DAppendNop(
+    IN gcoHARDWARE Hardware
+    );
+
+gceSTATUS gcoHARDWARE_Reset2DCmdBuffer(
+    IN gcoHARDWARE Hardware,
+    IN gctBOOL CleanCmd
+    );
+
+gctBOOL
+gcoHARDWARE_NeedUserCSC(
+    IN gce2D_YUV_COLOR_MODE Mode,
+    IN gceSURF_FORMAT Format);
+
+gceSTATUS
+gcoHARDWARE_SetSuperTileVersion(
+    IN gcoHARDWARE Hardware,
+    IN gce2D_SUPER_TILE_VERSION Version
+    );
+
+gceSTATUS
+gcoHARDWARE_Alloc2DSurface(
+    IN gcoHARDWARE Hardware,
+    IN gctUINT Width,
+    IN gctUINT Height,
+    IN gceSURF_FORMAT Format,
+    IN gceSURF_FLAG Flags,
+    OUT gcsSURF_INFO_PTR *SurfInfo
+    );
+
+gceSTATUS
+gcoHARDWARE_Free2DSurface(
+    IN gcoHARDWARE Hardware,
+    IN gcsSURF_INFO_PTR SurfInfo
     );
 
 #ifdef __cplusplus

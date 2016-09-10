@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -9,8 +9,6 @@
 *    without the express written permission of Vivante Corporation.
 *
 *****************************************************************************/
-
-
 
 
 #include "gc_hal_user_precomp.h"
@@ -119,7 +117,6 @@
 static gcsVGCMDQUEUE _emptyQueueMark;
 #define gcvEMPTY_QUEUE (& _emptyQueueMark)
 
-
 /******************************************************************************\
 ********************************** Structures **********************************
 \******************************************************************************/
@@ -165,8 +162,8 @@ struct _gcoVGBUFFER
     /* Pointer to the required objects. */
     gcoOS                       os;
     gcoHAL                      hal;
-    gcoVGHARDWARE                   hardware;
-    gcsVGCONTEXT_PTR                context;
+    gcoVGHARDWARE               hardware;
+    gcsVGCONTEXT_PTR            context;
 
     /** Use CALL/RETURN enable. */
     gctBOOL                     useCallReturn;
@@ -175,7 +172,7 @@ struct _gcoVGBUFFER
     gcsCOMMAND_BUFFER_INFO      bufferInfo;
 
     /* Main container buffer node. */
-    gcuVIDMEM_NODE_PTR          containerNode;
+    gctUINT32                   containerNode;
 
     /* The minimum and maximum buffer sizes. */
     gctSIZE_T                   bufferMinSize;
@@ -200,17 +197,13 @@ struct _gcoVGBUFFER
     gctUINT                     taskStorageMaxSize;
 
     /* Task tables. */
-#ifndef __QNXNTO__
     gcsTASK_MASTER_TABLE        taskTable;
-#else
-    gcsTASK_MASTER_TABLE      * pTaskTable;
-#endif
     gctUINT                     taskBlockCount;
 
     /* Command queue. */
-    gcsVGCMDQUEUE_PTR               queueFirst;
-    gcsVGCMDQUEUE_PTR               queueLast;
-    gcsVGCMDQUEUE_PTR               queueCurrent;
+    gcsVGCMDQUEUE_PTR           queueFirst;
+    gcsVGCMDQUEUE_PTR           queueLast;
+    gcsVGCMDQUEUE_PTR           queueCurrent;
 
     /* Pool of completion signals. */
     gctUINT                     completionsAllocated;
@@ -235,7 +228,6 @@ struct _gcoVGBUFFER
 #if gcvVALIDATE_COMMAND_BUFFER
     static gctUINT32 _validateCounter = 0;
 #endif
-
 
 /******************************************************************************\
 ********************************* Support Code *********************************
@@ -814,15 +806,11 @@ _AllocateTask(
     IN gcoVGBUFFER Buffer,
     IN gceBLOCK Block,
     IN gctUINT TaskCount,
-    IN gctSIZE_T Bytes,
+    IN gctUINT32 Bytes,
     OUT gcsTASK_PTR * Task
     )
 {
     gceSTATUS status = gcvSTATUS_OK;
-#ifdef __QNXNTO__
-    gctPHYS_ADDR physical;
-    gctSIZE_T objSize;
-#endif
 
     do
     {
@@ -850,18 +838,11 @@ _AllocateTask(
                 Buffer->taskOverflow += 1;
 
                 /* No, allocate another container. */
-#ifndef __QNXNTO__
-                gcmERR_BREAK(gcoOS_Allocate(
+                gcmERR_BREAK(gcoOS_AllocateSharedMemory(
                     Buffer->os,
                     Buffer->taskStorageGranularity,
                     (gctPOINTER *) &next
                     ));
-#else
-                objSize = (gctSIZE_T) Buffer->taskStorageGranularity;
-                gcmERR_BREAK(gcoOS_AllocateNonPagedMemory(
-                    gcvNULL, gcvTRUE, &objSize, &physical, (gctPOINTER *) &next
-                    ));
-#endif
 
                 /* Terminate the new container. */
                 next->next = gcvNULL;
@@ -893,11 +874,7 @@ _AllocateTask(
         Buffer->taskStorageCurrAvailable -= size;
 
         /* Get the proper table entry. */
-#ifndef __QNXNTO__
         tableEntry = &Buffer->taskTable.table[Block];
-#else
-        tableEntry = &Buffer->pTaskTable->table[Block];
-#endif
 
         /* Initialize the task. */
         task->next = gcvNULL;
@@ -922,13 +899,8 @@ _AllocateTask(
         }
 
         /* Update the total task count. */
-#ifndef __QNXNTO__
         Buffer->taskTable.count += TaskCount;
         Buffer->taskTable.size  += Bytes;
-#else
-        Buffer->pTaskTable->count += TaskCount;
-        Buffer->pTaskTable->size  += Bytes;
-#endif
 
         /* Set the result pointer. */
         (* Task) = task;
@@ -963,9 +935,10 @@ _FinalizeRestartMarks(
 
         /* Determine the offset of the next command. */
         offset
-            = (gctUINT8_PTR) current
-            - (gctUINT8_PTR) CommandBuffer
-            - CommandBuffer->bufferOffset;
+            = (gctUINT32)(
+                          (gctUINT8_PTR) current
+                        - (gctUINT8_PTR) CommandBuffer
+                        - CommandBuffer->bufferOffset);
 
         /* Determine the restart address. */
         address = CommandBuffer->address + offset;
@@ -1014,7 +987,7 @@ _InitializeBuffer(
     CommandBuffer->completion = gcvVACANT_BUFFER;
 
     /* Set the memory pool node. */
-    CommandBuffer->node = Buffer->containerNode;
+    CommandBuffer->node = (gcuVIDMEM_NODE_PTR)(gctUINTPTR_T)Buffer->containerNode;
 
     /* Set the buffer hardware address and offset. */
     CommandBuffer->address      = bufferAddress;
@@ -1031,7 +1004,7 @@ static gcsCMDBUFFER_PTR
 _TerminateCommandBuffer(
     IN gcoVGBUFFER Buffer,
     IN gcsCMDBUFFER_PTR CommandBuffer,
-    IN gctSIZE_T EffectiveSize
+    IN gctUINT32 EffectiveSize
     )
 {
     gcsCMDBUFFER_PTR newBuffer;
@@ -1071,8 +1044,8 @@ _SplitCurrent(
     gcsCMDBUFFER_PTR current;
     gcsCMDBUFFER_PTR next;
     gctUINT currentOffset;
-    gctSIZE_T effectiveSize;
-    gctSIZE_T executionSize;
+    gctUINT32 effectiveSize;
+    gctUINT32 executionSize;
 
     gcsCMDBUFFER_PTR newBuffer;
     gctUINT newBufferOffset;
@@ -1144,8 +1117,9 @@ _SplitCurrent(
 
                 /* Determine the offset of the next buffer from the current one. */
                 nextBufferOffset
-                    = (((gctUINT8_PTR) next)    + next->bufferOffset)
-                    - (((gctUINT8_PTR) current) + current->bufferOffset);
+                    = (gctUINT32)(
+                      (((gctUINT8_PTR) next)    + next->bufferOffset)
+                    - (((gctUINT8_PTR) current) + current->bufferOffset));
 
                 /* Determine the delta. */
                 splitoffSize = nextBufferOffset - newBufferOffset;
@@ -1154,7 +1128,7 @@ _SplitCurrent(
                 if (splitoffSize > 0)
                 {
                     /* Determine the new buffer size. */
-                    gctSIZE_T newBufferSize = splitoffSize + next->size;
+                    gctUINT32 newBufferSize = splitoffSize + next->size;
 
                     /* Get next in link. */
                     gcsCMDBUFFER_PTR nextAllocated = next->nextAllocated;
@@ -1186,8 +1160,9 @@ _SplitCurrent(
 
                     /* Account for the tail and the header. */
                     Buffer->uncommittedSize
-                        += (((gctUINT8_PTR) newBuffer) + newBuffer->bufferOffset)
-                         - unalignedData;
+                        += (gctUINT32)(
+                           (((gctUINT8_PTR) newBuffer) + newBuffer->bufferOffset)
+                         - unalignedData);
 
                     /* Success. */
                     status = gcvSTATUS_OK;
@@ -1225,8 +1200,9 @@ _SplitCurrent(
 
             /* Account for the tail and the header. */
             Buffer->uncommittedSize
-                += (((gctUINT8_PTR) newBuffer) + newBuffer->bufferOffset)
-                 - unalignedData;
+                += (gctUINT32)(
+                   (((gctUINT8_PTR) newBuffer) + newBuffer->bufferOffset)
+                 - unalignedData);
 
             /* Success. */
             status = gcvSTATUS_OK;
@@ -1267,8 +1243,9 @@ _SplitCurrent(
 
         /* Account for the tail and the header. */
         Buffer->uncommittedSize
-            += (((gctUINT8_PTR) newBuffer) + newBuffer->bufferOffset)
-             - unalignedData;
+            += (gctUINT32)(
+               (((gctUINT8_PTR) newBuffer) + newBuffer->bufferOffset)
+             - unalignedData);
     }
     while (gcvFALSE);
 
@@ -1401,6 +1378,8 @@ _CheckUncommittedThreshold(
     /* Did we allocate over the threshold? */
     if (Buffer->uncommittedSize > Buffer->uncommittedThreshold)
     {
+        /* Add a flush command. */
+        gcoVGHARDWARE_FlushAuto(Buffer->hardware);
 
         /* Commit the queue. */
         status = gcoVGHARDWARE_Commit(Buffer->hardware, gcvFALSE);
@@ -1425,7 +1404,6 @@ _CheckUncommittedThreshold(
     /* Return status. */
     return status;
 }
-
 
 /******************************************************************************\
 ******************************* gcoVGBUFFER API Code ******************************
@@ -1469,7 +1447,7 @@ gcoVGBUFFER_Construct(
     IN gcoHAL Hal,
     IN gcoVGHARDWARE Hardware,
     IN gcsVGCONTEXT_PTR Context,
-    IN gctSIZE_T CommandBufferSize,
+    IN gctUINT32 CommandBufferSize,
     IN gctUINT TaskBufferGranulatiry,
     IN gctUINT QueueEntryCount,
     OUT gcoVGBUFFER * Buffer
@@ -1477,10 +1455,6 @@ gcoVGBUFFER_Construct(
 {
     gceSTATUS status, last;
     gcoVGBUFFER buffer = gcvNULL;
-#ifdef __QNXNTO__
-    gctPHYS_ADDR physical;
-    gctSIZE_T objSize = 0;
-#endif
 
     gcmHEADER_ARG("HAL=0x%x Hardware=0x%x", Hal, Hardware);
 
@@ -1490,7 +1464,6 @@ gcoVGBUFFER_Construct(
         __FUNCTION__, CommandBufferSize, TaskBufferGranulatiry, QueueEntryCount
         );
 
-
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Hal, gcvOBJ_HAL);
     gcmVERIFY_OBJECT(Hardware, gcvOBJ_HARDWARE);
@@ -1499,34 +1472,25 @@ gcoVGBUFFER_Construct(
     do
     {
         /* Container buffer parameters. */
-        gctUINT32 currentAddress;
-        gctUINT8_PTR currentLogical;
+        gctUINT32 currentAddress       = 0;
+        gctUINT8_PTR currentLogical    = gcvNULL;
 
         /* Command buffer repository. */
-        gcsCMDBUFFER_PTR currentBuffer;
-        gctUINT initialBufferSize;
+        gcsCMDBUFFER_PTR currentBuffer = gcvNULL;
+        gctUINT initialBufferSize      = 0;
 
         /* Command queue. */
-        gctUINT queueSize;
-
+        gctUINT queueSize              = 0;
 
         /*--------------------------------------------------------------------*/
         /*----------------------- Generic Initialization ---------------------*/
 
         /* Allocate the gcoVGBUFFER object. */
-#ifndef __QNXNTO__
-        gcmERR_BREAK(gcoOS_Allocate(
+        gcmERR_BREAK(gcoOS_AllocateSharedMemory(
             gcvNULL,
             gcmSIZEOF(struct _gcoVGBUFFER),
             (gctPOINTER *) &buffer
             ));
-#else
-        objSize = gcmSIZEOF(struct _gcoVGBUFFER);
-        gcmERR_BREAK(gcoOS_AllocateNonPagedMemory(
-            gcvNULL, gcvTRUE, &objSize, &physical,
-            (gctPOINTER *) &buffer
-            ));
-#endif
 
         /* Initialize the gcoVGBUFFER object. */
         buffer->object.type = gcvOBJ_BUFFER;
@@ -1536,7 +1500,7 @@ gcoVGBUFFER_Construct(
         buffer->context     = Context;
 
         /* Reset the pointers. */
-        buffer->containerNode   = gcvNULL;
+        buffer->containerNode   = 0;
         buffer->taskStorageHead = gcvNULL;
         buffer->queueFirst      = gcvNULL;
 
@@ -1582,12 +1546,12 @@ gcoVGBUFFER_Construct(
             Hardware,
             CommandBufferSize,
             buffer->bufferInfo.addressAlignment,
-            gcvPOOL_SYSTEM,
+            gcvPOOL_DEFAULT,
+            gcvALLOC_FLAG_NONE,
             &buffer->containerNode,
             &currentAddress,
             (gctPOINTER *) &currentLogical
             ));
-
 
         /*--------------------------------------------------------------------*/
         /*------------- Initialize the command buffer repository. ------------*/
@@ -1635,12 +1599,6 @@ gcoVGBUFFER_Construct(
         /*--------------------------------------------------------------------*/
         /*-------------------- Initialize task management. -------------------*/
 
-#ifdef __QNXNTO__
-        objSize = gcmSIZEOF(*buffer->pTaskTable);
-        gcmERR_BREAK(gcoOS_AllocateNonPagedMemory(
-            gcvNULL, gcvTRUE, &objSize, &physical, (gctPOINTER *) &buffer->pTaskTable));
-#endif
-
         /* Store the storage granularity. */
         buffer->taskStorageGranularity = TaskBufferGranulatiry;
 
@@ -1649,19 +1607,11 @@ gcoVGBUFFER_Construct(
             = buffer->taskStorageGranularity - gcmSIZEOF(gcsTASK_STORAGE);
 
         /* Allocate the storage. */
-#ifndef __QNXNTO__
-        gcmERR_BREAK(gcoOS_Allocate(
+        gcmERR_BREAK(gcoOS_AllocateSharedMemory(
             gcvNULL,
             buffer->taskStorageGranularity,
             (gctPOINTER *) &buffer->taskStorageHead
             ));
-#else
-        objSize = (gctSIZE_T)buffer->taskStorageGranularity;
-        gcmERR_BREAK(gcoOS_AllocateNonPagedMemory(
-            gcvNULL, gcvTRUE, &objSize, &physical,
-            (gctPOINTER *) &buffer->taskStorageHead
-            ));
-#endif
 
         /* Initialize the current storage. */
         buffer->taskStorageCurr       = buffer->taskStorageHead;
@@ -1675,15 +1625,9 @@ gcoVGBUFFER_Construct(
             = (gctUINT8_PTR) (buffer->taskStorageCurr + 1);
 
         /* Reset the task master tables. */
-#ifndef __QNXNTO__
-        gcmVERIFY_OK(gcoOS_ZeroMemory(
+        gcoOS_ZeroMemory(
             &buffer->taskTable, gcmSIZEOF(buffer->taskTable)
-            ));
-#else
-        gcmVERIFY_OK(gcoOS_ZeroMemory(
-            buffer->pTaskTable, gcmSIZEOF(*buffer->pTaskTable)
-            ));
-#endif
+            );
 
         /* Reset the number of entasked blocks. */
         buffer->taskBlockCount = 0;
@@ -1695,17 +1639,11 @@ gcoVGBUFFER_Construct(
         queueSize = QueueEntryCount * gcmSIZEOF(gcsVGCMDQUEUE);
 
         /* Allocate the command queue. */
-#ifndef __QNXNTO__
-        gcmERR_BREAK(gcoOS_Allocate(
+        gcmERR_BREAK(gcoOS_AllocateSharedMemory(
             gcvNULL,
             queueSize,
             (gctPOINTER *) &buffer->queueFirst
             ));
-#else
-        objSize = (gctSIZE_T)queueSize;
-        gcmERR_BREAK(gcoOS_AllocateNonPagedMemory(
-            gcvNULL, gcvTRUE, &objSize, &physical, (gctPOINTER *) &buffer->queueFirst));
-#endif
 
         /* The queue is initially empty. */
         buffer->queueCurrent = gcvEMPTY_QUEUE;
@@ -1759,55 +1697,43 @@ gcoVGBUFFER_Construct(
         /* Free the command queue. */
         if (buffer->queueFirst != gcvNULL)
         {
-#ifndef __QNXNTO__
-            gcmCHECK_STATUS(gcoOS_Free(
+            gcmCHECK_STATUS(gcoOS_FreeSharedMemory(
                 gcvNULL, buffer->queueFirst
                 ));
-#else
-            gcmCHECK_STATUS(gcoOS_FreeNonPagedMemory(
-                gcvNULL, objSize, gcvNULL, buffer->queueFirst));
-#endif
         }
 
         /* Free the task storage. */
         if (buffer->taskStorageHead != gcvNULL)
         {
-#ifndef __QNXNTO__
-            gcmCHECK_STATUS(gcoOS_Free(
+            gcmCHECK_STATUS(gcoOS_FreeSharedMemory(
                 gcvNULL, buffer->taskStorageHead
                 ));
-#else
-            gcmCHECK_STATUS(gcoOS_FreeNonPagedMemory(
-                gcvNULL, (gctSIZE_T)buffer->taskStorageGranularity, gcvNULL, buffer->taskStorageHead
-                ));
-#endif
         }
 
         /* Free the command buffer container. */
-        if (buffer->containerNode != gcvNULL)
+        if (buffer->containerNode != 0)
         {
+#if GC355_PROFILER
+            gcmCHECK_STATUS(gcoHAL_FreeVideoMemory(
+                Hal, gcvNULL, gcvNULL, 0, 0, 0, buffer->containerNode
+                ));
+#else
             gcmCHECK_STATUS(gcoHAL_FreeVideoMemory(
                 Hal, buffer->containerNode
                 ));
+#endif
         }
 
         /* Free the command buffer object. */
-#ifndef __QNXNTO__
-        gcmCHECK_STATUS(gcoOS_Free(
+        gcmCHECK_STATUS(gcoOS_FreeSharedMemory(
             gcvNULL, buffer
             ));
-#else
-        gcmCHECK_STATUS(gcoOS_FreeNonPagedMemory(
-            gcvNULL, gcmSIZEOF(struct _gcoVGBUFFER), gcvNULL, buffer
-            ));
-#endif
     }
 
     gcmFOOTER();
     /* Return status. */
     return status;
 }
-
 
 /*******************************************************************************
 **
@@ -1840,7 +1766,6 @@ gcoVGBUFFER_Destroy(
         "[ENTER] %s: Buffer=%p\n",
         __FUNCTION__, Buffer
         );
-
 
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Buffer, gcvOBJ_BUFFER);
@@ -1894,15 +1819,9 @@ gcoVGBUFFER_Destroy(
                 next = Buffer->taskStorageHead->next;
 
                 /* Free current. */
-#ifndef __QNXNTO__
-                gcmERR_BREAK(gcoOS_Free(
+                gcmERR_BREAK(gcoOS_FreeSharedMemory(
                     Buffer->os, Buffer->taskStorageHead
                     ));
-#else
-                gcmERR_BREAK(gcoOS_FreeNonPagedMemory(
-                    gcvNULL, (gctSIZE_T)Buffer->taskStorageGranularity, gcvNULL, Buffer->taskStorageHead
-                    ));
-#endif
 
                 /* The next becomes the new head. */
                 Buffer->taskStorageHead = next;
@@ -1919,29 +1838,28 @@ gcoVGBUFFER_Destroy(
         /* Free the command queue. */
         if (Buffer->queueFirst != gcvNULL)
         {
-#ifndef __QNXNTO__
-            gcmERR_BREAK(gcoOS_Free(
+            gcmERR_BREAK(gcoOS_FreeSharedMemory(
                 Buffer->os, Buffer->queueFirst
                 ));
-#else
-            gctSIZE_T objSize = Buffer->queueLast - Buffer->queueFirst + 2;
-            gcmERR_BREAK(gcoOS_FreeNonPagedMemory(
-                gcvNULL, objSize, gcvNULL, Buffer->queueFirst));
-#endif
 
             /* Reset the queue. */
             Buffer->queueFirst = gcvNULL;
         }
 
         /* Free the command buffer container. */
-        if (Buffer->containerNode != gcvNULL)
+        if (Buffer->containerNode != 0)
         {
+#if GC355_PROFILER
             gcmERR_BREAK(gcoHAL_FreeVideoMemory(
+                Buffer->hal, gcvNULL, gcvNULL, 0, 0, 0, Buffer->containerNode
+                ));
+#else
+             gcmERR_BREAK(gcoHAL_FreeVideoMemory(
                 Buffer->hal, Buffer->containerNode
                 ));
-
+#endif
             /* Reset the node. */
-            Buffer->containerNode = gcvNULL;
+            Buffer->containerNode = 0;
         }
 
 #if gcdENABLE_TIMEOUT_DETECTION
@@ -1951,23 +1869,11 @@ gcoVGBUFFER_Destroy(
             ));
 #endif
 
-#ifdef __QNXNTO__
-        gcmERR_BREAK(gcoOS_FreeNonPagedMemory(
-            gcvNULL, gcmSIZEOF(*Buffer->pTaskTable), gcvNULL, Buffer->pTaskTable
-            ));
-#endif
-
         /* Mark gcoVGBUFFER object as unknown. */
         Buffer->object.type = gcvOBJ_UNKNOWN;
 
         /* Free the gcoVGBUFFER object. */
-#ifndef __QNXNTO__
-        gcmERR_BREAK(gcoOS_Free(Buffer->os, Buffer));
-#else
-        gcmERR_BREAK(gcoOS_FreeNonPagedMemory(
-            gcvNULL, gcmSIZEOF(struct _gcoVGBUFFER), gcvNULL, Buffer
-            ));
-#endif
+        gcmERR_BREAK(gcoOS_FreeSharedMemory(Buffer->os, Buffer));
     }
     while (gcvFALSE);
 
@@ -2356,10 +2262,10 @@ gcoVGBUFFER_MarkRestart(
     IN gcoVGBUFFER Buffer,
     IN gctPOINTER Logical,
     IN gctBOOL Begin,
-    OUT gctSIZE_T * Bytes
+    OUT gctUINT32 * Bytes
     )
 {
-    gceSTATUS status;
+    gceSTATUS status = gcvSTATUS_OK;
 
     gcmHEADER_ARG("Buffer=0x%x Logical=0x%x Begin=0x%x Bytes=0x%x",
                   Buffer, Logical, Begin, Bytes);
@@ -2397,7 +2303,8 @@ gcoVGBUFFER_MarkRestart(
                 Buffer,
                 Buffer->bufferInfo.restartCommandSize,
                 gcvTRUE,
-                &restart
+                &restart,
+                gcvFALSE
                 ));
         }
 
@@ -2428,7 +2335,6 @@ gcoVGBUFFER_MarkRestart(
     /* Return the status. */
     return status;
 }
-
 
 /*******************************************************************************
 **
@@ -2464,7 +2370,7 @@ gcoVGBUFFER_GetCurrentAddress(
     do
     {
         gcsCMDBUFFER_PTR current;
-        gctSIZE_T offset;
+        gctUINT32 offset;
 
         /* Check the uncommitted threshold. */
         gcmERR_BREAK(_CheckUncommittedThreshold(Buffer));
@@ -2485,7 +2391,6 @@ gcoVGBUFFER_GetCurrentAddress(
     /* Return the status. */
     return status;
 }
-
 
 /*******************************************************************************
 **
@@ -2513,12 +2418,13 @@ gceSTATUS
 gcoVGBUFFER_EnsureSpace(
     IN gcoVGBUFFER Buffer,
     IN gctSIZE_T Bytes,
-    IN gctBOOL Aligned
+    IN gctBOOL Aligned,
+    IN gctBOOL FromBuffer
     )
 {
     gceSTATUS status;
     gcsCMDBUFFER_PTR current, next;
-    gctSIZE_T offset, available;
+    gctUINT32 offset, available;
 
     gcmHEADER_ARG("Buffer=0x%x Bytes=0x%x Aligned=0x%x",
                   Buffer, Bytes, Aligned);
@@ -2543,13 +2449,15 @@ gcoVGBUFFER_EnsureSpace(
     }
 
     /* Check the uncommitted threshold. */
-    status = _CheckUncommittedThreshold(Buffer);
-
-    /* Error? */
-    if (gcmIS_ERROR(status))
+    if (!FromBuffer)
     {
-        gcmFOOTER();
-        return status;
+        status = _CheckUncommittedThreshold(Buffer);
+        /* Error? */
+        if (gcmIS_ERROR(status))
+        {
+            gcmFOOTER();
+            return status;
+        }
     }
 
     /* Report current location. */
@@ -2630,13 +2538,14 @@ gcoVGBUFFER_EnsureSpace(
             /* Account for the space in the current buffer that might have been left
                unused. */
             Buffer->uncommittedSize
-                += Buffer->bufferLimit
-                 - (((gctUINT8_PTR) current) + current->bufferOffset + current->offset);
+                += (gctUINT32)(
+                   Buffer->bufferLimit
+                 - (((gctUINT8_PTR) current) + current->bufferOffset + current->offset));
 
             /* Does the current buffer contain any data? */
             if (current->offset != 0)
             {
-                gctSIZE_T executionSize;
+                gctUINT32 executionSize;
 
                 /* Has to be the current command buffer. */
                 gcmASSERT(current == Buffer->queueCurrent->commandBuffer);
@@ -2717,7 +2626,6 @@ gcoVGBUFFER_EnsureSpace(
     return status;
 }
 
-
 /*******************************************************************************
 **
 **  gcoVGBUFFER_Reserve
@@ -2745,9 +2653,10 @@ gcoVGBUFFER_EnsureSpace(
 gceSTATUS
 gcoVGBUFFER_Reserve(
     IN gcoVGBUFFER Buffer,
-    IN gctSIZE_T Bytes,
+    IN gctUINT32 Bytes,
     IN gctBOOL Aligned,
-    OUT gctPOINTER * Memory
+    OUT gctPOINTER * Memory,
+    IN gctBOOL FromBuffer
     )
 {
     gceSTATUS status;
@@ -2761,7 +2670,7 @@ gcoVGBUFFER_Reserve(
     do
     {
         gcsCMDBUFFER_PTR current;
-        gctSIZE_T offset/*, available*/;
+        gctUINT32 offset/*, available*/;
 
         /* Validate the command buffer. */
         vgmVALIDATE_BUFFER(Buffer);
@@ -2776,7 +2685,7 @@ gcoVGBUFFER_Reserve(
         Buffer->reserveCount += 1;
 
         /* Make sure there is enough space in the current buffer. */
-        gcmERR_BREAK(gcoVGBUFFER_EnsureSpace(Buffer, Bytes, Aligned));
+        gcmERR_BREAK(gcoVGBUFFER_EnsureSpace(Buffer, Bytes, Aligned, FromBuffer));
 
         /* Validate the command buffer. */
         vgmVALIDATE_BUFFER(Buffer);
@@ -2814,7 +2723,6 @@ gcoVGBUFFER_Reserve(
     return status;
 }
 
-
 /*******************************************************************************
 **
 **  gcoVGBUFFER_Write
@@ -2844,7 +2752,7 @@ gceSTATUS
 gcoVGBUFFER_Write(
     IN gcoVGBUFFER Buffer,
     IN gctCONST_POINTER Data,
-    IN gctSIZE_T Bytes,
+    IN gctUINT32 Bytes,
     IN gctBOOL Aligned
     )
 {
@@ -2863,13 +2771,14 @@ gcoVGBUFFER_Write(
 
         /* Reserve data in the buffer. */
         gcmERR_BREAK(gcoVGBUFFER_Reserve(
-            Buffer, Bytes, Aligned, &memory
+            Buffer, Bytes, Aligned, &memory,
+            gcvFALSE
             ));
 
         /* Write data into the buffer. */
-        gcmERR_BREAK(gcoOS_MemCopy(
+        gcoOS_MemCopy(
             memory, Data, Bytes
-            ));
+            );
     }
     while (gcvFALSE);
 
@@ -2877,7 +2786,6 @@ gcoVGBUFFER_Write(
     /* Return status. */
     return status;
 }
-
 
 /*******************************************************************************
 **
@@ -2922,7 +2830,8 @@ gcoVGBUFFER_Write32(
 
         /* Reserve data in the buffer. */
         gcmERR_BREAK(gcoVGBUFFER_Reserve(
-            Buffer, gcmSIZEOF(gctUINT32), Aligned, &memory
+            Buffer, gcmSIZEOF(gctUINT32), Aligned, &memory,
+            gcvFALSE
             ));
 
         /* Write data into the buffer. */
@@ -2934,7 +2843,6 @@ gcoVGBUFFER_Write32(
     /* Return status. */
     return status;
 }
-
 
 /*******************************************************************************
 **
@@ -2978,7 +2886,8 @@ gcoVGBUFFER_Write64(
 
         /* Reserve data in the buffer. */
         gcmERR_BREAK(gcoVGBUFFER_Reserve(
-            Buffer, gcmSIZEOF(gctUINT64), Aligned, &memory
+            Buffer, gcmSIZEOF(gctUINT64), Aligned, &memory,
+            gcvFALSE
             ));
 
         /* Write data into the buffer. */
@@ -2991,7 +2900,6 @@ gcoVGBUFFER_Write64(
     /* Return status. */
     return status;
 }
-
 
 /*******************************************************************************
 **
@@ -3023,7 +2931,7 @@ gcoVGBUFFER_AppendBuffer(
     IN gcoVGBUFFER Buffer,
     IN gctPOINTER Logical,
     IN gcsCMDBUFFER_PTR CommandBuffer,
-    OUT gctSIZE_T * Bytes
+    OUT gctUINT32 * Bytes
     )
 {
     gceSTATUS status;
@@ -3071,7 +2979,8 @@ gcoVGBUFFER_AppendBuffer(
                     Buffer,
                     Buffer->bufferInfo.callCommandSize,
                     gcvTRUE,
-                    &callCommand
+                    &callCommand,
+                    gcvFALSE
                     ));
             }
 
@@ -3118,7 +3027,6 @@ gcoVGBUFFER_AppendBuffer(
     return status;
 }
 
-
 /*******************************************************************************
 **
 **  gcoVGBUFFER_ReserveTask
@@ -3156,7 +3064,7 @@ gcoVGBUFFER_ReserveTask(
     IN gcoVGBUFFER Buffer,
     IN gceBLOCK Block,
     IN gctUINT TaskCount,
-    IN gctSIZE_T Bytes,
+    IN gctUINT32 Bytes,
     OUT gctPOINTER * Memory
     )
 {
@@ -3176,11 +3084,7 @@ gcoVGBUFFER_ReserveTask(
         gcsTASK_PTR task;
 
         /* Get the proper table entry. */
-#ifndef __QNXNTO__
         tableEntry = &Buffer->taskTable.table[Block];
-#else
-        tableEntry = &Buffer->pTaskTable->table[Block];
-#endif
 
         /* Is this the first task to be scheduled? */
         if (tableEntry->head == gcvNULL)
@@ -3224,7 +3128,6 @@ gcoVGBUFFER_ReserveTask(
     /* Return status. */
     return status;
 }
-
 
 /*******************************************************************************
 **
@@ -3407,7 +3310,7 @@ gcoVGBUFFER_Commit(
         Buffer->completionCurrent  = gcvVACANT_BUFFER;
 
         /* Determine the length of the queue. */
-        queueLength = Buffer->queueCurrent - Buffer->queueFirst + 1;
+        queueLength = (gctUINT32)(Buffer->queueCurrent - Buffer->queueFirst + 1);
 
         /* Dump the command buffer. */
         if (Buffer->hal->dump != gcvNULL)
@@ -3442,32 +3345,19 @@ gcoVGBUFFER_Commit(
             }
         }
 
-#ifndef __QNXNTO__
         gcmBUFFER_TRACE(
             gcvLEVEL_VERBOSE, gcvZONE_BUFFER,
             "%s: queue length=%d, task couint=%d\n",
             __FUNCTION__,
             queueLength, Buffer->taskTable.count
             );
-#else
-        gcmBUFFER_TRACE(
-            gcvLEVEL_VERBOSE, gcvZONE_BUFFER,
-            "%s: queue length=%d, task couint=%d\n",
-            __FUNCTION__,
-            queueLength, Buffer->pTaskTable->count
-            );
-#endif
 
         /* Send command and context buffer to hardware. */
         halInterface.command = gcvHAL_COMMIT;
-        halInterface.u.VGCommit.context    = Buffer->context;
-        halInterface.u.VGCommit.queue      = Buffer->queueFirst;
+        halInterface.u.VGCommit.context    = gcmPTR_TO_UINT64(Buffer->context);
+        halInterface.u.VGCommit.queue      = gcmPTR_TO_UINT64(Buffer->queueFirst);
         halInterface.u.VGCommit.entryCount = queueLength;
-#ifndef __QNXNTO__
-        halInterface.u.VGCommit.taskTable  = &Buffer->taskTable;
-#else
-        halInterface.u.VGCommit.taskTable  = Buffer->pTaskTable;
-#endif
+        halInterface.u.VGCommit.taskTable  = gcmPTR_TO_UINT64(&Buffer->taskTable);
 
         /* Call kernel service. */
         gcmERR_BREAK(gcoOS_DeviceControl(
@@ -3510,15 +3400,9 @@ gcoVGBUFFER_Commit(
             Buffer->taskStorageCurrPtr       = (gctUINT8_PTR) (Buffer->taskStorageCurr + 1);
             Buffer->taskStorageCurrAvailable = Buffer->taskStorageMaxSize;
 
-#ifndef __QNXNTO__
-            gcmVERIFY_OK(gcoOS_ZeroMemory(
+            gcoOS_ZeroMemory(
                 &Buffer->taskTable, gcmSIZEOF(Buffer->taskTable)
-                ));
-#else
-            gcmVERIFY_OK(gcoOS_ZeroMemory(
-                Buffer->pTaskTable, gcmSIZEOF(*Buffer->pTaskTable)
-                ));
-#endif
+                );
         }
 
         /* Refetch the current. */

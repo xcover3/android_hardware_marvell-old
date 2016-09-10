@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -11,17 +11,17 @@
 *****************************************************************************/
 
 
-
-
-
-
-
 #include "gc_hal_user_precomp.h"
 
 #if gcdENABLE_VG
 
 #include "gc_hal_user_vg.h"
-#include <math.h>
+#include <malloc.h>
+#if GC355_PROFILER
+    gctUINT64 startTimeusec = 0;
+    gctUINT64 endTimeusec = 0;
+    gctUINT64 deltaValue = 0;
+#endif
 
 #define _GC_OBJ_ZONE    gcvZONE_VG
 
@@ -33,36 +33,280 @@ static gctPOINTER           g_tsMutex;
 /******************************************************************************\
 *********************** Support Functions and Definitions **********************
 \******************************************************************************/
+#if GC355_PROFILER
+
+gctINT vgHALProfilerDLinklist_GetLength(gcsPROFILERFUNCNODE *L)
+{
+    gcsPROFILERFUNCNODE *p;
+    gctINT length = 0;
+
+    p = L->next;
+    while((p != gcvNULL) && (p != L))
+    {
+        length ++;
+        p = p->next;
+    }
+
+    return length;
+}
+
+gcsPROFILERFUNCNODE * vgHALProfilerDLinklist_GetElem(gcsPROFILERFUNCNODE *L, gctINT i)
+{
+    int length, j;
+    gcsPROFILERFUNCNODE *p;
+
+    p = L;
+    length = vgHALProfilerDLinklist_GetLength(L);
+    if (i < 0 || i > length)
+    {
+        return gcvNULL;
+    }
+
+    for (j = 1; j <= i; j++)
+    {
+        p = p->next;
+    }
+
+    return p;
+}
+
+gctBOOL vgHALProfilerDLinklist_Insert(gcsPROFILERFUNCNODE *L, gctINT i, gcsPROFILERFUNCData_PTR elem)
+{
+    int length;
+    gcsPROFILERFUNCNODE *p, *s;
+
+    length = vgHALProfilerDLinklist_GetLength(L);
+    if (i < 1 || i > length + 1)
+    {
+        return gcvFALSE;
+    }
+
+    p = vgHALProfilerDLinklist_GetElem(L, i-1);
+    if (p == gcvNULL)
+    {
+        return gcvFALSE;
+    }
+
+    s = (gcsPROFILERFUNCNODE *)malloc(sizeof(gcsPROFILERFUNCNODE));
+    if (s == gcvNULL)
+    {
+        gcoOS_Print("Create GC355 profiler function node failed!");
+        return gcvFALSE;
+    }
+
+    s->data = elem;
+
+    if ( i == (length + 1))
+    {
+        s->next = gcvNULL;
+        s->pre = p;
+        p->next = s;
+    }
+    else
+    {
+        s->next = p->next;
+        p->next->pre = s;
+        s->pre = p;
+        p->next = s;
+    }
+
+    return gcvTRUE;
+}
+
+gctBOOL vgHALProfilerDLinklist_SearchAndFill(gcsPROFILERFUNCNODE *L, gctSTRING funcName, gctUINT64 elapsedTime, gctUINT64 cpuTime)
+{
+    gcsPROFILERFUNCNODE *p;
+    gctINT match = 0;
+
+
+    p = vgHALProfilerDLinklist_GetElem(L, vgHALProfilerDLinklist_GetLength(L));
+
+    while(p != gcvNULL && p != L)
+    {
+        match = strcmp(p->data->funcName,funcName);
+        if (match != 0)
+        {
+            p = p->pre;
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    if (p == L)
+    {
+        return gcvFALSE;
+    }
+
+    p->data->elapsedTime = elapsedTime;
+    p->data->cpuTime = cpuTime;
+
+    return gcvTRUE;
+}
+
+void _HalWriteProfileElapsedTimeInfo(gcoVG Vg)
+{
+    gctUINT64 endTime = 0;
+    gctUINT64 deltaValue = 0;
+    gctUINT offset = 0;
+    gctSIZE_T length;
+    gctCHAR savedValue[256] = {'\0'};
+
+    gcoOS_GetTime(&endTime);
+    deltaValue = (gctINT32)(endTime - Vg->appStartTime);
+    gcoOS_PrintStrSafe(savedValue, gcmSIZEOF(savedValue), &offset, "[%-10llu us]", deltaValue);
+
+    length = gcoOS_StrLen((gctSTRING)savedValue, gcvNULL);
+    gcoOS_Write(gcvNULL, Vg->apiTimeFile, length, savedValue);
+}
+
+void
+_WriteHALAPITimeInfo(
+    gcoVG Vg,
+    gctSTRING functionName,
+    gctUINT64 cpuTime
+    )
+ {
+     gctUINT offset = 0;
+     gctSIZE_T length;
+     gctCHAR savedValue[256] = {'\0'};
+     gctCHAR s[256] = "";
+     gctCHAR Tag = '-';
+     gctINT32 gpuTime = 0;
+
+     _HalWriteProfileElapsedTimeInfo(Vg);
+
+     if(Vg->pathName)
+     {
+         gcoOS_PrintStrSafe(savedValue, gcmSIZEOF(savedValue), &offset, "[%-10s]",Vg->pathName);
+     }
+     else
+     {
+         gcoOS_PrintStrSafe(savedValue, gcmSIZEOF(savedValue), &offset, "[%c]",Tag);
+     }
+
+     if (Vg->TreeDepth)
+     {
+         gcoOS_PrintStrSafe(savedValue, gcmSIZEOF(savedValue), &offset, "[%d]    ",Vg->TreeDepth - Vg->varTreeDepth);
+         if ((Vg->TreeDepth - Vg->varTreeDepth) > 1)
+         {
+             gctUINT i = 0,j = 0;
+             memset(s,' ',(Vg->TreeDepth - Vg->varTreeDepth - 1) * 4);
+             for (i = 0; i < (Vg->TreeDepth - Vg->varTreeDepth - 1) * 4; i += 4)
+             {
+                 s[i] = '|';
+                 j = i;
+             }
+             s[j+1] = '-';
+             gcoOS_PrintStrSafe(savedValue, gcmSIZEOF(savedValue), &offset, "%s",s);
+         }
+     }
+
+     gcoOS_PrintStrSafe(savedValue, gcmSIZEOF(savedValue), &offset, "%s : %llu us , ",functionName, cpuTime);
+     gcoOS_PrintStrSafe(savedValue, gcmSIZEOF(savedValue), &offset, "%llu us, %llu us\n",gpuTime, cpuTime + gpuTime);
+     length = gcoOS_StrLen((gctSTRING)savedValue, gcvNULL);
+     gcoOS_Write(gcvNULL,Vg->apiTimeFile, length, savedValue);
+}
+
+void
+gcoVG_ProfilerEnableDisable(
+    IN gcoVG Vg,
+    IN gctUINT64 appStartTime,
+    IN gctBOOL enableGetAPITimes,
+    IN gctFILE apiTimeFile
+    )
+{
+    Vg->enableGetAPITimes = enableGetAPITimes;
+    Vg->apiTimeFile = apiTimeFile;
+    if (enableGetAPITimes == 1)
+    {
+        Vg->appStartTime = appStartTime;
+    }
+}
+
+void
+gcoVG_ProfilerTreeDepth(
+    IN gcoVG Vg,
+    IN gctUINT TreeDepth
+    )
+{
+    Vg->TreeDepth = TreeDepth;
+}
+
+void
+gcoVG_ProfilerTag(
+    IN gcoVG Vg,
+    IN gctSTRING Tag
+    )
+{
+    Vg->pathName = Tag;
+}
+
+void
+gcoVG_ProfilerSetStates(
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT treeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth
+    )
+{
+    if (Vg != gcvNULL)
+    {
+        Vg->funcDList = DList;
+        Vg->saveLayerTreeDepth = saveLayerTreeDepth;
+        Vg->varTreeDepth = varTreeDepth;
+    }
+}
+#endif
 
 static gceSTATUS
 _FreeTessellationBuffer(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcsTESSELATION_PTR TessellationBuffer
     )
 {
     gceSTATUS status;
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(_FreeTessellationBuffer);
+#endif
     do
     {
         /* Delete the old buffer if any. */
-        if (TessellationBuffer->node == gcvNULL)
+        if (TessellationBuffer->node == 0)
         {
             gcmASSERT(TessellationBuffer->allocatedSize == 0);
             status = gcvSTATUS_OK;
             break;
         }
-
+#if GC355_PROFILER
         /* Schedule to delete the old buffer. */
+        gcmERR_BREAK(gcoHAL_ScheduleVideoMemory(
+            Vg->hal, Vg, Vg->funcDList,
+            Vg->TreeDepth, Vg->saveLayerTreeDepth, Vg->varTreeDepth,
+            TessellationBuffer->node
+            ));
+#else
         gcmERR_BREAK(gcoHAL_ScheduleVideoMemory(
             Vg->hal, TessellationBuffer->node
             ));
-
+#endif
         /* Reset the buffer. */
-        TessellationBuffer->node = gcvNULL;
+        TessellationBuffer->node = 0;
         TessellationBuffer->allocatedSize = 0;
     }
     while (gcvFALSE);
-
+#if GC355_PROFILER
+	vghalLEAVESUBAPI(_FreeTessellationBuffer);
+#endif
     /* Return status. */
     return status;
 }
@@ -72,22 +316,42 @@ _FreeTessellationBuffer(
 static gceSTATUS
 _TessellationBufferAddRef(
         IN gcoVG Vg,
+#if GC355_PROFILER
+        IN gcsPROFILERFUNCNODE *DList,
+        IN gctUINT TreeDepth,
+    	IN gctUINT saveLayerTreeDepth,
+    	IN gctUINT varTreeDepth,
+#endif
         IN gcsTESSELATION_PTR  TessellationBuffer)
 {
     gcmASSERT(TessellationBuffer->reference >= 0);
-
+#if GC355_PROFILER
+	gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(_TessellationBufferAddRef);
+#endif
     TessellationBuffer->reference++;
-
+#if GC355_PROFILER
+	vghalLEAVESUBAPI(_TessellationBufferAddRef);
+#endif
     return gcvSTATUS_OK;
 }
 
 static gceSTATUS
 _TessellationBufferRelease(
         IN gcoVG Vg,
+#if GC355_PROFILER
+        IN gcsPROFILERFUNCNODE *DList,
+        IN gctUINT TreeDepth,
+    	IN gctUINT saveLayerTreeDepth,
+    	IN gctUINT varTreeDepth,
+#endif
         IN gcsTESSELATION_PTR  TessellationBuffer)
 {
     gceSTATUS status = gcvSTATUS_OK;
-
+#if GC355_PROFILER
+	gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(_TessellationBufferRelease);
+#endif
     TessellationBuffer->reference--;
 
     gcmASSERT(TessellationBuffer->reference >= 0);
@@ -96,7 +360,11 @@ _TessellationBufferRelease(
     {
         if (TessellationBuffer->reference == 0)
         {
+#if GC355_PROFILER
+            gcmERR_BREAK(_FreeTessellationBuffer(Vg, Vg->funcDList, Vg->TreeDepth, Vg->saveLayerTreeDepth, Vg->varTreeDepth, TessellationBuffer));
+#else
             gcmERR_BREAK(_FreeTessellationBuffer(Vg, TessellationBuffer));
+#endif
             gcmERR_BREAK(gcmOS_SAFE_FREE(Vg->os, TessellationBuffer));
 
             if (TessellationBuffer == g_tsBuffer) g_tsBuffer = gcvNULL;
@@ -104,6 +372,9 @@ _TessellationBufferRelease(
 
     }while(gcvFALSE);
 
+#if GC355_PROFILER
+ 	vghalLEAVESUBAPI(_TessellationBufferRelease);
+#endif
     return status;
 }
 
@@ -134,11 +405,35 @@ _DestroyTSMutex(IN gcoVG Vg)
 static gceSTATUS
 _GetTessellationBuffer(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
+#if gcdMOVG
+    IN gctINT Width,
+    IN gctINT Height,
+    OUT gcsTESSELATION_PTR * TessellationBuffer,
+    OUT gctINT *AlignedWidth,
+    OUT gctINT *AlignedHeight
+#else
     OUT gcsTESSELATION_PTR * TessellationBuffer
+#endif
     )
 {
     gceSTATUS status;
 
+#if gcdGC355_MEM_PRINT
+#ifdef LINUX
+    gcoOS_RecordAllocation();
+#endif
+#endif
+
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(_GetTessellationBuffer);
+#endif
     do
     {
         gctUINT allocationSize;
@@ -147,16 +442,30 @@ _GetTessellationBuffer(
         gctUINT L2Size, alignedL2Size;
         gctUINT bufferStride, shift;
         gcsTESSELATION_PTR buffer;
+#if gcdMOVG
+        gctINT  aw, ah;
+        /* Validate requested size. */
+        Width = gcmMIN(Vg->targetWidth, gcmMAX(Width, 0));
+        Height = gcmMIN(Vg->targetHeight, gcmMAX(Height, 0));
+#endif
 
         if (Vg->vg20)
         {
             /* The tessellation buffer is 128x16 tiled or 512x16 tiles without
                MSAA. */
+#if gcdMOVG
+            aw = gcmALIGN(Width, 128);
             bufferStride = (Vg->renderQuality == gcvVG_NONANTIALIASED)
-                ? (((Vg->targetWidth + 511) & ~511) * 2)
-                : (((Vg->targetWidth + 127) & ~127) * 8);
+                ? ( aw * 2)
+                : ( aw * 8);
+
+            ah = gcmALIGN(Height, 16);
+            bufferSize = bufferStride * ah;
+#else
+            bufferStride = ((Vg->targetWidth + 127) & ~127) * 8;
 
             bufferSize = bufferStride * ((Vg->targetHeight + 15) & ~15);
+#endif
 
             /* Determine buffer shift value. */
             shift = 0;
@@ -165,6 +474,26 @@ _GetTessellationBuffer(
         {
             /* For MSAA, we use 8x1 64-bit pixels per cache line;
                otherwise we use 32x1 16-bit pixels per cache line. */
+#if gcdMOVG
+            aw = (Vg->renderQuality == gcvVG_NONANTIALIASED) ?
+                 gcmALIGN(Width, 32) :
+                 gcmALIGN(Width, 8);
+            bufferStride = (Vg->renderQuality == gcvVG_NONANTIALIASED)
+                ? (aw * 2)
+                : (aw * 8);
+
+            ah = Height;
+            bufferSize = bufferStride * Height;
+
+            /* Determine buffer shift value. */
+            shift = (Width > 2048)
+                ? 3
+                : (Width > 1024)
+                    ? 2
+                    : (Width > 512)
+                        ? 1
+                        : 0;
+#else
             bufferStride = (Vg->renderQuality == gcvVG_NONANTIALIASED)
                 ? (((Vg->targetWidth + 31) & ~31) * 2)
                 : (((Vg->targetWidth +  7) &  ~7) * 8);
@@ -179,6 +508,7 @@ _GetTessellationBuffer(
                     : (Vg->targetWidth > 512)
                         ? 1
                         : 0;
+#endif
         }
 
         /* L1 status.  Each bit represents 64 bytes from Buffer.
@@ -202,24 +532,25 @@ _GetTessellationBuffer(
         status = _CreateTSMutex(Vg);
         if (gcmIS_ERROR(status))
         {
-            return status;
+            break;
         }
 
         status = gcoOS_AcquireMutex(Vg->os, g_tsMutex, gcvINFINITE);
         if (gcmIS_ERROR(status))
         {
-            return status;
+            break;
         }
 
         if ((g_tsBuffer == gcvNULL) || (g_tsBuffer->allocatedSize < allocationSize))
         {
-            gcmERR_BREAK(gcoOS_Allocate(Vg->os,  gcmSIZEOF(gcsTESSELATION), (gctPOINTER *) &buffer));
+            gcmERR_GOTO(gcoOS_Allocate(Vg->os,  gcmSIZEOF(gcsTESSELATION), (gctPOINTER *) &buffer));
 
             /* Allocate a new buffer. */
-            gcmERR_BREAK(gcoVGHARDWARE_AllocateLinearVideoMemory(
+            gcmERR_GOTO(gcoVGHARDWARE_AllocateLinearVideoMemory(
                 Vg->hw,
                 allocationSize, 64,
-                gcvPOOL_SYSTEM,
+                gcvPOOL_DEFAULT,
+                gcvALLOC_FLAG_CONTIGUOUS,
                 &buffer->node,
                 &buffer->tsBufferPhysical,
                 (gctPOINTER *) &buffer->tsBufferLogical
@@ -246,12 +577,19 @@ _GetTessellationBuffer(
         {
             if (Vg->tsBuffer != gcvNULL)
             {
-                gcmERR_BREAK(_TessellationBufferRelease(Vg, Vg->tsBuffer));
+#if GC355_PROFILER
+                gcmERR_GOTO(_TessellationBufferRelease(Vg, Vg->funcDList, Vg->TreeDepth, Vg->saveLayerTreeDepth, Vg->varTreeDepth, Vg->tsBuffer));
+#else
+                gcmERR_GOTO(_TessellationBufferRelease(Vg, Vg->tsBuffer));
+#endif
             }
 
             Vg->tsBuffer = g_tsBuffer;
-
-            gcmERR_BREAK(_TessellationBufferAddRef(Vg, Vg->tsBuffer));
+#if GC355_PROFILER
+            gcmERR_GOTO(_TessellationBufferAddRef(Vg, Vg->funcDList, Vg->TreeDepth, Vg->saveLayerTreeDepth, Vg->varTreeDepth, Vg->tsBuffer));
+#else
+            gcmERR_GOTO(_TessellationBufferAddRef(Vg, Vg->tsBuffer));
+#endif
         }
 
 
@@ -287,18 +625,29 @@ _GetTessellationBuffer(
         /* Is the buffer big enough? */
         if (buffer->allocatedSize < allocationSize)
         {
+#if GC355_PROFILER
             /* No, reallocate the buffer. */
+            gcmERR_BREAK(_FreeTessellationBuffer(Vg, Vg->funcDList, Vg->TreeDepth, Vg->saveLayerTreeDepth, Vg->varTreeDepth, buffer));
+#else
             gcmERR_BREAK(_FreeTessellationBuffer(Vg, buffer));
-
+#endif
             /* Allocate a new buffer. */
             gcmERR_BREAK(gcoVGHARDWARE_AllocateLinearVideoMemory(
                 Vg->hw,
                 allocationSize, 64,
                 gcvPOOL_DEFAULT,
+                gcvALLOC_FLAG_CONTIGUOUS,
                 &buffer->node,
                 &buffer->tsBufferPhysical,
                 (gctPOINTER *) &buffer->tsBufferLogical
                 ));
+
+#if gcdGC355_MEM_PRINT
+#ifdef LINUX
+            gcoOS_AddRecordAllocation(-(gctINT32)buffer->allocatedSize);
+            gcoOS_AddRecordAllocation((gctINT32)allocationSize);
+#endif
+#endif
 
             /* Set the new size. */
             buffer->allocatedSize = allocationSize;
@@ -320,14 +669,46 @@ _GetTessellationBuffer(
         buffer->shift     = shift;
         buffer->clearSize = alignedL2Size;
 #endif
+
+#if gcdMOVG
+        buffer->width = aw;
+        buffer->height = ah;
+
+        if (AlignedWidth)
+        {
+            *AlignedWidth = aw;
+        }
+        if (AlignedHeight)
+        {
+            *AlignedHeight = ah;
+        }
+#endif
+
         /* Set the result pointer. */
         (* TessellationBuffer) = buffer;
-    }
-    while (gcvFALSE);
+
 
 #if gcdENABLE_SHARE_TESSELLATION
-    gcmVERIFY_OK(gcoOS_ReleaseMutex(Vg->os, g_tsMutex));
+ErrorHandler:
+     gcmVERIFY_OK(gcoOS_ReleaseMutex(Vg->os, g_tsMutex));
 #endif
+
+#if gcdGC355_MEM_PRINT
+#ifdef LINUX
+    Vg->tsCurMemSize += gcoOS_EndRecordAllocation();
+    if (Vg->tsMaxMemSize < Vg->tsCurMemSize)
+    {
+        Vg->tsMaxMemSize = Vg->tsCurMemSize;
+    }
+#endif
+#endif
+    }
+    while(gcvFALSE);
+
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(_GetTessellationBuffer);
+#endif
+
     /* Return status. */
     return status;
 }
@@ -356,15 +737,28 @@ _GetTessellationBuffer(
 gceSTATUS
 gcoHAL_QueryPathStorage(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     OUT gcsPATH_BUFFER_INFO_PTR Information
     )
 {
     gceSTATUS status;
+#if GC355_PROFILER
+	gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoHAL_QueryPathStorage);
+#endif
     /* Copy the command buffer information. */
     status = gcoVGHARDWARE_QueryPathStorage(
         gcvNULL, Information
         );
-
+#if GC355_PROFILER
+	vghalLEAVESUBAPI(gcoHAL_QueryPathStorage);
+#endif
     /* Return status. */
     return status;
 }
@@ -372,15 +766,28 @@ gcoHAL_QueryPathStorage(
 gceSTATUS
 gcoHAL_AssociateCompletion(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcsPATH_DATA_PTR PathData
     )
 {
     gceSTATUS status;
+#if GC355_PROFILER
+	gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoHAL_AssociateCompletion);
+#endif
     /* Relay the call. */
     status = gcoVGHARDWARE_AssociateCompletion(
         gcvNULL, &PathData->data
         );
-
+#if GC355_PROFILER
+	vghalLEAVESUBAPI(gcoHAL_AssociateCompletion);
+#endif
     /* Return status. */
     return status;
 }
@@ -388,15 +795,28 @@ gcoHAL_AssociateCompletion(
 gceSTATUS
 gcoHAL_DeassociateCompletion(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcsPATH_DATA_PTR PathData
     )
 {
     gceSTATUS status;
+#if GC355_PROFILER
+	gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoHAL_DeassociateCompletion);
+#endif
     /* Relay the call. */
     status = gcoVGHARDWARE_DeassociateCompletion(
         gcvNULL, &PathData->data
         );
-
+#if GC355_PROFILER
+		vghalLEAVESUBAPI(gcoHAL_DeassociateCompletion);
+#endif
     /* Return status. */
     return status;
 }
@@ -404,15 +824,28 @@ gcoHAL_DeassociateCompletion(
 gceSTATUS
 gcoHAL_CheckCompletion(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcsPATH_DATA_PTR PathData
     )
 {
     gceSTATUS status;
+#if GC355_PROFILER
+	gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoHAL_CheckCompletion);
+#endif
     /* Relay the call. */
     status = gcoVGHARDWARE_CheckCompletion(
         gcvNULL, &PathData->data
         );
-
+#if GC355_PROFILER
+		vghalLEAVESUBAPI(gcoHAL_CheckCompletion);
+#endif
     /* Return status. */
     return status;
 }
@@ -420,15 +853,28 @@ gcoHAL_CheckCompletion(
 gceSTATUS
 gcoHAL_WaitCompletion(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcsPATH_DATA_PTR PathData
     )
 {
     gceSTATUS status;
+#if GC355_PROFILER
+	gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoHAL_WaitCompletion);
+#endif
     /* Relay the call. */
     status = gcoVGHARDWARE_WaitCompletion(
         gcvNULL, &PathData->data
         );
-
+#if GC355_PROFILER
+	vghalLEAVESUBAPI(gcoHAL_WaitCompletion);
+#endif
     /* Return status. */
     return status;
 }
@@ -452,10 +898,20 @@ gcoHAL_WaitCompletion(
 gceSTATUS
 gcoHAL_Flush(
     IN gcoHAL Hal
+#if GC355_PROFILER
+    ,
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth
+#endif
     )
 {
+	gceSTATUS status;
     /* Flush the current pipe. */
-    return gcoVGHARDWARE_FlushPipe(gcvNULL);
+    status = gcoVGHARDWARE_FlushPipe(gcvNULL);
+    return status;
 }
 
 /*******************************************************************************
@@ -481,7 +937,7 @@ gcoHAL_Flush(
 **
 **  OUTPUT:
 **
-**      gcuVIDMEM_NODE_PTR * Node
+**      gctUINT32 * Node
 **          Pointer to the variable to receive the node of the allocated area.
 **
 **      gctUINT32 * Address
@@ -495,20 +951,33 @@ gcoHAL_Flush(
 gceSTATUS
 gcoHAL_AllocateLinearVideoMemory(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctUINT Size,
     IN gctUINT Alignment,
     IN gcePOOL Pool,
-    OUT gcuVIDMEM_NODE_PTR * Node,
+    OUT gctUINT32 * Node,
     OUT gctUINT32 * Address,
     OUT gctPOINTER * Memory
     )
 {
     gceSTATUS status;
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoHAL_AllocateLinearVideoMemory);
+#endif
     /* Call down to gcoHARDWARE. */
     status = gcoVGHARDWARE_AllocateLinearVideoMemory(
-        gcvNULL, Size, Alignment, Pool, Node, Address, Memory
+        gcvNULL, Size, Alignment, Pool, gcvALLOC_FLAG_NONE, Node, Address, Memory
         );
-
+#if GC355_PROFILER
+   	vghalLEAVESUBAPI(gcoHAL_AllocateLinearVideoMemory);
+#endif
     /* Return the status. */
     return status;
 }
@@ -524,7 +993,7 @@ gcoHAL_AllocateLinearVideoMemory(
 **      gcoHAL Hal
 **          Pointer to the gcoHAL object.
 **
-**      gcuVIDMEM_NODE_PTR Node
+**      gctUINT32 Node
 **          Node of the allocated memory to free.
 **
 **  OUTPUT:
@@ -534,13 +1003,26 @@ gcoHAL_AllocateLinearVideoMemory(
 gceSTATUS
 gcoHAL_FreeVideoMemory(
     IN gcoHAL Hal,
-    IN gcuVIDMEM_NODE_PTR Node
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
+    IN gctUINT32 Node
     )
 {
     gceSTATUS status;
+#if GC355_PROFILER
+	gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoHAL_FreeVideoMemory);
+#endif
     /* Call down to gcoHARDWARE. */
     status = gcoVGHARDWARE_FreeVideoMemory(gcvNULL, Node);
-
+#if GC355_PROFILER
+	vghalLEAVESUBAPI(gcoHAL_FreeVideoMemory);
+#endif
     /* Return the status. */
     return status;
 }
@@ -557,7 +1039,7 @@ gcoHAL_FreeVideoMemory(
 **      gcoHAL Hal
 **          Pointer to the gcoHAL object.
 **
-**      gcuVIDMEM_NODE_PTR Node
+**      gctUINT32 Node
 **          Node of the allocated memory to free.
 **
 **  OUTPUT:
@@ -567,13 +1049,26 @@ gcoHAL_FreeVideoMemory(
 gceSTATUS
 gcoHAL_ScheduleVideoMemory(
     IN gcoHAL Hal,
-    IN gcuVIDMEM_NODE_PTR Node
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
+    IN gctUINT32 Node
     )
 {
     gceSTATUS status;
+#if GC355_PROFILER
+	gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoHAL_ScheduleVideoMemory);
+#endif
     /* Call down to gcoHARDWARE. */
     status = gcoVGHARDWARE_ScheduleVideoMemory(gcvNULL, Node, gcvTRUE);
-
+#if GC355_PROFILER
+	vghalLEAVESUBAPI(gcoHAL_ScheduleVideoMemory);
+#endif
     /* Return the status. */
     return status;
 }
@@ -603,13 +1098,29 @@ gcoHAL_ScheduleVideoMemory(
 gceSTATUS
 gcoHAL_SplitAddress(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctUINT32 Address,
     OUT gcePOOL * Pool,
     OUT gctUINT32 * Offset
     )
 {
+    gceSTATUS status;
+#if GC355_PROFILER
+	gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoHAL_SplitAddress);
+#endif
     /* Call hardware library. */
-    return gcoVGHARDWARE_SplitAddress(gcvNULL, Address, Pool, Offset);
+    status = gcoVGHARDWARE_SplitAddress(gcvNULL, Address, Pool, Offset);
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoHAL_SplitAddress);
+#endif
+    return status;
 }
 
 /*******************************************************************************
@@ -637,13 +1148,29 @@ gcoHAL_SplitAddress(
 gceSTATUS
 gcoHAL_CombineAddress(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcePOOL Pool,
     IN gctUINT32 Offset,
     OUT gctUINT32 * Address
     )
 {
+    gceSTATUS status;
+#if GC355_PROFILER
+	gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoHAL_CombineAddress);
+#endif
     /* Call hardware library. */
-    return gcoVGHARDWARE_CombineAddress(gcvNULL, Pool, Offset, Address);
+    status = gcoVGHARDWARE_CombineAddress(gcvNULL, Pool, Offset, Address);
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoHAL_CombineAddress);
+#endif
+    return status;
 }
 
 /*******************************************************************************
@@ -665,15 +1192,28 @@ gcoHAL_CombineAddress(
 gceSTATUS
 gcoHAL_QueryCommandBuffer(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     OUT gcsCOMMAND_BUFFER_INFO_PTR Information
     )
 {
     gceSTATUS status;
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoHAL_QueryCommandBuffer);
+#endif
     /* Copy the command buffer information. */
     status = gcoVGHARDWARE_QueryCommandBuffer(
         gcvNULL, Information
         );
-
+#if GC355_PROFILER
+	vghalLEAVESUBAPI(gcoHAL_QueryCommandBuffer);
+#endif
     /* Return status. */
     return status;
 }
@@ -711,17 +1251,30 @@ gcoHAL_QueryCommandBuffer(
 gceSTATUS
 gcoHAL_GetAlignedSurfaceSize(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gceSURF_TYPE Type,
     IN OUT gctUINT32_PTR Width,
     IN OUT gctUINT32_PTR Height
     )
 {
     gceSTATUS status;
+#if GC355_PROFILER
+	gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoHAL_GetAlignedSurfaceSize);
+#endif
     /* Align the sizes. */
     status = gcoVGHARDWARE_AlignToTile(
         gcvNULL, Type, Width, Height
         );
-
+#if GC355_PROFILER
+	vghalLEAVESUBAPI(gcoHAL_GetAlignedSurfaceSize);
+#endif
     /* Return the status. */
     return status;
 }
@@ -755,16 +1308,33 @@ gcoHAL_GetAlignedSurfaceSize(
 gceSTATUS
 gcoHAL_ReserveTask(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gceBLOCK Block,
     IN gctUINT TaskCount,
-    IN gctSIZE_T Bytes,
+    IN gctUINT32 Bytes,
     OUT gctPOINTER * Memory
     )
 {
+	gceSTATUS status;
+#if GC355_PROFILER
+	gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoHAL_ReserveTask);
+#endif
     /* Allocate an event. */
-    return gcoVGHARDWARE_ReserveTask(
+    status = gcoVGHARDWARE_ReserveTask(
         gcvNULL, Block, TaskCount, Bytes, Memory
         );
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoHAL_ReserveTask);
+#endif
+    /* Return the status. */
+    return status;
 }
 
 /******************************************************************************\
@@ -773,33 +1343,101 @@ gcoHAL_ReserveTask(
 
 gctBOOL
 gcoVG_IsMaskSupported(
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gceSURF_FORMAT Format
     )
 {
-    return gcoVGHARDWARE_IsMaskSupported(Format);
+	gctBOOL result;
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_IsMaskSupported);
+#endif
+    result = gcoVGHARDWARE_IsMaskSupported(Format);
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_IsMaskSupported);
+#endif
+    /* Return the status. */
+    return result;
 }
 
 gctBOOL
 gcoVG_IsTargetSupported(
+#if GC355_PROFILER
+	IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gceSURF_FORMAT Format
     )
 {
-    return gcoVGHARDWARE_IsTargetSupported(Format);
+	gctBOOL result;
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_IsTargetSupported);
+#endif
+    result = gcoVGHARDWARE_IsTargetSupported(Format);
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_IsTargetSupported);
+#endif
+    /* Return the status. */
+    return result;
 }
 
 gctBOOL
 gcoVG_IsImageSupported(
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gceSURF_FORMAT Format
     )
 {
-    return gcoVGHARDWARE_IsImageSupported(Format);
+	gctBOOL result;
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_IsImageSupported);
+#endif
+    result = gcoVGHARDWARE_IsImageSupported(Format);
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_IsImageSupported);
+#endif
+    /* Return the status. */
+    return result;
 }
 
 gctUINT8 gcoVG_PackColorComponent(
+#if GC355_PROFILER
+	gcoVG Vg,
+    gcsPROFILERFUNCNODE *DList,
+    gctUINT TreeDepth,
+    gctUINT saveLayerTreeDepth,
+    gctUINT varTreeDepth,
+#endif
     gctFLOAT Value
     )
 {
-    return gcoVGHARDWARE_PackColorComponent(Value);
+	gctUINT8 result;
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_PackColorComponent);
+#endif
+    result = gcoVGHARDWARE_PackColorComponent(Value);
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_PackColorComponent);
+#endif
+    /* Return the status. */
+    return result;
 }
 
 
@@ -847,7 +1485,7 @@ gcoVG_Construct(
             ));
 
         /* Reset everything to 0. */
-        gcmERR_BREAK(gcoOS_ZeroMemory(vg, sizeof(struct _gcoVG)));
+        gcoOS_ZeroMemory(vg, sizeof(struct _gcoVG));
 
         /* Initialize the object. */
         vg->object.type = gcvOBJ_VG;
@@ -883,10 +1521,18 @@ gcoVG_Construct(
 
         for (i = 0; i < gcmCOUNTOF(vg->tsBuffer); i += 1)
         {
-            vg->tsBuffer[i].node = gcvNULL;
+            vg->tsBuffer[i].node = 0;
             vg->tsBuffer[i].allocatedSize = 0;
         }
 #endif
+
+#if gcdGC355_MEM_PRINT
+#ifdef LINUX
+        vg->tsCurMemSize = 0;
+        vg->tsMaxMemSize = 0;
+#endif
+#endif
+
         /* Return gcoVG object pointer. */
         *Vg = vg;
 
@@ -919,6 +1565,13 @@ gcoVG_Construct(
 gceSTATUS
 gcoVG_Destroy(
     IN gcoVG Vg
+#if GC355_PROFILER
+    ,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth
+#endif
     )
 {
     gceSTATUS status;
@@ -934,9 +1587,11 @@ gcoVG_Destroy(
         if (Vg->tsBuffer != gcvNULL)
         {
             gcmERR_BREAK(gcoOS_AcquireMutex(Vg->os, g_tsMutex, gcvINFINITE));
-
+#if GC355_PROFILER
+            status = _TessellationBufferRelease(Vg, Vg->funcDList, Vg->TreeDepth, Vg->saveLayerTreeDepth, Vg->varTreeDepth, Vg->tsBuffer);
+#else
             status = _TessellationBufferRelease(Vg, Vg->tsBuffer);
-
+#endif
             gcmVERIFY_OK(gcoOS_ReleaseMutex(Vg->os, g_tsMutex));
 
             gcmERR_BREAK(status);
@@ -947,7 +1602,11 @@ gcoVG_Destroy(
         /* Destroy tesselation buffers. */
         for (i = 0; i < gcmCOUNTOF(Vg->tsBuffer); i += 1)
         {
+#if GC355_PROFILER
+            gcmERR_BREAK(_FreeTessellationBuffer(Vg, Vg->funcDList, Vg->TreeDepth, Vg->saveLayerTreeDepth, Vg->varTreeDepth, &Vg->tsBuffer[i]));
+#else
             gcmERR_BREAK(_FreeTessellationBuffer(Vg, &Vg->tsBuffer[i]));
+#endif
         }
 #endif
         /* Destroy scissor surface. */
@@ -959,6 +1618,12 @@ gcoVG_Destroy(
 
         /* Mark the object as unknown. */
         Vg->object.type = gcvOBJ_UNKNOWN;
+
+#if gcdGC355_MEM_PRINT
+#ifdef LINUX
+        gcmPRINT("04) Tessellation buffer: %d \n", Vg->tsMaxMemSize);
+#endif
+#endif
 
         /* Free the gcoVG structure. */
         gcmERR_BREAK(gcmOS_SAFE_FREE(Vg->os, Vg));
@@ -983,6 +1648,12 @@ gcoVG_Destroy(
 gceSTATUS
 gcoVG_SetTarget(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF Target
     )
 {
@@ -992,6 +1663,11 @@ gcoVG_SetTarget(
                   Vg, Target);
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
+
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_SetTarget);
+#endif
 
     do
     {
@@ -1004,6 +1680,10 @@ gcoVG_SetTarget(
                 ));
 
             /* Reset the target. */
+            if (Vg->target != gcvNULL)
+            {
+                gcoSURF_Destroy(Vg->target);
+            }
             Vg->target       = gcvNULL;
             Vg->targetWidth  = 0;
             Vg->targetHeight = 0;
@@ -1016,12 +1696,21 @@ gcoVG_SetTarget(
                 ));
 
             /* Set target. */
+            if (Vg->target != gcvNULL)
+            {
+                gcoSURF_Destroy(Vg->target);
+            }
+            gcoSURF_ReferenceSurface(Target);
             Vg->target       = Target;
             Vg->targetWidth  = Target->info.rect.right;
             Vg->targetHeight = Target->info.rect.bottom;
         }
     }
     while (gcvFALSE);
+
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_SetTarget);
+#endif
 
     gcmFOOTER();
     /* Return the error. */
@@ -1031,6 +1720,12 @@ gcoVG_SetTarget(
 gceSTATUS
 gcoVG_UnsetTarget(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF Surface
     )
 {
@@ -1043,12 +1738,24 @@ gcoVG_UnsetTarget(
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
     gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
 
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_UnSetTarget);
+#endif
+
     /* Only unset surface if it is the current render target. */
     if (Vg->target == Surface)
     {
+#if GC355_PROFILER
+        status = gcoVG_SetTarget(Vg, Vg->funcDList, Vg->TreeDepth, Vg->saveLayerTreeDepth, Vg->varTreeDepth, gcvNULL);
+#else
         status = gcoVG_SetTarget(Vg, gcvNULL);
+#endif
     }
 
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_UnSetTarget);
+#endif
     gcmFOOTER();
     /* Return the status. */
     return status;
@@ -1057,6 +1764,12 @@ gcoVG_UnsetTarget(
 gceSTATUS
 gcoVG_SetUserToSurface(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctFLOAT UserToSurface[9]
     )
 {
@@ -1066,6 +1779,11 @@ gcoVG_SetUserToSurface(
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
     gcmVERIFY_ARGUMENT(UserToSurface != gcvNULL);
+
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_SetUserToSurface);
+#endif
 
     /* Copy first row. */
     Vg->userToSurface[0] = UserToSurface[0];
@@ -1082,6 +1800,9 @@ gcoVG_SetUserToSurface(
     Vg->userToSurface[7] = UserToSurface[5];
     Vg->userToSurface[8] = UserToSurface[8];
 
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_SetUserToSurface);
+#endif
     gcmFOOTER_NO();
     /* Success. */
     return gcvSTATUS_OK;
@@ -1090,6 +1811,12 @@ gcoVG_SetUserToSurface(
 gceSTATUS
 gcoVG_SetSurfaceToImage(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctFLOAT SurfaceToImage[9]
     )
 {
@@ -1098,7 +1825,10 @@ gcoVG_SetSurfaceToImage(
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
     gcmVERIFY_ARGUMENT(SurfaceToImage != gcvNULL);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_SetSurfaceToImage);
+#endif
     /* Copy first row. */
     Vg->surfaceToImage[0] = SurfaceToImage[0];
     Vg->surfaceToImage[1] = SurfaceToImage[3];
@@ -1114,6 +1844,9 @@ gcoVG_SetSurfaceToImage(
     Vg->surfaceToImage[7] = SurfaceToImage[5];
     Vg->surfaceToImage[8] = SurfaceToImage[8];
 
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_SetSurfaceToImage);
+#endif
     gcmFOOTER_NO();
     /* Success. */
     return gcvSTATUS_OK;
@@ -1134,6 +1867,12 @@ gcoVG_SetSurfaceToImage(
 gceSTATUS
 gcoVG_EnableMask(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctBOOL Enable
     )
 {
@@ -1143,9 +1882,15 @@ gcoVG_EnableMask(
 
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_EnableMask);
+#endif
     /* Call gcoVGHARDWARE to enable masking. */
     status = gcoVGHARDWARE_EnableMask(Vg->hw, Enable);
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_EnableMask);
+#endif
     gcmFOOTER();
     return status;
 }
@@ -1163,6 +1908,12 @@ gcoVG_EnableMask(
 gceSTATUS
 gcoVG_SetMask(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF Mask
     )
 {
@@ -1172,14 +1923,18 @@ gcoVG_SetMask(
                   Vg, Mask);
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_SetMask);
+#endif
 
     do
     {
         if (Vg->mask == Mask)
         {
             /* The mask did not change, do nothing. */
-            gcmFOOTER_NO();
-            return gcvSTATUS_OK;
+            status = gcvSTATUS_OK;
+            break;
         }
 
         /* Is there a mask currently set? */
@@ -1198,19 +1953,22 @@ gcoVG_SetMask(
         if (Mask == gcvNULL)
         {
             /* Success. */
-            gcmFOOTER_NO();
-            return gcvSTATUS_OK;
+            status = gcvSTATUS_OK;
+            break;
         }
 
         /* Make sure we have a good surface. */
         gcmVERIFY_OBJECT(Mask, gcvOBJ_SURF);
-
+#if GC355_PROFILER
         /* Test if surface format is supported. */
+        if (!gcoVG_IsMaskSupported(Vg, Vg->funcDList, Vg->TreeDepth, Vg->saveLayerTreeDepth, Vg->varTreeDepth, Mask->info.format))
+#else
         if (!gcoVG_IsMaskSupported(Mask->info.format))
+#endif
         {
             /* Format not supported. */
-            gcmFOOTER_NO();
-            return gcvSTATUS_NOT_SUPPORTED;
+            status = gcvSTATUS_NOT_SUPPORTED;
+            break;
         }
 
         /* Set mask. */
@@ -1227,11 +1985,13 @@ gcoVG_SetMask(
             ));
 
         /* Success. */
-        gcmFOOTER_NO();
-        return gcvSTATUS_OK;
+        status = gcvSTATUS_OK;
     }
     while (gcvFALSE);
 
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_SetMask);
+#endif
     gcmFOOTER();
     /* Return the error. */
     return status;
@@ -1240,6 +2000,12 @@ gcoVG_SetMask(
 gceSTATUS
 gcoVG_UnsetMask(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF Surface
     )
 {
@@ -1250,12 +2016,23 @@ gcoVG_UnsetMask(
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
     gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_UnsetMask);
+#endif
     /* Only unset surface if it is the current mask. */
     if (Vg->mask == Surface)
     {
+#if GC355_PROFILER
+        status = gcoVG_SetMask(Vg, Vg->funcDList, Vg->TreeDepth, Vg->saveLayerTreeDepth, Vg->varTreeDepth, gcvNULL);
+#else
         status = gcoVG_SetMask(Vg, gcvNULL);
+#endif
     }
+
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_UnsetMask);
+#endif
 
     gcmFOOTER();
     /* Return the status. */
@@ -1265,6 +2042,13 @@ gcoVG_UnsetMask(
 gceSTATUS
 gcoVG_FlushMask(
     IN gcoVG Vg
+#if GC355_PROFILER
+    ,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth
+#endif
     )
 {
     gceSTATUS status;
@@ -1274,9 +2058,16 @@ gcoVG_FlushMask(
     /* Verify the argument. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
 
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_FlushMask);
+#endif
     /* Flush mask. */
     status = gcoVGHARDWARE_FlushVgMask(Vg->hw);
 
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_FlushMask);
+#endif
     gcmFOOTER();
     /* Return the status. */
     return status;
@@ -1298,6 +2089,12 @@ gcoVG_FlushMask(
 gceSTATUS
 gcoVG_EnableScissor(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctBOOL Enable
     )
 {
@@ -1306,9 +2103,15 @@ gcoVG_EnableScissor(
                   Vg, Enable);
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_EnableScissor);
+#endif
     /* Call gcoVGHARDWARE to enable scissoring. */
     status = gcoVGHARDWARE_EnableScissor(Vg->hw, Enable);
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_EnableScissor);
+#endif
 
     gcmFOOTER();
     return status;
@@ -1332,6 +2135,12 @@ gcoVG_EnableScissor(
 gceSTATUS
 gcoVG_SetScissor(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctSIZE_T RectangleCount,
     IN gcsVG_RECT_PTR Rectangles
     )
@@ -1348,18 +2157,22 @@ gcoVG_SetScissor(
     {
         gcmVERIFY_ARGUMENT(Rectangles != gcvNULL);
     }
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_SetScissor);
+#endif
 
     do
     {
         /* Free any current scissor surface. */
         if (Vg->scissor != gcvNULL)
         {
-            gcmERR_BREAK(gcoSURF_Destroy(Vg->scissor));
+            gcmERR_GOTO(gcoSURF_Destroy(Vg->scissor));
             Vg->scissor = gcvNULL;
         }
 
         /* Construct a new scissor surface. */
-        gcmERR_BREAK(gcoSURF_Construct(
+        gcmERR_GOTO(gcoSURF_Construct(
             Vg->hal,
             Vg->targetWidth,
             Vg->targetHeight,
@@ -1371,7 +2184,7 @@ gcoVG_SetScissor(
             ));
 
         /* Lock scissor surface. */
-        gcmERR_BREAK(gcoSURF_Lock(
+        gcmERR_GOTO(gcoSURF_Lock(
             Vg->scissor,
             &Vg->scissorAddress,
             &Vg->scissorBits
@@ -1380,10 +2193,10 @@ gcoVG_SetScissor(
         bits = (gctUINT8_PTR) Vg->scissorBits;
 
         /* Zero the entire surface. */
-        gcmERR_BREAK(gcoOS_ZeroMemory(
+        gcoOS_ZeroMemory(
             bits,
             Vg->scissor->info.stride * Vg->targetHeight
-            ));
+            );
 
         /* Loop while there are rectangles to process. */
         while (RectangleCount > 0)
@@ -1409,16 +2222,23 @@ gcoVG_SetScissor(
 
                 /* Start at top line of region. */
                 gctUINT32 offset = top * Vg->scissor->info.stride;
-                while (top++ < bottom)
+
+                /* See if left and right bytes overlap. */
+                if (leftByte == rightByte)
                 {
-                    /* See if left and right bytes overlap. */
-                    if (leftByte == rightByte)
+                    while (top++ < bottom)
                     {
                         /* Allow left and right pixels. */
                         bits[offset + leftByte] |= leftMask & rightMask;
-                    }
 
-                    else
+                        /* Next line. */
+                        offset += Vg->scissor->info.stride;
+                    }
+                }
+
+                else
+                {
+                    while (top++ < bottom)
                     {
                         /* Allow left pixels. */
                         bits[offset + leftByte] |= leftMask;
@@ -1427,19 +2247,19 @@ gcoVG_SetScissor(
                         if (leftByte + 1 < rightByte)
                         {
                             /* Allow all middle pixels. */
-                            gcmVERIFY_OK(gcoOS_MemFill(
+                            gcoOS_MemFill(
                                 &bits[offset + leftByte + 1],
                                 0xFF,
                                 rightByte - leftByte - 1
-                                ));
+                                );
                         }
 
                         /* Allow right pixels. */
                         bits[offset + rightByte] |= rightMask;
-                    }
 
-                    /* Next line. */
-                    offset += Vg->scissor->info.stride;
+                        /* Next line. */
+                        offset += Vg->scissor->info.stride;
+                    }
                 }
             }
 
@@ -1449,7 +2269,7 @@ gcoVG_SetScissor(
         }
 
         /* Program the scissors to the hardware. */
-        gcmERR_BREAK(gcoVGHARDWARE_SetScissor(
+        gcmERR_GOTO(gcoVGHARDWARE_SetScissor(
             Vg->hw,
             Vg->scissorAddress,
             Vg->scissor->info.stride
@@ -1459,20 +2279,23 @@ gcoVG_SetScissor(
         gcmVERIFY_OK(gcoSURF_Unlock(
             Vg->scissor, bits
             ));
-        gcmFOOTER_NO();
+
         /* Success. */
-        return gcvSTATUS_OK;
+        status = gcvSTATUS_OK;
+
+ErrorHandler:
+        if (bits != gcvNULL)
+        {
+            /* Unlock the scissor surface. */
+            gcmCHECK_STATUS(gcoSURF_Unlock(
+                Vg->scissor, bits
+                ));
+        }
     }
     while (gcvFALSE);
-
-    if (bits != gcvNULL)
-    {
-        /* Unlock the scissor surface. */
-        gcmCHECK_STATUS(gcoSURF_Unlock(
-            Vg->scissor, bits
-            ));
-    }
-
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_SetScissor);
+#endif
     gcmFOOTER();
     /* Return the error. */
     return status;
@@ -1481,6 +2304,12 @@ gcoVG_SetScissor(
 gceSTATUS
 gcoVG_SetTileFillColor(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctFLOAT Red,
     IN gctFLOAT Green,
     IN gctFLOAT Blue,
@@ -1491,10 +2320,15 @@ gcoVG_SetTileFillColor(
                   Vg, Red, Green, Blue, Alpha);
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_SetTileFillColor);
+#endif
     /* Set tile fill color. */
     Vg->tileFillColor = gcoVGHARDWARE_PackColor32(Red, Green, Blue, Alpha);
-
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_SetTileFillColor);
+#endif
     gcmFOOTER_NO();
     /* Success. */
     return gcvSTATUS_OK;
@@ -1515,6 +2349,12 @@ gcoVG_SetTileFillColor(
 gceSTATUS
 gcoVG_EnableColorTransform(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctBOOL Enable
     )
 {
@@ -1523,9 +2363,16 @@ gcoVG_EnableColorTransform(
                   Vg, Enable);
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_EnableColorTransform);
+#endif
     /* Call gcoVGHARDWARE to enable color transformation. */
     status = gcoVGHARDWARE_EnableColorTransform(Vg->hw, Enable);
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_EnableColorTransform);
+#endif
+
     gcmFOOTER();
     return status;
 }
@@ -1545,6 +2392,12 @@ gcoVG_EnableColorTransform(
 gceSTATUS
 gcoVG_SetColorTransform(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctFLOAT ColorTransform[8]
     )
 {
@@ -1559,7 +2412,10 @@ gcoVG_SetColorTransform(
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
     gcmVERIFY_ARGUMENT(ColorTransform != gcvNULL);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_SetColorTransform);
+#endif
     /* Set initial pointers. */
     scale  = &ColorTransform[0];
     offset = &ColorTransform[4];
@@ -1573,6 +2429,9 @@ gcoVG_SetColorTransform(
 
     /* Send scale and offset to hardware. */
     status = gcoVGHARDWARE_SetColorTransform(Vg->hw, clampedScale, clampedOffset);
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_SetColorTransform);
+#endif
     gcmFOOTER();
     return status;
 }
@@ -1593,6 +2452,12 @@ gcoVG_SetColorTransform(
 gceSTATUS
 gcoVG_SetSolidPaint(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctUINT8 Red,
     IN gctUINT8 Green,
     IN gctUINT8 Blue,
@@ -1605,11 +2470,17 @@ gcoVG_SetSolidPaint(
 
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_SetSolidPaint);
+#endif
     /* Set solid paint. */
     status = gcoVGHARDWARE_SetPaintSolid(
         Vg->hw, Red, Green, Blue, Alpha
         );
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_SetSolidPaint);
+#endif
     gcmFOOTER();
     return status;
 }
@@ -1617,6 +2488,12 @@ gcoVG_SetSolidPaint(
 gceSTATUS
 gcoVG_SetLinearPaint(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctFLOAT Constant,
     IN gctFLOAT StepX,
     IN gctFLOAT StepY
@@ -1627,11 +2504,17 @@ gcoVG_SetLinearPaint(
                   Vg, Constant, StepX, StepY);
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_SetLinearPaint);
+#endif
     /* Set solid paint. */
     status =  gcoVGHARDWARE_SetPaintLinear(
         Vg->hw, Constant, StepX, StepY
         );
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_SetLinearPaint);
+#endif
     gcmFOOTER();
     return status;
 }
@@ -1639,6 +2522,12 @@ gcoVG_SetLinearPaint(
 gceSTATUS
 gcoVG_SetRadialPaint(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctFLOAT LinConstant,
     IN gctFLOAT LinStepX,
     IN gctFLOAT LinStepY,
@@ -1657,7 +2546,10 @@ gcoVG_SetRadialPaint(
                   );
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_SetRadialPaint);
+#endif
     /* Set solid paint. */
     status = gcoVGHARDWARE_SetPaintRadial(
         Vg->hw,
@@ -1671,7 +2563,9 @@ gcoVG_SetRadialPaint(
         RadStepYY,
         RadStepXY
         );
-
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_SetRadialPaint);
+#endif
     gcmFOOTER();
     return status;
 }
@@ -1679,6 +2573,12 @@ gcoVG_SetRadialPaint(
 gceSTATUS
 gcoVG_SetPatternPaint(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctFLOAT UConstant,
     IN gctFLOAT UStepX,
     IN gctFLOAT UStepY,
@@ -1695,7 +2595,10 @@ gcoVG_SetPatternPaint(
                   );
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_SetPatternPaint);
+#endif
     /* Set solid paint. */
     status = gcoVGHARDWARE_SetPaintPattern(
         Vg->hw,
@@ -1703,7 +2606,9 @@ gcoVG_SetPatternPaint(
         VConstant, VStepX, VStepY,
         Linear
         );
-
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_SetPatternPaint);
+#endif
     gcmFOOTER();
     return status;
 }
@@ -1711,6 +2616,12 @@ gcoVG_SetPatternPaint(
 gceSTATUS
 gcoVG_SetColorRamp(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF ColorRamp,
     IN gceTILE_MODE ColorRampSpreadMode
     )
@@ -1721,7 +2632,10 @@ gcoVG_SetColorRamp(
                   );
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_SetColorRamp);
+#endif
     /* Set solid paint. */
     status = gcoVGHARDWARE_SetPaintImage(
         Vg->hw,
@@ -1730,6 +2644,9 @@ gcoVG_SetColorRamp(
         gcvFILTER_LINEAR,
         Vg->tileFillColor
         );
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_SetColorRamp);
+#endif
     gcmFOOTER();
     return status;
 
@@ -1738,6 +2655,14 @@ gcoVG_SetColorRamp(
 gceSTATUS
 gcoVG_SetPattern(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
+    IN gctINT32 width,
+    IN gctINT32 height,
     IN gcoSURF Pattern,
     IN gceTILE_MODE TileMode,
     IN gceIMAGE_FILTER Filter
@@ -1749,8 +2674,13 @@ gcoVG_SetPattern(
                   );
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_SetPattern);
+#endif
     /* Set solid paint. */
+    Pattern->info.rect.right  = width;
+    Pattern->info.rect.bottom = height;
     status = gcoVGHARDWARE_SetPaintImage(
         Vg->hw,
         &Pattern->info,
@@ -1758,6 +2688,9 @@ gcoVG_SetPattern(
         Filter,
         Vg->tileFillColor
         );
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_SetPattern);
+#endif
     gcmFOOTER();
     return status;
 }
@@ -1776,6 +2709,12 @@ gcoVG_SetPattern(
 gceSTATUS
 gcoVG_SetBlendMode(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gceVG_BLEND Mode
     )
 {
@@ -1785,9 +2724,15 @@ gcoVG_SetBlendMode(
                   );
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_SetBlendMode);
+#endif
     /* Set blend mode in hardware. */
     status = gcoVGHARDWARE_SetVgBlendMode(Vg->hw, Mode);
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_SetBlendMode);
+#endif
     gcmFOOTER();
     return status;
 }
@@ -1807,6 +2752,12 @@ gcoVG_SetBlendMode(
 gceSTATUS
 gcoVG_Clear(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctINT X,
     IN gctINT Y,
     IN gctINT Width,
@@ -1820,14 +2771,40 @@ gcoVG_Clear(
                   );
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_Clear);
+#endif
     /* Clear rectangle. */
     status = gcoVGHARDWARE_VgClear(Vg->hw, X, Y, Width, Height);
-
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_Clear);
+#endif
     gcmFOOTER();
     /* Return status. */
     return status;
 }
+
+#if gcdMOVG
+static gctBOOL
+    _Transform(
+    IN gctFLOAT Value[2],
+    IN gctFLOAT Matrix[9],
+    OUT gctFLOAT result[2])
+{
+    if (Matrix == NULL) {
+        result[0] = Value[0];
+        result[1] = Value[1];
+
+        return gcvTRUE;
+    }
+
+    result[0] = Value[0] * Matrix[0 * 3 + 0] + Value[1] * Matrix[0 * 3 + 1] + Matrix[0 * 3 + 2];
+    result[1] = Value[0] * Matrix[1 * 3 + 0] + Value[1] * Matrix[1 * 3 + 1] + Matrix[1 * 3 + 2];
+
+    return gcvTRUE;
+}
+#endif
 
 /******************************************************************************/
 /** @ingroup gcoVG
@@ -1849,9 +2826,20 @@ gcoVG_Clear(
 gceSTATUS
 gcoVG_DrawPath(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcsPATH_DATA_PTR PathData,
     IN gctFLOAT Scale,
     IN gctFLOAT Bias,
+#if gcdMOVG
+    IN gctUINT32 Width,
+    IN gctUINT32 Height,
+    IN gctFLOAT *Bounds,
+#endif
     IN gctBOOL SoftwareTesselation
     )
 {
@@ -1862,15 +2850,65 @@ gcoVG_DrawPath(
                   );
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_DrawPath);
+#endif
 
     do
     {
-        gcsTESSELATION_PTR tessellationBuffer;
+        gcsTESSELATION_PTR tessellationBuffer = gcvNULL;
+
+#if gcdMOVG
+        gctINT tsWidth, tsHeight;
+        gctINT x, y;
+        gctFLOAT minx, miny, maxx, maxy;  /* Bounding box of the path. */
+        gctFLOAT tBounds[4][2];    /* LEFT, RIGHT, BOTTOM, TOP. */
+        gctFLOAT points[4][2];      /* Four corners of the bounding. */
 
         /* Get the pointer to the current tesselation buffer. */
+        if (!SoftwareTesselation)
+        {
+#if GC355_PROFILER
+            gcmERR_BREAK(_GetTessellationBuffer(
+                Vg, Vg->funcDList, Vg->TreeDepth, Vg->saveLayerTreeDepth, Vg->varTreeDepth, Width, Height,
+                &tessellationBuffer, &tsWidth, &tsHeight
+                ));
+#else
+            gcmERR_BREAK(_GetTessellationBuffer(
+                Vg, Width, Height,
+                &tessellationBuffer, &tsWidth, &tsHeight
+                ));
+#endif
+        }
+        else
+        {
+#if GC355_PROFILER
+            gcmERR_BREAK(_GetTessellationBuffer(
+                Vg, Vg->funcDList, Vg->TreeDepth, Vg->saveLayerTreeDepth, Vg->varTreeDepth, Vg->targetWidth, Vg->targetHeight,
+                &tessellationBuffer, &tsWidth, &tsHeight
+                ));
+#else
+            gcmERR_BREAK(_GetTessellationBuffer(
+                Vg, Vg->targetWidth, Vg->targetHeight,
+                &tessellationBuffer, &tsWidth, &tsHeight
+                ));
+#endif
+            tsWidth = Vg->targetWidth;
+            tsHeight = Vg->targetHeight;
+        }
+#else
+#if GC355_PROFILER
+        /* Get the pointer to the current tesselation buffer. */
+        gcmERR_BREAK(_GetTessellationBuffer(
+            Vg, Vg->funcDList, Vg->TreeDepth, Vg->saveLayerTreeDepth, Vg->varTreeDepth, &tessellationBuffer
+            ));
+#else
         gcmERR_BREAK(_GetTessellationBuffer(
             Vg, &tessellationBuffer
             ));
+#endif
+#endif
 
         /* Set path type. In VG version before 2.0 it was not possible to change
            the type of the path data within a path, therefore the data within
@@ -1880,6 +2918,75 @@ gcoVG_DrawPath(
             Vg->hw, PathData->dataType
             ));
 
+#if gcdMOVG
+        if (!SoftwareTesselation)
+        {
+            /* Transform the bounds. */
+            points[0][0] = Bounds[0];
+            points[0][1] = Bounds[2];
+            points[1][0] = Bounds[1];
+            points[1][1] = Bounds[2];
+            points[2][0] = Bounds[1];
+            points[2][1] = Bounds[3];
+            points[3][0] = Bounds[0];
+            points[3][1] = Bounds[3];
+            _Transform(points[0], Vg->userToSurface, tBounds[0]);
+            _Transform(points[1], Vg->userToSurface, tBounds[1]);
+            _Transform(points[2], Vg->userToSurface, tBounds[2]);
+            _Transform(points[3], Vg->userToSurface, tBounds[3]);
+            minx = maxx = tBounds[0][0];
+            miny = maxy = tBounds[0][1];
+            minx = gcmMIN(minx, gcmMIN(tBounds[1][0], gcmMIN(tBounds[2][0], tBounds[3][0])));
+            maxx = gcmMAX(maxx, gcmMAX(tBounds[1][0], gcmMAX(tBounds[2][0], tBounds[3][0])));
+            miny = gcmMIN(miny, gcmMIN(tBounds[1][1], gcmMIN(tBounds[2][1], tBounds[3][1])));
+            maxy = gcmMAX(maxy, gcmMAX(tBounds[1][1], gcmMAX(tBounds[2][1], tBounds[3][1])));
+
+            /* Clip to render target area. */
+            if (minx < 0.0f)
+                minx = 0.0f;
+            if (miny < 0.0f)
+                miny = 0.0f;
+            if (maxx > (gctFLOAT)Vg->targetWidth)
+                maxx = (gctFLOAT)Vg->targetWidth;
+            if (maxy > (gctFLOAT)Vg->targetHeight)
+                maxy = (gctFLOAT)Vg->targetHeight;
+        }
+        else
+        {
+            minx = miny = 0.0f;
+            maxx = (gctFLOAT)tsWidth;
+            maxy = (gctFLOAT)tsHeight;
+        }
+
+        /* Looping tessellation in small tiles. */
+        for (y = (gctINT)miny; y < (gctINT)maxy; y += tsHeight)
+        {
+            for (x = (gctINT)minx; x < (gctINT)maxx; x += tsWidth)
+            {
+                /* Program tesselation buffers. */
+                gcmERR_BREAK(gcoVGHARDWARE_SetTessellation(
+                    Vg->hw,
+                    SoftwareTesselation,
+                    x, y,
+                    x, y,
+                    (gctUINT16)tsWidth,
+                    (gctUINT16)tsHeight,
+                    Bias, Scale,
+                    Vg->userToSurface,
+                    tessellationBuffer
+                    ));
+
+                /* Draw the path. */
+                gcmERR_BREAK(gcoVGHARDWARE_DrawPath(
+                    Vg->hw,
+                    SoftwareTesselation,
+                    PathData,
+                    tessellationBuffer,
+                    gcvNULL
+                    ));
+            }
+        }
+#else
         /* Program tesselation buffers. */
         gcmERR_BREAK(gcoVGHARDWARE_SetTessellation(
             Vg->hw,
@@ -1898,12 +3005,16 @@ gcoVG_DrawPath(
             tessellationBuffer,
             gcvNULL
             ));
+#endif
 
-        gcmFOOTER_NO();
         /* Success. */
-        return gcvSTATUS_OK;
+        status = gcvSTATUS_OK;
     }
     while (gcvFALSE);
+
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_DrawPath);
+#endif
 
     gcmFOOTER();
     /* Return status. */
@@ -1913,6 +3024,12 @@ gcoVG_DrawPath(
 gceSTATUS
 gcoVG_DrawImage(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF Source,
     IN gcsPOINT_PTR SourceOrigin,
     IN gcsPOINT_PTR TargetOrigin,
@@ -1923,7 +3040,8 @@ gcoVG_DrawImage(
     IN gctINT TargetY,
     IN gctINT Width,
     IN gctINT Height,
-    IN gctBOOL Mask
+    IN gctBOOL Mask,
+    IN gctBOOL isDrawImage
     )
 {
     gceSTATUS status;
@@ -1934,6 +3052,11 @@ gcoVG_DrawImage(
 
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
+
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_DrawImage);
+#endif
 
     do
     {
@@ -1957,11 +3080,15 @@ gcoVG_DrawImage(
             &srcRect,
             &trgRect,
             gcvFILTER_POINT,
-            Mask
+            Mask,
+            isDrawImage
             ));
     }
     while (gcvFALSE);
 
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_DrawImage);
+#endif
     gcmFOOTER();
     /* Return status. */
     return status;
@@ -1970,11 +3097,22 @@ gcoVG_DrawImage(
 gceSTATUS
 gcoVG_TesselateImage(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF Image,
     IN gcsVG_RECT_PTR Rectangle,
     IN gceIMAGE_FILTER Filter,
     IN gctBOOL Mask,
+#if gcdMOVG
+    IN gctBOOL SoftwareTesselation,
+    IN gceVG_BLEND BlendMode
+#else
     IN gctBOOL SoftwareTesselation
+#endif
     )
 {
     gceSTATUS status;
@@ -1984,7 +3122,10 @@ gcoVG_TesselateImage(
                   );
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_TesselateImage);
+#endif
     do
     {
         static gctFLOAT userToSurface[6] =
@@ -1993,13 +3134,54 @@ gcoVG_TesselateImage(
             0.0f, 1.0f, 0.0f
         };
 
-        gcsTESSELATION_PTR tessellationBuffer;
+#if gcdMOVG
+        gcsTESSELATION_PTR tessellationBuffer = gcvNULL;
+        gctBOOL     withTS = gcvFALSE;
 
+        if ((BlendMode != gcvVG_BLEND_SRC_OVER)
+            || Vg->scissor != gcvNULL
+            || SoftwareTesselation)
+        {
+            withTS = gcvTRUE;
+        }
+
+        if (withTS)
+        {
+            gctINT tsw, tsh;
+#if GC355_PROFILER
+            /* Get the pointer to the current tesselation buffer. */
+            gcmERR_BREAK(_GetTessellationBuffer(
+                Vg, Vg->funcDList, Vg->TreeDepth, Vg->saveLayerTreeDepth, Vg->varTreeDepth, Vg->targetWidth, Vg->targetHeight, &tessellationBuffer, &tsw, &tsh
+                ));
+#else
+            gcmERR_BREAK(_GetTessellationBuffer(
+                Vg, Vg->targetWidth, Vg->targetHeight, &tessellationBuffer, &tsw, &tsh
+                ));
+#endif
+            /* Program tesselation buffers. */
+            gcmERR_BREAK(gcoVGHARDWARE_SetTessellation(
+                Vg->hw,
+                SoftwareTesselation,
+                0, 0,
+                0, 0,
+                (gctUINT16)Vg->targetWidth, (gctUINT16)Vg->targetHeight,
+                0.0f, 1.0f,
+                userToSurface,
+                tessellationBuffer
+                ));
+        }
+#else
+        gcsTESSELATION_PTR tessellationBuffer = gcvNULL;
+#if GC355_PROFILER
         /* Get the pointer to the current tesselation buffer. */
+        gcmERR_BREAK(_GetTessellationBuffer(
+            Vg, Vg->funcDList, Vg->TreeDepth, Vg->saveLayerTreeDepth, Vg->varTreeDepth, &tessellationBuffer
+            ));
+#else
         gcmERR_BREAK(_GetTessellationBuffer(
             Vg, &tessellationBuffer
             ));
-
+#endif
         /* Program tesselation buffers. */
         gcmERR_BREAK(gcoVGHARDWARE_SetTessellation(
             Vg->hw,
@@ -2009,6 +3191,7 @@ gcoVG_TesselateImage(
             userToSurface,
             tessellationBuffer
             ));
+#endif
 
         /* Draw the image. */
         status = gcoVGHARDWARE_TesselateImage(
@@ -2022,7 +3205,39 @@ gcoVG_TesselateImage(
             Vg->surfaceToImage,
             tessellationBuffer
             );
-    
+
+#if gcdMOVG
+        if (withTS)
+        {
+            if ((status != gcvSTATUS_OK) && !SoftwareTesselation)
+            {
+                /* Program tesselation buffers. */
+                gcmERR_BREAK(gcoVGHARDWARE_SetTessellation(
+                    Vg->hw,
+                    gcvTRUE,
+                    0, 0,
+                    0, 0,
+                    (gctUINT16)Vg->targetWidth, (gctUINT16)Vg->targetHeight,
+                    0.0f, 1.0f,
+                    userToSurface,
+                    tessellationBuffer
+                    ));
+
+                /* Draw the image. */
+                gcmERR_BREAK(gcoVGHARDWARE_TesselateImage(
+                    Vg->hw,
+                    gcvTRUE,
+                    &Image->info,
+                    Rectangle,
+                    Filter,
+                    Mask,
+                    Vg->userToSurface,
+                    Vg->surfaceToImage,
+                    tessellationBuffer
+                    ));
+            }
+        }
+#else
         if ((status != gcvSTATUS_OK) && !SoftwareTesselation)
         {
             /* Program tesselation buffers. */
@@ -2046,19 +3261,82 @@ gcoVG_TesselateImage(
                 Vg->userToSurface,
                 Vg->surfaceToImage,
                 tessellationBuffer
-            ));
+                ));
+        }
+#endif
     }
-	}
     while (gcvFALSE);
 
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_TesselateImage);
+#endif
     gcmFOOTER();
     /* Return status. */
     return status;
 }
 
 gceSTATUS
+gcoVG_DrawSurfaceToImage(
+    IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
+    IN gcoSURF Image,
+    IN const gcsVG_RECT_PTR SrcRectangle,
+    IN const gcsVG_RECT_PTR DstRectangle,
+    IN const gctFLOAT Matrix[9],
+    IN gceIMAGE_FILTER Filter,
+    IN gctBOOL Mask,
+    IN gctBOOL FirstTime
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG(
+    	"Vg=%p Image=%p SrcRectangle=%p DstRectangle=%p Matrix=%p Filter=%d Mask=%d FirstTime=%d",
+        Vg, Image, SrcRectangle, DstRectangle, Matrix, Filter, Mask, FirstTime
+        );
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_DrawSurfaceToImage);
+#endif
+
+	/* Draw the image. */
+	status = gcoVGHARDWARE_DrawSurfaceToImage(
+		Vg->hw,
+		&Image->info,
+		SrcRectangle,
+		DstRectangle,
+		Filter,
+		Mask,
+		Matrix,
+		FirstTime
+		);
+
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_DrawSurfaceToImage);
+#endif
+    gcmFOOTER();
+
+    /* Return the status. */
+    return status;
+}
+
+gceSTATUS
 gcoVG_Blit(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF Source,
     IN gcoSURF Target,
     IN gcsVG_RECT_PTR SrcRect,
@@ -2074,7 +3352,10 @@ gcoVG_Blit(
                   );
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_Blit);
+#endif
     /* Send to the hardware. */
     status = gcoVGHARDWARE_VgBlit(
         Vg->hw,
@@ -2083,9 +3364,11 @@ gcoVG_Blit(
         SrcRect,
         TrgRect,
         Filter,
-        gcvFALSE
+        gcvVG_BLEND_SRC
         );
-
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_Blit);
+#endif
     gcmFOOTER();
     /* Return status. */
     return status;
@@ -2094,6 +3377,12 @@ gcoVG_Blit(
 gceSTATUS
 gcoVG_ColorMatrix(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF Source,
     IN gcoSURF Target,
     IN const gctFLOAT * Matrix,
@@ -2115,7 +3404,10 @@ gcoVG_ColorMatrix(
                   );
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_ColorMatrix);
+#endif
     /* Execute color matrix. */
     status = gcoVGHARDWARE_ColorMatrix(
         Vg->hw,
@@ -2129,7 +3421,9 @@ gcoVG_ColorMatrix(
         TargetOrigin,
         Width, Height
         );
-
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_ColorMatrix);
+#endif
     gcmFOOTER();
     /* Return status. */
     return status;
@@ -2138,6 +3432,12 @@ gcoVG_ColorMatrix(
 gceSTATUS
 gcoVG_SeparableConvolve(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF Source,
     IN gcoSURF Target,
     IN gctINT KernelWidth,
@@ -2167,7 +3467,10 @@ gcoVG_SeparableConvolve(
                   );
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_SeparableConvolve);
+#endif
     /* Execute color matrix. */
     status = gcoVGHARDWARE_SeparableConvolve(
         Vg->hw,
@@ -2185,7 +3488,9 @@ gcoVG_SeparableConvolve(
         SourceSize,
         Width, Height
         );
-
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_SeparableConvolve);
+#endif
     gcmFOOTER();
     /* Return status. */
     return status;
@@ -2194,6 +3499,12 @@ gcoVG_SeparableConvolve(
 gceSTATUS
 gcoVG_GaussianBlur(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF Source,
     IN gcoSURF Target,
     IN gctFLOAT StdDeviationX,
@@ -2218,7 +3529,10 @@ gcoVG_GaussianBlur(
                   );
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_GaussianBlur);
+#endif
     /* Execute color matrix. */
     status = gcoVGHARDWARE_GaussianBlur(
         Vg->hw,
@@ -2233,7 +3547,9 @@ gcoVG_GaussianBlur(
         SourceSize,
         Width, Height
         );
-
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_GaussianBlur);
+#endif
     gcmFOOTER();
     /* Return status. */
     return status;
@@ -2252,6 +3568,12 @@ gcoVG_GaussianBlur(
 gceSTATUS
 gcoVG_SetImageMode(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gceVG_IMAGE Mode
     )
 {
@@ -2261,9 +3583,16 @@ gcoVG_SetImageMode(
                   );
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_SetImageMode);
+#endif
     /* Set image mode in hardware. */
     status = gcoVGHARDWARE_SetVgImageMode(Vg->hw, Mode);
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_SetImageMode);
+#endif
+
     gcmFOOTER();
     return status;
 }
@@ -2271,6 +3600,12 @@ gcoVG_SetImageMode(
 gceSTATUS
 gcoVG_SetRenderingQuality(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gceRENDER_QUALITY Quality
     )
 {
@@ -2281,13 +3616,18 @@ gcoVG_SetRenderingQuality(
                   );
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg,DList,TreeDepth,saveLayerTreeDepth,varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_SetRenderingQuality);
+#endif
     /* Set the quality. */
     Vg->renderQuality = Quality;
 
     /* Update the setting in hardware. */
     status = gcoVGHARDWARE_SetRenderingQuality(Vg->hw, Quality);
-
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_SetRenderingQuality);
+#endif
     gcmFOOTER();
     /* Return status. */
     return status;
@@ -2296,6 +3636,12 @@ gcoVG_SetRenderingQuality(
 gceSTATUS
 gcoVG_SetFillRule(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gceFILL_RULE FillRule
     )
 {
@@ -2305,10 +3651,15 @@ gcoVG_SetFillRule(
                   );
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
-
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_SetFillRule);
+#endif
     /* Update the setting in hardware. */
     status = gcoVGHARDWARE_SetFillRule(Vg->hw, FillRule);
-
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_SetFillRule);
+#endif
     gcmFOOTER();
     /* Return status. */
     return status;
@@ -2327,6 +3678,12 @@ gcoVG_SetFillRule(
 gceSTATUS
 gcoVG_EnableDither(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctBOOL Enable
     )
 {
@@ -2337,8 +3694,16 @@ gcoVG_EnableDither(
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Vg, gcvOBJ_VG);
 
+#if GC355_PROFILER
+    gcoVG_ProfilerSetStates(Vg, DList, TreeDepth, saveLayerTreeDepth, varTreeDepth);
+    vghalENTERSUBAPI(gcoVG_EnableDither);
+#endif
     /* Call gcoVGHARDWARE to enable scissoring. */
     status = gcoVGHARDWARE_EnableDither(Vg->hw, Enable);
+#if GC355_PROFILER
+    vghalLEAVESUBAPI(gcoVG_EnableDither);
+#endif
+
     gcmFOOTER();
     return status;
 }

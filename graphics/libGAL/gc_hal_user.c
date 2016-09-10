@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -9,8 +9,6 @@
 *    without the express written permission of Vivante Corporation.
 *
 *****************************************************************************/
-
-
 
 
 /**
@@ -39,24 +37,9 @@ const char * _GAL_VERSION = "\n\0$VERSION$"
 ******************************** gcoHAL API Code ********************************
 \******************************************************************************/
 
-/*******************************************************************************
-**
-**  _WorkaroundForFilterBlit
-**
-**  Workaround for the dirty region issue of filter blit.
-**  It only exists for old GC300 before 2.0.2 (included).
-**
-**  INPUT:
-**
-**      gctHAL Hal
-**          Pointer to HAL.
-**
-**  OUTPUT:
-**
-**      Nothing.
-*/
+#if gcdENABLE_2D
 static gceSTATUS
-_WorkaroundForFilterBlit(
+_WForFilterBlit(
     IN gcoHAL Hal
     )
 {
@@ -135,10 +118,204 @@ _WorkaroundForFilterBlit(
 
     return status;
 }
+#endif
 
 /*******************************************************************************
 **
-**  gcoHAL_Construct
+**  _GetUserDebugOption
+**
+**  Get user option from env variable VIV_OPTION.
+**
+**  INPUT:
+**
+**      gctHAL Hal
+**          Pointer to HAL.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gcsUSER_DEBUG_OPTION gcUserDebugOption =
+{
+    gcvDEBUG_MSG_NONE       /* gceDEBUG_MSG        debugMsg */
+};
+
+static gceSTATUS
+_GetUserDebugOption(
+    IN gcoHAL Hal
+    )
+{
+    static gctINT envChecked = 0;
+
+    if (!envChecked)
+    {
+        char* p = gcvNULL;
+        gctSTRING pos = gcvNULL;
+
+        gcoOS_GetEnv(gcvNULL, "VIV_DEBUG", &p);
+        if (p)
+        {
+            gcoOS_StrStr(p, "-MSG_LEVEL", &pos);
+            if (pos)
+            {
+                pos += sizeof("-MSG_LEVEL") - 1;
+                while (pos[0] == ':')
+                {
+                    ++pos;
+                    if (gcvSTATUS_OK == gcoOS_StrNCmp(pos, "ERROR", sizeof("ERROR") - 1))
+                    {
+                        /* Output error messages. */
+                        gcUserDebugOption.debugMsg = gcvDEBUG_MSG_ERROR;
+                        pos += sizeof("ERROR") - 1;
+                    }
+                    else if (gcvSTATUS_OK == gcoOS_StrNCmp(pos, "WARNING", sizeof("WARNING") - 1))
+                    {
+                        /* Output error messages. */
+                        gcUserDebugOption.debugMsg = gcvDEBUG_MSG_WARNING;
+                        pos += sizeof("WARNING") - 1;
+                    }
+                }
+            }
+        }
+
+        envChecked = 1;
+    }
+
+    Hal->userDebugOption = &gcUserDebugOption;
+
+    return gcvSTATUS_OK;
+}
+
+gctUINT32 gcFrameInfos[gcvFRAMEINFO_COUNT] = {0};
+
+
+gceSTATUS
+gcoHAL_FrameInfoOps(
+    IN gcoHAL Hal,
+    IN gceFRAMEINFO FrameInfo,
+    IN gceFRAMEINFO_OP Op,
+    IN OUT gctUINT * Val
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gcmHEADER_ARG("Hal=0x%x FrameInfo=%d Op=%d Val=0x%x", Hal, FrameInfo, Op, Val);
+    gcmVERIFY_ARGUMENT(FrameInfo < gcvFRAMEINFO_COUNT);
+    gcmVERIFY_ARGUMENT(Op < gcvFRAMEINFO_OP_COUNT);
+
+    switch(Op)
+    {
+    case gcvFRAMEINFO_OP_ZERO:
+        gcFrameInfos[FrameInfo] = 0;
+        break;
+
+    case gcvFRAMEINFO_OP_INC:
+        gcFrameInfos[FrameInfo]++;
+        break;
+
+    case gcvFRAMEINFO_OP_DEC:
+        if (gcFrameInfos[FrameInfo] == 0)
+        {
+            gcmPRINT("GAL: FramInfo(%d) underflowed", FrameInfo);
+        }
+        gcFrameInfos[FrameInfo]--;
+        break;
+
+
+    case gcvFRAMEINFO_OP_GET:
+        gcmVERIFY_ARGUMENT(Val != gcvNULL);
+        *Val = gcFrameInfos[FrameInfo];
+        break;
+
+    default:
+        gcmPRINT("GAL: invalid FrameInfo operation(%d)", Op);
+    }
+    gcmFOOTER_NO();
+    return status;
+}
+
+gctBOOL gcOptions[gcvOPTION_COUNT];
+
+static gceSTATUS
+_FillInOptions(
+    IN gcoHAL Hal
+    )
+{
+    gctSTRING fboScheme = gcvNULL;
+
+    gcoOS_ZeroMemory(gcOptions, sizeof(gcOptions[0]) * gcvOPTION_COUNT);
+    gcOptions[gcvOPTION_PREFER_ZCONVERT_BYPASS] = gcvTRUE;
+
+
+    gcOptions[gcvOPTION_FBO_PREFER_MEM] = gcvFALSE;
+    if (gcmIS_SUCCESS(gcoOS_GetEnv(gcvNULL, "VIV_FBO_PREFER_MEM", &fboScheme)) && fboScheme)
+    {
+        if (gcmIS_SUCCESS(gcoOS_StrCmp(fboScheme, "1")))
+        {
+            gcOptions[gcvOPTION_FBO_PREFER_MEM] = gcvTRUE;
+        }
+    }
+
+    return gcvSTATUS_OK;
+}
+
+/*******************************************************************************
+**
+**  gcoHAL_GetOption
+**
+**  Get option boolean result.
+**
+**  INPUT:
+**      gcoHAL Hal
+**          Hal oboject
+**
+**      gceOPTION Option
+**          Option to query about
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoHAL_GetOption(
+     IN gcoHAL Hal,
+     IN gceOPTION Option
+     )
+{
+    gceSTATUS status;
+    gcmHEADER_ARG("Hal=0x%x Option=%d", Hal, Option);
+    gcmASSERT(Option < gcvOPTION_COUNT);
+
+    status = (gcOptions[Option])? gcvSTATUS_TRUE : gcvSTATUS_FALSE;
+
+    gcmFOOTER_NO();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcGetUserDebugOption
+**
+**  Get user debug option.
+**
+**  INPUT:
+**
+**      Nothing.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gcsUSER_DEBUG_OPTION *
+gcGetUserDebugOption(
+    void
+    )
+{
+    return &gcUserDebugOption;
+}
+
+/*******************************************************************************
+**
+**  gcoHAL_ConstructEx
 **
 **  Construct a new gcoHAL object.
 **
@@ -157,7 +334,7 @@ _WorkaroundForFilterBlit(
 **          Pointer to a variable that will hold the gcoHAL object pointer.
 */
 gceSTATUS
-gcoHAL_Construct(
+gcoHAL_ConstructEx(
     IN gctPOINTER Context,
     IN gcoOS Os,
     OUT gcoHAL * Hal
@@ -167,8 +344,6 @@ gcoHAL_Construct(
     gcoHAL hal = gcPLS.hal;
     gceSTATUS status;
     gctPOINTER pointer = gcvNULL;
-    gctBOOL separated3D = gcvFALSE;
-    gctBOOL separated2D = gcvFALSE;
     gcsHAL_INTERFACE iface;
     gctINT32 i;
 
@@ -186,17 +361,13 @@ gcoHAL_Construct(
         hal     = pointer;
         created = gcvTRUE;
 
-        gcmONERROR(gcoOS_ZeroMemory(hal, gcmSIZEOF(struct _gcoHAL)));
+        gcoOS_ZeroMemory(hal, gcmSIZEOF(struct _gcoHAL));
 
         /* Initialize the object. */
         hal->object.type = gcvOBJ_HAL;
 
         /* Zero the gco2D, gco3D, and gcoDUMP objects. */
         hal->dump      = gcvNULL;
-        hal->reference = gcvNULL;
-
-        /* Initialize timeOut value */
-        hal->timeOut     = gcdGPU_TIMEOUT;
 
         /* Query the kernel version number. */
         iface.command = gcvHAL_VERSION;
@@ -213,8 +384,8 @@ gcoHAL_Construct(
         )
         {
             gcmPRINT("HAL user version %d.%d.%d build %u %s %s",
-                     gcvVERSION_MAJOR, gcvVERSION_MINOR, gcvVERSION_PATCH,
-                     gcvVERSION_BUILD, gcvVERSION_DATE, gcvVERSION_TIME);
+                     gcvVERSION_MAJOR, gcvVERSION_MINOR,
+                     gcvVERSION_PATCH, gcvVERSION_BUILD);
             gcmPRINT("HAL kernel version %d.%d.%d build %u",
                      iface.u.Version.major, iface.u.Version.minor,
                      iface.u.Version.patch, iface.u.Version.build);
@@ -225,8 +396,8 @@ gcoHAL_Construct(
 #if gcmIS_DEBUG(gcdDEBUG_TRACE)
     gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_HAL,
                   "HAL user version %d.%d.%d build %u %s %s",
-                  gcvVERSION_MAJOR, gcvVERSION_MINOR, gcvVERSION_PATCH,
-                  gcvVERSION_BUILD, gcvVERSION_DATE, gcvVERSION_TIME);
+                  gcvVERSION_MAJOR, gcvVERSION_MINOR,
+                  gcvVERSION_PATCH, gcvVERSION_BUILD);
     gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_HAL,
                   "HAL kernel version %d.%d.%d build %u",
                   iface.u.Version.major, iface.u.Version.minor,
@@ -248,29 +419,40 @@ gcoHAL_Construct(
 
             switch (hal->chipTypes[i])
             {
+#if gcdMULTI_GPU_AFFINITY
             case gcvHARDWARE_3D:
-                separated3D = gcvTRUE;
+            case gcvHARDWARE_OCL:
+                hal->is3DAvailable = gcvTRUE;
                 break;
+#else
+            case gcvHARDWARE_3D:
+                hal->is3DAvailable = gcvTRUE;
+                break;
+#endif
             case gcvHARDWARE_2D:
-                separated2D = gcvTRUE;
+                hal->separated2D = gcvTRUE;
                 break;
+
+            case gcvHARDWARE_3D2D:
+                hal->is3DAvailable = gcvTRUE;
+                break;
+
             default:
                 break;
             }
         }
 
-        hal->separated3D2D = (separated3D && separated2D);
-
 #if VIVANTE_PROFILER
         hal->profiler.enable = 0;
 #endif
 
-        /* Create reference. */
-        gcmONERROR(gcoOS_AtomConstruct(Os, &hal->reference));
+        hal->isGpuBenchSmoothTriangle = gcvFALSE;
     }
 
-    /* Increment the reference. */
-    gcmONERROR(gcoOS_AtomIncrement(Os, hal->reference, gcvNULL));
+    /* Get user option. */
+    _GetUserDebugOption(hal);
+
+    _FillInOptions(hal);
 
     /* Return pointer to the gcoHAL object. */
     *Hal = hal;
@@ -283,12 +465,6 @@ OnError:
     /* Roll back. */
     if ((hal != gcvNULL) && created)
     {
-        if (hal->reference != gcvNULL)
-        {
-            /* Destroy the reference. */
-            gcmVERIFY_OK(gcoOS_AtomDestroy(Os, hal->reference));
-        }
-
         gcmVERIFY_OK(gcmOS_SAFE_FREE(gcvNULL, hal));
     }
 
@@ -299,7 +475,7 @@ OnError:
 
 /*******************************************************************************
 **
-**  gcoHAL_Destroy
+**  gcoHAL_DestroyEx
 **
 **  Destroy an gcoHAL object.
 **
@@ -314,33 +490,16 @@ OnError:
 **
 *******************************************************************************/
 gceSTATUS
-gcoHAL_Destroy(
+gcoHAL_DestroyEx(
     IN gcoHAL Hal
     )
 {
-    gctINT reference;
     gceSTATUS status;
 
     gcmHEADER_ARG("Hal=0x%x", Hal);
 
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Hal, gcvOBJ_HAL);
-
-    /* Decrease reference count. */
-    gcmONERROR(gcoOS_AtomDecrement(gcvNULL, Hal->reference, &reference));
-    if (reference > 1)
-    {
-        /* Success. */
-        gcmFOOTER();
-        return gcvSTATUS_OK;
-    }
-
-    if (Hal->reference != gcvNULL)
-    {
-        /* Destroy the reference. */
-        gcmVERIFY_OK(gcoOS_AtomDestroy(gcvNULL, Hal->reference));
-        Hal->reference = gcvNULL;
-    }
 
     /* Destroy the gcoDUMP object if any. */
     if (Hal->dump != gcvNULL)
@@ -360,6 +519,62 @@ OnError:
     /* Return the status. */
     gcmFOOTER();
     return status;
+}
+
+/*******************************************************************************
+**
+**  gcoHAL_Construct
+**
+**  Construct a new gcoHAL object. Empty function only for compatibility.
+**
+**  INPUT:
+**
+**      gctPOINTER Context
+**          Pointer to a context that can be used by the platform specific
+**          functions.
+**
+**      gcoOS Os
+**          Pointer to an gcoOS object.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoHAL_Construct(
+    IN gctPOINTER Context,
+    IN gcoOS Os,
+    OUT gcoHAL * Hal
+    )
+{
+    /* Return gcoHAL object for compatibility to prevent any failure in applications. */
+    *Hal = gcPLS.hal;
+
+    return gcvSTATUS_OK;
+}
+
+/*******************************************************************************
+**
+**  gcoHAL_Destroy
+**
+**  Destroy an gcoHAL object. Empty function only for compatibility.
+**
+**  INPUT:
+**
+**      gcoHAL Hal
+**          Pointer to an gcoHAL object that needs to be destroyed.
+**
+**  OUTPUT:
+**
+**      Nothing.
+**
+*******************************************************************************/
+gceSTATUS
+gcoHAL_Destroy(
+    IN gcoHAL Hal
+    )
+{
+    return gcvSTATUS_OK;
 }
 
 /*******************************************************************************
@@ -412,7 +627,7 @@ gcoHAL_Call(
     if (status == gcvSTATUS_OUT_OF_MEMORY)
     {
 #if gcdENABLE_VG
-        gceHARDWARE_TYPE currentType;
+        gceHARDWARE_TYPE currentType = gcvHARDWARE_INVALID;
         gcmGETCURRENTHARDWARE(currentType);
         if (currentType == gcvHARDWARE_VG)
         {
@@ -423,10 +638,10 @@ gcoHAL_Call(
 #endif
         {
             /* Commit any command queue to memory. */
-            gcmONERROR(gcoHARDWARE_Commit());
+            gcmONERROR(gcoHARDWARE_Commit(gcvNULL));
 
             /* Stall the hardware. */
-            gcmONERROR(gcoHARDWARE_Stall());
+            gcmONERROR(gcoHARDWARE_Stall(gcvNULL));
         }
 
         /* Retry kernel call again. */
@@ -491,12 +706,12 @@ gcoHAL_MapMemory(
 
     /* Call kernel API to map the memory. */
     iface.command              = gcvHAL_MAP_MEMORY;
-    iface.u.MapMemory.physical = Physical;
+    iface.u.MapMemory.physical = gcmPTR2INT32(Physical);
     iface.u.MapMemory.bytes    = NumberOfBytes;
     gcmONERROR(gcoHAL_Call(gcvNULL, &iface));
 
     /* Return logical address. */
-    *Logical = iface.u.MapMemory.logical;
+    *Logical = gcmUINT64_TO_PTR(iface.u.MapMemory.logical);
 
     /* Success. */
     gcmFOOTER_ARG("*Logical=0x%x", *Logical);
@@ -551,9 +766,9 @@ gcoHAL_UnmapMemory(
 
     /* Call kernel API to unmap the memory. */
     iface.command                = gcvHAL_UNMAP_MEMORY;
-    iface.u.UnmapMemory.physical = Physical;
+    iface.u.UnmapMemory.physical = gcmPTR2INT32(Physical);
     iface.u.UnmapMemory.bytes    = NumberOfBytes;
-    iface.u.UnmapMemory.logical  = Logical;
+    iface.u.UnmapMemory.logical  = gcmPTR_TO_UINT64(Logical);
     status = gcoHAL_Call(gcvNULL, &iface);
 
     /* Return status. */
@@ -606,11 +821,181 @@ gcoHAL_ScheduleUnmapMemory(
     /* Schedule an event to unmap the user memory. */
     iface.command                = gcvHAL_UNMAP_MEMORY;
     iface.u.UnmapMemory.bytes    = NumberOfBytes;
-    iface.u.UnmapMemory.physical = Physical;
-    iface.u.UnmapMemory.logical  = Logical;
+    iface.u.UnmapMemory.physical = gcmPTR2INT32(Physical);
+    iface.u.UnmapMemory.logical  = gcmPTR_TO_UINT64(Logical);
     status = gcoHAL_ScheduleEvent(gcvNULL, &iface);
 
     /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoHAL_MapUserMemory
+**
+**  Map a contiguous memory to GPU address space.
+**
+**  INPUT:
+**
+**      gctPOINTER Logical
+**          Logical address of this memory.
+**
+**      gctUINT32 Physical
+**          Physical address of this memory.
+**
+**      gctSIZE_T Size
+**          Size in bytes of the memory to map.
+**
+**  OUTPUT:
+**
+**      gctPOINTER Info
+**          Information record returned by gcoHAL_MapUserMemory.
+**
+**      gctUINT32_PTR GPUAddress
+**          The GPU address returned by gcoHAL_MapUserMemory.
+*/
+gceSTATUS
+gcoHAL_MapUserMemory(
+    IN gctPOINTER Logical,
+    IN gctUINT32 Physical,
+    IN gctSIZE_T Size,
+    OUT gctPOINTER * Info,
+    OUT gctUINT32_PTR GPUAddress
+    )
+{
+    gceSTATUS status;
+    gctUINT32 baseAddress;
+    gctUINT32 gpuPhysical = Physical;
+#if gcdENABLE_VG
+    gceHARDWARE_TYPE currentHW = gcvHARDWARE_INVALID;
+#endif
+
+    gcmHEADER_ARG("Logical=0x%08x Physical=0x%08x Size=0x%08x",
+                   Logical, Physical, Size);
+
+    gcmVERIFY_ARGUMENT(Logical != gcvNULL || Physical != gcvINVALID_ADDRESS);
+    gcmVERIFY_ARGUMENT(Info != gcvNULL);
+    gcmVERIFY_ARGUMENT(GPUAddress != gcvNULL);
+    gcmVERIFY_ARGUMENT(Size != 0);
+
+    gcmONERROR(gcoOS_GetBaseAddress(gcvNULL, &baseAddress));
+
+    /* Only valid physical address can be converted to GPU's view */
+    if (Physical != gcvINVALID_ADDRESS)
+    {
+        /* Convert physical to GPU's view. */
+        Physical -= baseAddress;
+
+        gcoOS_CPUPhysicalToGPUPhysical(Physical, &gpuPhysical);
+    }
+
+#if gcdENABLE_VG
+    gcmGETCURRENTHARDWARE(currentHW);
+    /* 2D VG can access the whole 4G memory */
+    if (currentHW == gcvHARDWARE_VG)
+    {
+        /* CPU physical address can be used as GPU address. */
+        *GPUAddress = Physical;
+        *Info = gcvNULL;
+
+        /* Add the memory info. */
+        gcmDUMP_ADD_MEMORY_INFO(*GPUAddress, Logical, Physical + baseAddress, Size);
+
+        gcmFOOTER_NO();
+        return gcvSTATUS_OK;
+    }
+#endif
+
+#if !gcdPROCESS_ADDRESS_SPACE
+    /* Does memory in the range [baseAddress, baseAddress + 2G - 1]? */
+    if (!(gpuPhysical & 0x80000000)
+    && !((gpuPhysical + Size - 1) & 0x80000000)
+    )
+    {
+        /* CPU physical address can be used as GPU address. */
+        *GPUAddress = gpuPhysical;
+        *Info = gcvNULL;
+    }
+    else
+#endif
+    {
+        /* Physical pointer has to be mapped before use. */
+        gcmONERROR(gcoOS_MapUserMemoryEx(
+                   gcvNULL,
+                   Logical,
+                   Physical,
+                   Size,
+                   Info,
+                   GPUAddress
+                   ));
+    }
+
+    /* Add the memory info. */
+    gcmDUMP_ADD_MEMORY_INFO(*GPUAddress, Logical, Physical + baseAddress, Size);
+
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoHAL_UnmapUserMemory
+**
+**  Unmap a contiguous memory from GPU address space.
+**
+**  INPUT:
+**
+**      gctPOINTER Logical
+**          Pointer to memory to unmap.
+**
+**      gctSIZE_T Size
+**          Size in bytes of the memory to unmap.
+**
+**      gctPOINTER Info
+**          Information record returned by gcoHAL_MapUserMemory.
+**
+**      gctUINT32_PTR GPUAddress
+**          The address returned by gcoHAL_MapUserMemory.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoHAL_UnmapUserMemory(
+    IN gctPOINTER Logical,
+    IN gctSIZE_T Size,
+    IN gctPOINTER Info,
+    IN gctUINT32 GPUAddress
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gcmHEADER_ARG("Info=0x%x Size=%lu GPUAddress=0x%08x Logical=0x%x",
+                  Info, Size, GPUAddress, Logical);
+
+    if (Info != gcvNULL)
+    {
+        /* Delete the memory info. */
+        gcmDUMP_DEL_MEMORY_INFO(GPUAddress);
+
+        gcmONERROR(gcoHAL_ScheduleUnmapUserMemory(
+                   gcvNULL,
+                   Info,
+                   Size,
+                   GPUAddress,
+                   Logical
+                   ));
+    }
+
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
     gcmFOOTER();
     return status;
 }
@@ -651,6 +1036,10 @@ gcoHAL_ScheduleUnmapUserMemory(
     IN gctPOINTER Memory
     )
 {
+#if gcdENABLE_VG
+    gceHARDWARE_TYPE currentHW = gcvHARDWARE_INVALID;
+#endif
+
     gceSTATUS status;
     gcsHAL_INTERFACE iface;
 
@@ -661,18 +1050,90 @@ gcoHAL_ScheduleUnmapUserMemory(
     gcmVERIFY_ARGUMENT(Size > 0);
     gcmVERIFY_ARGUMENT(Memory != gcvNULL);
 
-    /* Schedule an event to unmap the user memory. */
-    iface.command = gcvHAL_UNMAP_USER_MEMORY;
-    iface.u.UnmapUserMemory.info    = Info;
-    iface.u.UnmapUserMemory.size    = Size;
-    iface.u.UnmapUserMemory.address = Address;
-    iface.u.UnmapUserMemory.memory  = Memory;
-    status = gcoHAL_ScheduleEvent(gcvNULL, &iface);
+#if gcdENABLE_VG
+    gcmGETCURRENTHARDWARE(currentHW);
+
+    if (currentHW == gcvHARDWARE_VG)
+    {
+        status = gcoVGHARDWARE_ScheduleUnmapUserMemory(
+                   gcvNULL,
+                   Info,
+                   Size,
+                   Address,
+                   Memory
+                   );
+    }
+    else
+#endif
+    {
+        /* Schedule an event to unmap the user memory. */
+        iface.command = gcvHAL_UNMAP_USER_MEMORY;
+        iface.u.UnmapUserMemory.info    = gcmPTR2INT32(Info);
+        iface.u.UnmapUserMemory.size    = Size;
+        iface.u.UnmapUserMemory.address = Address;
+        iface.u.UnmapUserMemory.memory  = gcmPTR_TO_UINT64(Memory);
+        status = gcoHAL_ScheduleEvent(gcvNULL, &iface);
+    }
 
     /* Return the status. */
     gcmFOOTER();
     return status;
 }
+
+/*******************************************************************************
+**
+**  gcoHAL_SendFence
+**
+**  Insert fence command in command buffer
+**
+**  INPUT:
+**
+**      gcoHAL Hal
+**          Pointer to an gcoHAL object.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+#if gcdENABLE_3D
+gceSTATUS
+gcoHAL_SendFence(
+    IN gcoHAL Hal
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+#if gcdSYNC
+    gctBOOL fenceEnable;
+#endif
+#if gcdENABLE_VG
+    gceHARDWARE_TYPE currentHW = gcvHARDWARE_INVALID;
+#endif
+    gcmHEADER();
+
+#if gcdENABLE_VG
+    gcmGETCURRENTHARDWARE(currentHW);
+    if (currentHW == gcvHARDWARE_VG)
+    {
+        status = gcvSTATUS_INVALID_ARGUMENT;
+    }
+    else
+#endif
+    {
+#if gcdSYNC
+        gcoHARDWARE_GetFenceEnabled(gcvNULL, &fenceEnable);
+
+        if (fenceEnable)
+        {
+            gcmVERIFY_OK(gcoHARDWARE_SendFence(gcvNULL));
+        }
+#endif
+    }
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return status;
+}
+#endif /* gcdENABLE_3D */
 
 /*******************************************************************************
 **
@@ -702,7 +1163,12 @@ gcoHAL_Commit(
 {
     gceSTATUS status;
 #if gcdENABLE_VG
-    gceHARDWARE_TYPE currentHW;
+    gceHARDWARE_TYPE currentHW = gcvHARDWARE_INVALID;
+#endif
+#if (gcdENABLE_3D && !gcdENABLE_VG)
+#if gcdSYNC
+    gctBOOL fenceEnable;
+#endif
 #endif
 
     gcmHEADER_ARG("Stall=%d", Stall);
@@ -711,20 +1177,29 @@ gcoHAL_Commit(
     gcmGETCURRENTHARDWARE(currentHW);
     if (currentHW == gcvHARDWARE_VG)
     {
-    	/* Commit the command queue. */
-	    gcmONERROR(gcoVGHARDWARE_Commit(gcvNULL, Stall));
+        /* Commit the command queue. */
+        gcmONERROR(gcoVGHARDWARE_Commit(gcvNULL, Stall));
 
     }
     else
 #endif
     {
+#if (gcdENABLE_3D && !gcdENABLE_VG)
+#if gcdSYNC
+        gcoHARDWARE_GetFenceEnabled(gcvNULL, &fenceEnable);
+        if (fenceEnable)
+        {
+            gcoHARDWARE_SendFence(gcvNULL);
+        }
+#endif
+#endif
         /* Commit the command buffer to hardware. */
-        gcmONERROR(gcoHARDWARE_Commit());
+        gcmONERROR(gcoHARDWARE_Commit(gcvNULL));
 
         if (Stall)
         {
             /* Stall the hardware. */
-            gcmONERROR(gcoHARDWARE_Stall());
+            gcmONERROR(gcoHARDWARE_Stall(gcvNULL));
         }
     }
 
@@ -738,6 +1213,7 @@ OnError:
     return status;
 }
 
+#if gcdENABLE_2D
 /*******************************************************************************
 **
 **  gcoHAL_Get2DEngine
@@ -760,7 +1236,8 @@ gcoHAL_Get2DEngine(
     OUT gco2D * Engine
     )
 {
-    gceSTATUS status;
+    gceSTATUS status = gcvSTATUS_NOT_SUPPORTED;
+
     gcsTLS_PTR tls;
 
     gcmHEADER();
@@ -776,20 +1253,23 @@ gcoHAL_Get2DEngine(
         gctUINT32 chipRevision;
 
         /* Construct the gco2D object. */
-        gcmONERROR(gco2D_Construct(gcvNULL, &tls->engine2D));
+        gcmONERROR(gco2D_Construct(Hal, &tls->engine2D));
 
-        /* Workaround for the old 2D chip. */
         gcmONERROR(
-            gcoHARDWARE_QueryChipIdentity(&chipModel,
+            gcoHARDWARE_QueryChipIdentity(gcvNULL,
+                                          &chipModel,
                                           &chipRevision,
+                                          gcvNULL,
+                                          gcvNULL,
+                                          gcvNULL,
                                           gcvNULL,
                                           gcvNULL,
                                           gcvNULL,
                                           gcvNULL));
 
-        if (gcoHARDWARE_Is2DAvailable() && (chipRevision <= 0x00004400))
+        if (gcoHARDWARE_Is2DAvailable(gcvNULL) && (chipRevision <= 0x00004400))
         {
-            _WorkaroundForFilterBlit(gcvNULL);
+            _WForFilterBlit(gcvNULL);
         }
     }
 
@@ -805,8 +1285,9 @@ OnError:
     gcmFOOTER();
     return status;
 }
+#endif  /* gcdENABLE_2D */
 
-#if !defined(VIVANTE_NO_3D)
+#if gcdENABLE_VG
 /*******************************************************************************
 **
 **  gcoHAL_GetVGEngine
@@ -861,13 +1342,15 @@ OnError:
     return gcvSTATUS_NOT_SUPPORTED;
 #endif
 }
+#endif
 
+#if gcdENABLE_3D
 /*******************************************************************************
 **
 **  gcoHAL_Get3DEngine
 **
-**  Get the pointer to the gco3D object.
-**  Create the object, if it doesn't exist.
+**  Get the pointer to the gco3D object. Don't use it!!!
+**  Keep it here for external library (libgcu.so)
 **
 **  INPUT:
 **
@@ -895,206 +1378,126 @@ gcoHAL_Get3DEngine(
 
     gcmONERROR(gcoOS_GetTLS(&tls));
 
-    if (tls->engine3D == gcvNULL)
-    {
-        /* Construct the gco3D object. */
-        gcmONERROR(gco3D_Construct(gcvNULL, &tls->engine3D));
-    }
-
-    /* Return pointer to the gco3D object. */
-    *Engine = tls->engine3D;
+    /* Return NULL to the gco3D object. */
+    *Engine = gcvNULL;
 
     /* Success. */
     gcmFOOTER_ARG("*Engine=0x%x", *Engine);
-
-	return gcvSTATUS_OK;
-
-	OnError:
-		 /* Return the status. */
-		 gcmFOOTER();
-		 return status;
-	}
-
-	/**********************************************************************
-	*********
-	**
-	**  gcoHAL_Query3DEngine
-	**
-	**  Get the pointer to the gco3D object.
-	**
-	**  INPUT:
-	**
-	** 	 gcoHAL Hal
-	** 		 Pointer to an gcoHAL object.
-	**
-	**  OUTPUT:
-	**
-	** 	 gco3D * Engine
-	** 		 Pointer to a variable receiving the gco3D object pointer.
-	*/
-	gceSTATUS
-	gcoHAL_Query3DEngine(
-		 IN gcoHAL Hal,
-		 OUT gco3D * Engine
-		 )
-	{
-		 gceSTATUS status;
-		 gcsTLS_PTR tls;
-
-		 gcmHEADER();
-
-		 /* Verify the arguments. */
-		 gcmDEBUG_VERIFY_ARGUMENT(Engine != gcvNULL);
-
-		 gcmONERROR(gcoOS_GetTLS(&tls));
-
-		 /* Return pointer to the gco3D object. */
-		 *Engine = tls->engine3D;
-
-		 /* Success. */
-		 gcmFOOTER_ARG("*Engine=0x%x", *Engine);
-		 return gcvSTATUS_OK;
-
-	OnError:
-		 /* Return the status. */
-		 gcmFOOTER();
-		 return status;
-	}
-
-	/**********************************************************************
-	*********
-	**
-	**  gcoHAL_Set3DEngine
-	**
-	**  Set the pointer as the gco3D object.
-	**
-	**  INPUT:
-	**
-	** 	 gcoHAL Hal
-	** 		 Pointer to an gcoHAL object.
-	**
-	** 	 gco3D Engine
-	** 		 The gco3D object that needs to be set.
-	**  OUTPUT:
-	**
-	** 	 nothing.
-	*/
-	gceSTATUS
-	gcoHAL_Set3DEngine(
-		 IN gcoHAL Hal,
-		 IN gco3D Engine
-		 )
-	{
-		 gceSTATUS status;
-		 gcsTLS_PTR tls;
-
-		 gcmHEADER();
-
-		 gcmONERROR(gcoOS_GetTLS(&tls));
-
-		 /* Set the gco3D object. */
-		 tls->engine3D = Engine;
-
-		 /* Success. */
-		 gcmFOOTER_NO();
-		 return gcvSTATUS_OK;
-
-	OnError:
-		 /* Return the status. */
-		 gcmFOOTER();
-		 return status;
-	}
-
-	/**********************************************************************
-	*********
-	**
-	**  gcoHAL_Get3DHardware
-	**
-	**  Get the pointer to the gcoHARDWARE object.
-	**
-	**  INPUT:
-	**
-	** 	 gcoHAL Hal
-	** 		 Pointer to an gcoHAL object.
-	**
-	**  OUTPUT:
-	**
-	** 	 gco3D * Hardware
-	** 		 Pointer to a variable receiving the gcoHARDWARE object pointer.
-	*/
-	gceSTATUS
-	gcoHAL_Get3DHardware(
-		 IN gcoHAL Hal,
-		 OUT gcoHARDWARE * Hardware
-		 )
-	{
-		 gceSTATUS status;
-		 gcsTLS_PTR tls;
-
-		 gcmHEADER();
-
-		 /* Verify the arguments. */
-		 gcmDEBUG_VERIFY_ARGUMENT(Hardware != gcvNULL);
-
-		 gcmONERROR(gcoOS_GetTLS(&tls));
-
-		 /* Return pointer to the gco3D object. */
-		 *Hardware = tls->hardware;
-
-		 /* Success. */
-		 gcmFOOTER_ARG("*Hardware=0x%x", *Hardware);
-		 return gcvSTATUS_OK;
-
-	OnError:
-		 /* Return the status. */
-		 gcmFOOTER();
-		 return status;
-	}
-
-	/**********************************************************************
-	*********
-	**
-	**  gcoHAL_Set3DHardware
-	**
-	**  Set the gcoHARDWARE object.
-	**
-	**  INPUT:
-	**
-	** 	 gcoHAL Hal
-	** 		 Pointer to an gcoHAL object.
-	**
-	** 	 gcoHARDWARE Hardware
-	** 		 The gcoHARDWARE object.
-	**
-	**  OUTPUT:
-	**
-	*/
-	gceSTATUS
-	gcoHAL_Set3DHardware(
-		 IN gcoHAL Hal,
-		 IN gcoHARDWARE Hardware
-		 )
-	{
-		 gceSTATUS status;
-		 gcsTLS_PTR tls;
-
-		 gcmHEADER();
-
-		 gcmONERROR(gcoOS_GetTLS(&tls));
-
-	 /* Return pointer to the gco3D object. */
-		 tls->hardware = Hardware;
-
-		 /* Success. */
-		 gcmFOOTER_NO();
-	    return gcvSTATUS_OK;
+    return gcvSTATUS_OK;
 
 OnError:
     /* Return the status. */
     gcmFOOTER();
     return status;
+
 }
-#endif /* VIVANTE_NO_3D */
+
+/*******************************************************************************
+**
+**  gcoHAL_SetFscaleValue
+**
+**  Set the fscale value used when GPU is gcvPOWER_ON.
+**
+**  INPUT:
+**
+**      gctUINT FscalueValue
+**          Fscale value to be set.
+**
+**  OUTPUT:
+**
+**          Nothing.
+*/
+gceSTATUS
+gcoHAL_SetFscaleValue(
+    IN gctUINT FscaleValue
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+
+    gcmHEADER_ARG("FscaleValue=0x%X", FscaleValue);
+
+    iface.command = gcvHAL_SET_FSCALE_VALUE;
+    iface.u.SetFscaleValue.value = FscaleValue;
+
+    status = gcoHAL_Call(gcvNULL, &iface);
+
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoHAL_GetFscaleValue
+**
+**  Get current, minimal and maximal fscale value .
+**
+**  INPUT:
+**
+**          Nothing.
+**
+**  OUTPUT:
+**
+**          FscaleValue
+**              Current fscale value.
+**
+**          MinFscaleValue
+**              Minimal fscale value can be used. Pass gcvNULL if not needed.
+**
+**          MaxFscaleValue
+**              Maximal fscale value can be used. Pass gcvNULL if not needed.
+*/
+gceSTATUS
+gcoHAL_GetFscaleValue(
+    OUT gctUINT * FscaleValue,
+    OUT gctUINT * MinFscaleValue,
+    OUT gctUINT * MaxFscaleValue
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+
+    gcmHEADER_ARG("FscaleValue=0x%X MinFscaleValue=0x%X MaxFscaleValue=0x%X",
+                   FscaleValue, MinFscaleValue, MaxFscaleValue);
+
+    gcmVERIFY_ARGUMENT(FscaleValue != gcvNULL);
+
+    iface.command = gcvHAL_GET_FSCALE_VALUE;
+
+    gcmONERROR(gcoHAL_Call(gcvNULL, &iface));
+
+    *FscaleValue =iface.u.GetFscaleValue.value;
+
+    if (MinFscaleValue)
+    {
+        *MinFscaleValue =iface.u.GetFscaleValue.minValue;
+    }
+
+    if (MaxFscaleValue)
+    {
+        *MaxFscaleValue =iface.u.GetFscaleValue.maxValue;
+    }
+
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+OnError:
+    gcmFOOTER();
+    return status;
+}
+
+/* Set PLS enable NP2Texture */
+gceSTATUS
+gcoHAL_SetBltNP2Texture(
+    gctBOOL enable
+    )
+{
+#if gcdUSE_NPOT_PATCH
+    gcPLS.bNeedSupportNP2Texture = enable;
+#endif
+
+    return gcvSTATUS_OK;
+}
+#endif /* gcdENABLE_3D */
 
 /*******************************************************************************
 **
@@ -1144,6 +1547,157 @@ OnError:
     return status;
 }
 
+#if gcdENABLE_3D
+/*******************************************************************************
+**
+**  gcoHAL_GetPatchID
+**
+**  Get the patch ID according to current process name.
+**
+**  INPUT:
+**
+**      gcoHAL Hal
+**          Pointer to an gcoHAL object.
+**
+**  OUTPUT:
+**
+**      gcePATCH_ID * PatchID
+**          Pointer to a variable receiving the gcePATCH_ID.
+**
+*******************************************************************************/
+gceSTATUS
+gcoHAL_GetPatchID(
+    IN  gcoHAL Hal,
+    OUT gcePATCH_ID * PatchID
+    )
+{
+#if gcdDISABLE_CORES_2D3D
+    return gcvSTATUS_INVALID_ARGUMENT;
+#else
+    gceSTATUS status = gcvSTATUS_OK;
+#if gcdENABLE_VG
+    gceHARDWARE_TYPE currentHW = gcvHARDWARE_INVALID;
+#endif
+    gcmHEADER();
+#if gcdENABLE_VG
+    gcmGETCURRENTHARDWARE(currentHW);
+    if (currentHW == gcvHARDWARE_VG)
+    {
+        status = gcvSTATUS_INVALID_ARGUMENT;
+    }
+    else
+#endif
+    {
+        status = gcoHARDWARE_GetPatchID(gcvNULL, PatchID);
+    }
+    gcmFOOTER();
+    return status;
+#endif
+}
+
+/*******************************************************************************
+**
+**  gcoHAL_SetPatchID
+**
+**  Set patch ID
+**
+**  INPUT:
+**
+**      gcoHAL Hal
+**          Pointer to an gcoHAL object.
+**
+**  INPUT:
+**
+**      gcePATCH_ID PatchID
+**          Patch value to protend.
+**
+*******************************************************************************/
+gceSTATUS
+gcoHAL_SetPatchID(
+    IN  gcoHAL Hal,
+    IN  gcePATCH_ID PatchID
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+#if gcdENABLE_VG
+    gceHARDWARE_TYPE currentHW = gcvHARDWARE_INVALID;
+#endif
+    gcmHEADER();
+#if gcdENABLE_VG
+    gcmGETCURRENTHARDWARE(currentHW);
+    if (currentHW == gcvHARDWARE_VG)
+    {
+        status = gcvSTATUS_INVALID_ARGUMENT;
+    }
+    else
+#endif
+    {
+        status = gcoHARDWARE_SetPatchID(gcvNULL, PatchID);
+    }
+    gcmFOOTER();
+    return status;
+}
+
+
+/*******************************************************************************
+**
+**  gcoHAL_SetGlobalPatchID
+**
+**  Set global patch ID, mostly time used by vPlayer to pretend to be any app.
+**
+**  INPUT:
+**
+**      gcoHAL Hal
+**          Pointer to an gcoHAL object.
+**
+**  INPUT:
+**
+**      gcePATCH_ID PatchID
+**          Patch value to protend.
+**
+*******************************************************************************/
+gceSTATUS
+gcoHAL_SetGlobalPatchID(
+    IN  gcoHAL Hal,
+    IN  gcePATCH_ID PatchID
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gcmHEADER();
+    gcPLS.patchID = PatchID;
+    gcmPRINT("!!!Set PatchID=%d", PatchID);
+    gcmFOOTER();
+    return status;
+}
+
+
+gceSTATUS
+gcoHAL_GetSpecialHintData(
+    IN  gcoHAL Hal,
+    OUT gctINT * Hint
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+#if gcdENABLE_VG
+    gceHARDWARE_TYPE currentHW = gcvHARDWARE_INVALID;
+#endif
+    gcmHEADER();
+#if gcdENABLE_VG
+    gcmGETCURRENTHARDWARE(currentHW);
+    if (currentHW == gcvHARDWARE_VG)
+    {
+        status = gcvSTATUS_INVALID_ARGUMENT;
+    }
+    else
+#endif
+    {
+        status = gcoHARDWARE_GetSpecialHintData(gcvNULL, Hint);
+    }
+    gcmFOOTER();
+    return status;
+}
+#endif /* gcdENABLE_3D */
+
 /* Schedule an event. */
 gceSTATUS
 gcoHAL_ScheduleEvent(
@@ -1152,14 +1706,25 @@ gcoHAL_ScheduleEvent(
     )
 {
     gceSTATUS status;
-
+#if gcdENABLE_VG
+    gceHARDWARE_TYPE currentHW = gcvHARDWARE_INVALID;
+#endif
     gcmHEADER_ARG("Interface=0x%x", Interface);
 
     /* Verify the arguments. */
     gcmDEBUG_VERIFY_ARGUMENT(Interface != gcvNULL);
-
-    /* Send event to hardware layer. */
-    status = gcoHARDWARE_CallEvent(Interface);
+#if gcdENABLE_VG
+    gcmGETCURRENTHARDWARE(currentHW);
+    if (currentHW == gcvHARDWARE_VG)
+    {
+        status = gcvSTATUS_INVALID_ARGUMENT;
+    }
+    else
+#endif
+    {
+        /* Send event to hardware layer. */
+        status = gcoHARDWARE_CallEvent(gcvNULL, Interface);
+    }
     gcmFOOTER();
     return status;
 }
@@ -1215,7 +1780,7 @@ gcoHAL_Compact(
     return status;
 }
 
-#if VIVANTE_PROFILER /*gcdENABLE_PROFILING*/
+#if VIVANTE_PROFILER
 gceSTATUS
 gcoHAL_ProfileStart(
     IN gcoHAL Hal
@@ -1268,26 +1833,6 @@ gcoHAL_ProfileEnd(
     return gcvSTATUS_INVALID_REQUEST;
 }
 #endif
-
-#ifndef VIVANTE_NO_3D
-/* Enable or disable depth only mode. */
-gceSTATUS
-gcoHAL_SetDepthOnly(
-    IN gcoHAL Hal,
-    IN gctBOOL Enable
-    )
-{
-    gceSTATUS status;
-
-    gcmHEADER_ARG("Enable=%d", Enable);
-
-    /* Send the request to hardware layer. */
-    status = gcoHARDWARE_SetDepthOnly(Enable);
-
-    gcmFOOTER();
-    return status;
-}
-#endif /* VIVANTE_NO_3D */
 
 gceSTATUS
 gcoHAL_DestroySurface(
@@ -1439,17 +1984,16 @@ OnError:
 gceSTATUS
 gcoHAL_SetTimeOut(
     IN gcoHAL Hal,
-	IN gctUINT32 timeOut
+    IN gctUINT32 timeOut
     )
 {
 #if gcdGPU_TIMEOUT
     gcsHAL_INTERFACE iface;
     gceSTATUS status;
 #endif
-	gcmHEADER_ARG("Hal=0x%x timeOut=%d", Hal, timeOut);
+    gcmHEADER_ARG("Hal=0x%x timeOut=%d", Hal, timeOut);
 
 #if gcdGPU_TIMEOUT
-    Hal->timeOut = timeOut;
     iface.command = gcvHAL_SET_TIMEOUT;
     iface.u.SetTimeOut.timeOut = timeOut;
     status = gcoOS_DeviceControl(gcvNULL,
@@ -1462,7 +2006,7 @@ gcoHAL_SetTimeOut(
         return status;
     }
 #endif
-	gcmFOOTER_NO();
+    gcmFOOTER_NO();
     return gcvSTATUS_OK;
 }
 
@@ -1484,9 +2028,9 @@ gcoHAL_AddFrameDB(
     }
 
     /* Get frame information. */
-	ioctl.command                  = gcvHAL_GET_FRAME_INFO;
-	ioctl.u.GetFrameInfo.frameInfo =
-	    &gcPLS.hal->frameDB[gcPLS.hal->frameDBIndex];
+    ioctl.command                  = gcvHAL_GET_FRAME_INFO;
+    ioctl.u.GetFrameInfo.frameInfo =
+        gcmPTR_TO_UINT64(&gcPLS.hal->frameDB[gcPLS.hal->frameDBIndex]);
     gcmONERROR(gcoOS_DeviceControl(gcvNULL,
                                    IOCTL_GCHAL_INTERFACE,
                                    &ioctl, gcmSIZEOF(ioctl),
@@ -1519,13 +2063,14 @@ gcoHAL_PrintFrameDB(
     gctCHAR buffer[256];
     gctUINT offset = 0;
     gceSTATUS status;
+    gctARGUMENTS arguments;
 
     gcmHEADER_ARG("File=0x%x Format=0x%x", File, Format);
 
     /* Format the string. */
-    gcmONERROR(gcoOS_PrintStrVSafe(buffer, gcmSIZEOF(buffer),
-                                   &offset,
-                                   Format, (gctPOINTER) (&Format + 1)));
+    gcmARGUMENTS_START(arguments, Format);
+    gcmONERROR(gcoOS_PrintStrVSafe(buffer, gcmSIZEOF(buffer), &offset, Format, arguments));
+    gcmARGUMENTS_END(arguments);
 
     if (File != gcvNULL)
     {
@@ -1695,140 +2240,6 @@ OnError:
 #else
     return gcvSTATUS_NOT_SUPPORTED;
 #endif
-}
-
-/*******************************************************************************
-**
-**  gcoHAL_GetSharedInfo
-**
-**  Get private data of a process by its pid.
-**
-**  INPUT:
-**
-**      gctUINT32 Pid
-**          Pid of the process.
-**
-**      gctUINT32 DataId
-**          Id of the data.
-**
-**      gctUINT8_PTR Data
-**          Pointer to a buffer. Caller must allocate enough buffer.
-**
-**      gctUINT32 Bytes
-**          Bytes of Data needed.
-**
-**      gcuVIDMEM_NODE_PTR Node
-**          Node with which data is associated with.
-**
-**      gctUINT8_PTR NodeData,
-**          Data stored in node.
-**
-**      gceNODE_SHARED_INFO_TYPE SharedInfoType
-**          Type of data stored
-**
-**  Note:
-**
-**  Private Data for each process is a simple machnisam, by which different
-**  processes can exchange a mount of information, indentified by pid and
-**  data id.
-**
-**  Basic idea:
-**  Kernel allocates a memory region for each type of data for one process.
-**  Each process can update the data it stores in kernel. If other process want
-**  this information, it must know the process id of the data's owner.
-**
-**  Restrict:
-**  1) Processes must handle synchronization by themselves
-**  2) Kernel will NOT notify the reader of the data if the owner of data quits.
-**  3) Data size is determined by the first time it is send to kernel, and can't
-**     be changed(for now).
-**
-*/
-gceSTATUS
-gcoHAL_GetSharedInfo(
-    IN gctUINT32 Pid,
-    IN gctUINT32 DataId,
-    OUT gctUINT8_PTR Data,
-    IN gctSIZE_T Bytes,
-    IN gcuVIDMEM_NODE_PTR Node,
-    OUT gctUINT8_PTR NodeData,
-    IN gceVIDMEM_NODE_SHARED_INFO_TYPE SharedInfoType
-    )
-{
-    gcsHAL_INTERFACE iface;
-    gceSTATUS status;
-
-    gcmHEADER_ARG("Pid=%i DataId=%i Data=0x%0x Bytes=%i Node=0x%0x NodeData=0x%0x SharedInfoType=%d",
-                  Pid, DataId, Data, Bytes, Node, NodeData, SharedInfoType);
-
-    iface.command             = gcvHAL_GET_SHARED_INFO;
-    iface.u.GetSharedInfo.pid   = Pid;
-    iface.u.GetSharedInfo.dataId = DataId;
-    iface.u.GetSharedInfo.data  = Data;
-    iface.u.GetSharedInfo.size  = Bytes;
-    iface.u.GetSharedInfo.node  = Node;
-    iface.u.GetSharedInfo.nodeData  = NodeData;
-    iface.u.GetSharedInfo.infoType  = SharedInfoType;
-
-    status = gcoHAL_Call(gcvNULL, &iface);
-
-    gcmFOOTER();
-    return status;
-}
-
-/*******************************************************************************
-**
-**  gcoHAL_SetSharedInfo
-**
-**  Set shared data of a process.
-**
-**  INPUT:
-**
-**      gctUINT32 DataId
-**          Id of the data.
-**
-**      gctUINT8_PTR Data
-**          Pointer to a buffer.
-**
-**      gctUINT32 Bytes
-**          Bytes of Data needed
-**
-**      gcuVIDMEM_NODE_PTR Node
-**          Node with which data will be associated with.
-**
-**      gctUINT8_PTR NodeData,
-**          Data to be stored in node.
-**
-**      gceNODE_SHARED_INFO_TYPE SharedInfoType
-**          Type of data to be stored
-*/
-gceSTATUS
-gcoHAL_SetSharedInfo(
-    IN gctUINT32 DataId,
-    IN gctUINT8_PTR Data,
-    IN gctSIZE_T Bytes,
-    IN gcuVIDMEM_NODE_PTR Node,
-    IN gctUINT8_PTR NodeData,
-    IN gceVIDMEM_NODE_SHARED_INFO_TYPE SharedInfoType
-    )
-{
-    gcsHAL_INTERFACE iface;
-    gceSTATUS status;
-
-    gcmHEADER_ARG("DataId=%i Data=0x%0x Bytes=%i Node=%x NodeData=%x", DataId, Data, Bytes, Node, NodeData);
-
-    iface.command             = gcvHAL_SET_SHARED_INFO;
-    iface.u.SetSharedInfo.data  = Data;
-    iface.u.SetSharedInfo.size  = Bytes;
-    iface.u.SetSharedInfo.dataId   = DataId;
-    iface.u.SetSharedInfo.node  = Node;
-    iface.u.SetSharedInfo.nodeData  = NodeData;
-    iface.u.SetSharedInfo.infoType  = SharedInfoType;
-
-    status = gcoHAL_Call(gcvNULL, &iface);
-
-    gcmFOOTER();
-    return status;
 }
 
 /*******************************************************************************
@@ -2015,3 +2426,542 @@ gcsCONTAINER_FreeAll(
     /* Success. */
     return gcvSTATUS_OK;
 }
+
+gceSTATUS
+gcoHAL_NameVideoMemory(
+    IN gctUINT32 Handle,
+    OUT gctUINT32 * Name
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+
+    iface.command = gcvHAL_NAME_VIDEO_MEMORY;
+
+    iface.u.NameVideoMemory.handle = Handle;
+
+    status = gcoHAL_Call(gcvNULL, &iface);
+
+    *Name = iface.u.NameVideoMemory.name;
+
+    return status;
+}
+
+gceSTATUS
+gcoHAL_ImportVideoMemory(
+    IN gctUINT32 Name,
+    OUT gctUINT32 * Handle
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+
+    iface.command = gcvHAL_IMPORT_VIDEO_MEMORY;
+
+    iface.u.ImportVideoMemory.name = Name;
+
+    status = gcoHAL_Call(gcvNULL, &iface);
+
+    *Handle = iface.u.ImportVideoMemory.handle;
+
+    return status;
+}
+
+gceSTATUS
+gcoHAL_GetVideoMemoryFd(
+    IN gctUINT32 Handle,
+    OUT gctINT * Fd
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+
+    gcmHEADER_ARG("Handle=%d", Handle);
+
+    gcmVERIFY_ARGUMENT(Fd != gcvNULL);
+
+    iface.command = gcvHAL_GET_VIDEO_MEMORY_FD;
+
+    iface.u.GetVideoMemoryFd.handle = Handle;
+
+    status = gcoHAL_Call(gcvNULL, &iface);
+
+    *Fd = iface.u.GetVideoMemoryFd.fd;
+
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gcoHAL_GetHardware(
+    IN gcoHAL Hal,
+    OUT gcoHARDWARE* Hw
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gcoHARDWARE Hardware = gcvNULL;
+
+    gcmHEADER_ARG("Hal=0x%x Hw=0x%x", Hal, Hw);
+
+    *Hw = gcvNULL;
+
+    gcmGETHARDWARE(Hardware);
+
+OnError:
+    *Hw = Hardware;
+
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gcoHAL_GetProductName(
+    IN gcoHAL Hal,
+    OUT gctSTRING *ProductName
+    )
+{
+    gceSTATUS status= gcvSTATUS_OK;
+    gcoHARDWARE hardware = gcvNULL;
+
+    gcmHEADER_ARG("Hal=0x%x ProductName=0x%x", Hal, ProductName);
+
+    gcmGETHARDWARE(hardware);
+
+    status = gcoHARDWARE_GetProductName(hardware, ProductName);
+
+    gcmFOOTER_ARG("return productName=%s", gcmOPT_VALUE(ProductName));
+
+OnError:
+
+    return status;
+}
+
+
+/*******************************************************************************
+**
+**  gcoHAL_CreateShBuffer
+**
+**  Create shared buffer.
+**  The shared buffer can be used across processes. Other process needs call
+**  gcoHAL_MapShBuffer before use it.
+**
+**  INPUT:
+**
+**      gctUINT32 Size
+**          Specify the shared buffer size.
+**
+**  OUTPUT:
+**
+**      gctSHBUF * ShBuf
+**          Pointer to hold return shared buffer handle.
+*/
+gceSTATUS
+gcoHAL_CreateShBuffer(
+    IN gctUINT32 Size,
+    OUT gctSHBUF * ShBuf
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+
+    gcmHEADER_ARG("Size=%u", Size);
+
+    /* Verify the arguments. */
+    gcmDEBUG_VERIFY_ARGUMENT(ShBuf != gcvNULL);
+
+    /* Initialize the gcsHAL_INTERFACE structure. */
+    iface.command = gcvHAL_SHBUF;
+    iface.u.ShBuf.command = gcvSHBUF_CREATE;
+    iface.u.ShBuf.bytes   = Size;
+
+    /* Call kernel driver. */
+    gcmONERROR(gcoOS_DeviceControl(gcvNULL,
+                                   IOCTL_GCHAL_INTERFACE,
+                                   &iface, gcmSIZEOF(iface),
+                                   &iface, gcmSIZEOF(iface)));
+
+    /* Copy out shared buffer handle. */
+    *ShBuf = (gctSHBUF)(gctUINTPTR_T) iface.u.ShBuf.id;
+
+    /* Success. */
+    gcmFOOTER_ARG("*ShBuf=%u", (gctUINT32)(gctUINTPTR_T) *ShBuf);
+    return gcvSTATUS_OK;
+
+OnError:
+    gcmFOOTER();
+    return status;
+}
+
+
+/*******************************************************************************
+**
+**  gcoHAL_DestroyShBuffer
+**
+**  Destroy(dereference) specified shared buffer.
+**  When a shared buffer is created by gcoHAL_CreateShBuffer, or mapped by
+**  gcoHAL_MapShBuffer, it must be destroyed to free the resource.
+**
+**  INPUT:
+**
+**      gctSHBUF ShBuf
+**          Specify the shared buffer to be destroyed.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoHAL_DestroyShBuffer(
+    IN gctSHBUF ShBuf
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+
+    gcmHEADER_ARG("ShBuf=%u", (gctUINT32)(gctUINTPTR_T) ShBuf);
+
+    /* Initialize the gcsHAL_INTERFACE structure. */
+    iface.command = gcvHAL_SHBUF;
+    iface.u.ShBuf.command = gcvSHBUF_DESTROY;
+    iface.u.ShBuf.id      = (gctUINT64)(gctUINTPTR_T) ShBuf;
+
+    /* Call kernel driver. */
+    status = gcoOS_DeviceControl(gcvNULL,
+                                 IOCTL_GCHAL_INTERFACE,
+                                 &iface, gcmSIZEOF(iface),
+                                 &iface, gcmSIZEOF(iface));
+
+    /* Return status. */
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoHAL_MapShBuffer
+**
+**  Map shared buffer into this process so that it can be used in this process.
+**  Call gcoHAL_DestroyShBuffer to destroy the map.
+**
+**  INPUT:
+**
+**      gctSHBUF ShBuf
+**          Specify the shared buffer to be mapped.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoHAL_MapShBuffer(
+    IN gctSHBUF ShBuf
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+
+    gcmHEADER_ARG("ShBuf=%u", (gctUINT32)(gctUINTPTR_T) ShBuf);
+
+    /* Verify the arguments. */
+    gcmDEBUG_VERIFY_ARGUMENT(ShBuf != gcvNULL);
+
+    /* Initialize the gcsHAL_INTERFACE structure. */
+    iface.command = gcvHAL_SHBUF;
+    iface.u.ShBuf.command = gcvSHBUF_MAP;
+    iface.u.ShBuf.id      = (gctUINT64)(gctUINTPTR_T) ShBuf;
+
+    /* Call kernel driver. */
+    status = gcoOS_DeviceControl(gcvNULL,
+                                 IOCTL_GCHAL_INTERFACE,
+                                 &iface, gcmSIZEOF(iface),
+                                 &iface, gcmSIZEOF(iface));
+
+    /* Return status. */
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoHAL_WriteShBuffer
+**
+**  Write data into shared buffer.
+**
+**  INPUT:
+**
+**      gctSHBUF ShBuf
+**          Specify the shared buffer to be written to.
+**
+**      gctPOINTER Data
+**          Pointer to hold the source data.
+**
+**      gctUINT32 ByteCount
+**          Specify number of bytes to write. If this is larger than
+**          shared buffer size, gcvSTATUS_INVALID_ARGUMENT is returned.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoHAL_WriteShBuffer(
+    IN gctSHBUF ShBuf,
+    IN gctCONST_POINTER Data,
+    IN gctUINT32 ByteCount
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+
+    gcmHEADER_ARG("ShBuf=%u Data=0x%08X ByteCount=%u",
+                  (gctUINT32)(gctUINTPTR_T) ShBuf, Data, ByteCount);
+
+    /* Initialize the gcsHAL_INTERFACE structure. */
+    iface.command = gcvHAL_SHBUF;
+    iface.u.ShBuf.command = gcvSHBUF_WRITE;
+    iface.u.ShBuf.id      = (gctUINT64)(gctUINTPTR_T) ShBuf;
+    iface.u.ShBuf.data    = (gctUINT64)(gctUINTPTR_T) Data;
+    iface.u.ShBuf.bytes   = ByteCount;
+
+    /* Call kernel driver. */
+    status = gcoOS_DeviceControl(gcvNULL,
+                                 IOCTL_GCHAL_INTERFACE,
+                                 &iface, gcmSIZEOF(iface),
+                                 &iface, gcmSIZEOF(iface));
+
+    /* Return status. */
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoHAL_ReadShBuffer
+**
+**  Read data from shared buffer.
+**
+**  INPUT:
+**
+**      gctSHBUF ShBuf
+**          Specify the shared buffer to be read from.
+**
+**      gctPOINTER Data
+**          Pointer to save output data.
+**
+**      gctUINT32 ByteCount
+**          Specify number of bytes to read.
+**          If this is larger than shared buffer size, only avaiable bytes are
+**          copied. If smaller, copy requested size.
+**
+**  OUTPUT:
+**
+**      gctUINT32 * BytesRead
+**          Pointer to hold how many bytes actually read from shared buffer.
+*/
+gceSTATUS
+gcoHAL_ReadShBuffer(
+    IN gctSHBUF ShBuf,
+    IN gctPOINTER Data,
+    IN gctUINT32 ByteCount,
+    OUT gctUINT32 * BytesRead
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+
+    gcmHEADER_ARG("ShBuf=%u Data=0x%08X ByteCount=%u",
+                  (gctUINT32)(gctUINTPTR_T) ShBuf, Data, ByteCount);
+
+    /* Initialize the gcsHAL_INTERFACE structure. */
+    iface.command = gcvHAL_SHBUF;
+    iface.u.ShBuf.command = gcvSHBUF_READ;
+    iface.u.ShBuf.id      = (gctUINT64)(gctUINTPTR_T) ShBuf;
+    iface.u.ShBuf.data    = (gctUINT64)(gctUINTPTR_T) Data;
+    iface.u.ShBuf.bytes   = ByteCount;
+
+    /* Call kernel driver. */
+    gcmONERROR(gcoOS_DeviceControl(gcvNULL,
+                                   IOCTL_GCHAL_INTERFACE,
+                                   &iface, gcmSIZEOF(iface),
+                                   &iface, gcmSIZEOF(iface)));
+
+    /* Return copied size. */
+    *BytesRead = iface.u.ShBuf.bytes;
+
+    /* Success. */
+    gcmFOOTER_ARG("*BytesRead=%u", *BytesRead);
+    return status;
+
+OnError:
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoHAL_ConfigPowerManagement
+**
+**  Enable/disable power management. After power management is disabled, there is no auto IDLE/SUSPEND/OFF.
+**
+**  Input:
+**
+**      Enable.
+**          Enable or disable power management.
+**
+*/
+gceSTATUS
+gcoHAL_ConfigPowerManagement(
+    IN gctBOOL Enable
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+    gcmHEADER_ARG("%d", Enable);
+
+    iface.command = gcvHAL_CONFIG_POWER_MANAGEMENT;
+    iface.u.ConfigPowerManagement.enable = Enable;
+
+    gcmONERROR(gcoHAL_Call(gcvNULL, &iface));
+
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gcoHAL_AllocateVideoMemory(
+    IN gctUINT Alignment,
+    IN gceSURF_TYPE Type,
+    IN gctUINT32 Flag,
+    IN gcePOOL Pool,
+    IN OUT gctSIZE_T * Bytes,
+    OUT gctUINT32_PTR Node
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+    struct _gcsHAL_ALLOCATE_LINEAR_VIDEO_MEMORY * alvm
+        = (struct _gcsHAL_ALLOCATE_LINEAR_VIDEO_MEMORY *) &iface.u;
+
+    gcmHEADER_ARG("Node=%p, Bytes=%llu, Alignement=%d, Type=%d, Flag=%d, Pool=%d",
+                  Node, Bytes, Alignment, Type, Flag, Pool);
+
+    iface.command   = gcvHAL_ALLOCATE_LINEAR_VIDEO_MEMORY;
+
+    gcmSAFECASTSIZET(alvm->bytes, *Bytes);
+
+    alvm->alignment = Alignment;
+    alvm->type      = Type;
+    alvm->pool      = Pool;
+    alvm->flag      = Flag;
+
+    gcmONERROR(gcoHAL_Call(gcvNULL, &iface));
+
+    *Node  = alvm->node;
+    *Bytes = alvm->bytes;
+
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gcoHAL_LockVideoMemory(
+    IN gctUINT32 Node,
+    IN gctBOOL Cacheable,
+    OUT gctUINT32 * Physical,
+    OUT gctPOINTER * Logical
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+
+    gcmHEADER_ARG("Node=%d, Cacheable=%d", Node, Cacheable);
+
+    /* Verify the arguments. */
+    gcmVERIFY_ARGUMENT(Node != 0);
+
+    /* Fill in the kernel call structure. */
+    iface.command = gcvHAL_LOCK_VIDEO_MEMORY;
+    iface.u.LockVideoMemory.node = Node;
+    iface.u.LockVideoMemory.cacheable = Cacheable;
+
+    /* Call the kernel. */
+    gcmONERROR(gcoHAL_Call(gcvNULL, &iface));
+
+    if (Physical)
+    {
+        /* Return physical address. */
+        *Physical = iface.u.LockVideoMemory.address;
+    }
+
+    if (Logical)
+    {
+        /* Return logical address. */
+        *Logical = gcmUINT64_TO_PTR(iface.u.LockVideoMemory.memory);
+    }
+
+    /* Success. */
+    gcmFOOTER_ARG("*Physical=0x%x *Logical=0x%x", *Physical, *Logical);
+    return gcvSTATUS_OK;
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gcoHAL_UnlockVideoMemory(
+    IN gctUINT32 Node,
+    IN gceSURF_TYPE Type
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gcsHAL_INTERFACE iface;
+    gcmHEADER_ARG("Node=0x%x", Node);
+
+    iface.command = gcvHAL_UNLOCK_VIDEO_MEMORY;
+    iface.u.UnlockVideoMemory.node = Node;
+    iface.u.UnlockVideoMemory.type = Type;
+
+    gcmONERROR(gcoHAL_Call(gcvNULL, &iface));
+
+    /* Schedule an event for the unlock. */
+    gcmONERROR(gcoHARDWARE_CallEvent(gcvNULL, &iface));
+
+OnError:
+    /* Return status. */
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gcoHAL_ReleaseVideoMemory(
+    IN gctUINT32 Node
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gcsHAL_INTERFACE iface;
+
+    gcmHEADER_ARG("Node=0x%x", Node);
+
+    /* Release the allocated video memory synchronously. */
+    iface.command = gcvHAL_RELEASE_VIDEO_MEMORY;
+    iface.u.ReleaseVideoMemory.node = Node;
+
+    /* Call kernel HAL. */
+    gcmONERROR(gcoHAL_Call(gcvNULL, &iface));
+
+OnError:
+    /* Return status. */
+    gcmFOOTER();
+    return status;
+}
+

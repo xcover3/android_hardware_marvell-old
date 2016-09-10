@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -9,8 +9,6 @@
 *    without the express written permission of Vivante Corporation.
 *
 *****************************************************************************/
-
-
 
 
 #ifndef __gc_hal_rename_h_
@@ -43,8 +41,9 @@
 #define gckOS_FreeContiguous            gcmHAL2D(gckOS_FreeContiguous)
 #define gckOS_GetPageSize               gcmHAL2D(gckOS_GetPageSize)
 #define gckOS_GetPhysicalAddress        gcmHAL2D(gckOS_GetPhysicalAddress)
-#define gckOS_GetPhysicalAddressProcess     gcmHAL2D(gckOS_GetPhysicalAddressProcess)
-#define gckOS_MapPhysical                   gcmHAL2D(gckOS_MapPhysical)
+#define gckOS_UserLogicalToPhysical     gcmHAL2D(gckOS_UserLogicalToPhysical)
+#define gckOS_GetPhysicalAddressProcess gcmHAL2D(gckOS_GetPhysicalAddressProcess)
+#define gckOS_MapPhysical               gcmHAL2D(gckOS_MapPhysical)
 #define gckOS_UnmapPhysical             gcmHAL2D(gckOS_UnmapPhysical)
 #define gckOS_ReadRegister              gcmHAL2D(gckOS_ReadRegister)
 #define gckOS_WriteRegister             gcmHAL2D(gckOS_WriteRegister)
@@ -71,7 +70,6 @@
 #define gckOS_QueryNeedCopy             gcmHAL2D(gckOS_QueryNeedCopy)
 #define gckOS_CopyFromUserData          gcmHAL2D(gckOS_CopyFromUserData)
 #define gckOS_CopyToUserData            gcmHAL2D(gckOS_CopyToUserData)
-#define gckOS_MapUserPhysical           gcmHAL2D(gckOS_MapUserPhysical)
 #define gckOS_SuspendInterrupt          gcmHAL2D(gckOS_SuspendInterrupt)
 #define gckOS_ResumeInterrupt           gcmHAL2D(gckOS_ResumeInterrupt)
 #define gckOS_GetBaseAddress            gcmHAL2D(gckOS_GetBaseAddress)
@@ -145,7 +143,6 @@
 #define gckHARDWARE_Execute             gcmHAL2D(gckHARDWARE_Execute)
 #define gckHARDWARE_End                 gcmHAL2D(gckHARDWARE_End)
 #define gckHARDWARE_Nop                 gcmHAL2D(gckHARDWARE_Nop)
-#define gckHARDWARE_Wait                gcmHAL2D(gckHARDWARE_Wait)
 #define gckHARDWARE_PipeSelect          gcmHAL2D(gckHARDWARE_PipeSelect)
 #define gckHARDWARE_Link                gcmHAL2D(gckHARDWARE_Link)
 #define gckHARDWARE_Event               gcmHAL2D(gckHARDWARE_Event)
@@ -158,7 +155,6 @@
 #define gckHARDWARE_AlignToTile         gcmHAL2D(gckHARDWARE_AlignToTile)
 #define gckHARDWARE_UpdateQueueTail     gcmHAL2D(gckHARDWARE_UpdateQueueTail)
 #define gckHARDWARE_ConvertLogical      gcmHAL2D(gckHARDWARE_ConvertLogical)
-#define gckHARDWARE_ConvertPhysical     gcmHAL2D(gckHARDWARE_ConvertPhysical)
 #define gckHARDWARE_Interrupt           gcmHAL2D(gckHARDWARE_Interrupt)
 #define gckHARDWARE_SetMMU              gcmHAL2D(gckHARDWARE_SetMMU)
 #define gckHARDWARE_FlushMMU            gcmHAL2D(gckHARDWARE_FlushMMU)
@@ -203,9 +199,6 @@
 #define gckMMU_Destroy                  gcmHAL2D(gckMMU_Destroy)
 #define gckMMU_AllocatePages            gcmHAL2D(gckMMU_AllocatePages)
 #define gckMMU_FreePages                gcmHAL2D(gckMMU_FreePages)
-#define gckMMU_InsertNode               gcmHAL2D(gckMMU_InsertNode)
-#define gckMMU_RemoveNode               gcmHAL2D(gckMMU_RemoveNode)
-#define gckMMU_FreeHandleMemory         gcmHAL2D(gckMMU_FreeHandleMemory)
 #define gckMMU_Test                     gcmHAL2D(gckMMU_Test)
 #define gckHARDWARE_QueryProfileRegisters     gcmHAL2D(gckHARDWARE_QueryProfileRegisters)
 

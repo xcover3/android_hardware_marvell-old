@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -9,8 +9,6 @@
 *    without the express written permission of Vivante Corporation.
 *
 *****************************************************************************/
-
-
 
 
 #ifndef __gc_hal_user_precomp_h__
@@ -27,15 +25,9 @@
 #include "gc_hal_user_vg.h"
 #endif
 
-#ifndef VIVANTE_NO_3D
-#   include "gc_hal_compiler.h"
-#   include "gc_hal_user_compiler.h"
-#   include "gc_hal_optimizer.h"
-#endif
-
+#include "gc_hal_user_shader.h"
 #include "gc_hal_profiler.h"
 
-/* Workaround GCC optimizer's bug */
 #if defined(__GNUC__) && !gcmIS_DEBUG(gcdDEBUG_TRACE)
     gcmINLINE static void
     __do_nothing(

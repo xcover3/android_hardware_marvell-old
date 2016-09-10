@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -11,11 +11,9 @@
 *****************************************************************************/
 
 
-
-
 #include "gc_hal_user_precomp.h"
 
-#ifndef VIVANTE_NO_3D
+#if (gcdENABLE_3D || gcdENABLE_VG)
 
 #include "gc_hal_mem.h"
 
@@ -442,7 +440,7 @@ gcfMEM_FreeVSMemPool(
 \
     if (MemPool->recycleFreeNode) \
     { \
-        gctUINT misAlignment = gcmPTR2INT(MemPool->freeData + VS_MEM_NODE_DATA_OFFSET) & _adjustMask; \
+        gctUINT misAlignment = gcmPTR2INT32(MemPool->freeData + VS_MEM_NODE_DATA_OFFSET) & _adjustMask; \
         if (misAlignment > 0) \
         { \
             gctUINT adjustment = Alignment - misAlignment; \
@@ -452,7 +450,7 @@ gcfMEM_FreeVSMemPool(
     } \
     else \
     { \
-        gctUINT misAlignment = gcmPTR2INT(MemPool->freeData) & _adjustMask; \
+        gctUINT misAlignment = gcmPTR2INT32(MemPool->freeData) & _adjustMask; \
         if (misAlignment > 0) \
         { \
             gctUINT adjustment = Alignment - misAlignment; \
@@ -498,7 +496,7 @@ gcfMEM_VSMemPoolGetANode(
             for (list = MemPool->freeListArray[sizeIndex]; list; list = list->next)
             {
                 /* Check alignment. */
-                if (((gcmPTR2INT((gctUINT8_PTR) list + VS_MEM_NODE_DATA_OFFSET)) & mask) == 0) break;
+                if (((gcmPTR2INT32((gctUINT8_PTR) list + VS_MEM_NODE_DATA_OFFSET)) & mask) == 0) break;
                 plist = list;
             }
             if (list)
@@ -525,7 +523,7 @@ gcfMEM_VSMemPoolGetANode(
                 for (; flist->next; flist = flist->next)
                 {
                     /* Check alignment. */
-                    if (((gcmPTR2INT((gctUINT8_PTR) flist + VS_MEM_NODE_DATA_OFFSET)) & mask) == 0)
+                    if (((gcmPTR2INT32((gctUINT8_PTR) flist + VS_MEM_NODE_DATA_OFFSET)) & mask) == 0)
                     {
                         list = flist;
                         plist = pflist;
@@ -630,7 +628,7 @@ gcfMEM_VSMemPoolGetANode(
         *Node = (gctPOINTER) list;
     }
 
-    gcmASSERT((gcmPTR2INT(Node) & (Alignment - 1)) == 0);
+    gcmASSERT((gcmPTR2INT32(Node) & (Alignment - 1)) == 0);
 #endif
 
     return gcvSTATUS_OK;
@@ -889,7 +887,7 @@ gcfMEM_AFSMemPoolGetANode(
             list->next->prev = list->prev;
         }
 
-#if !NEW_MEMPOOL
+#if ! NEW_MEMPOOL
         /* Add list to block list. */
         list->prev = gcvNULL;
         list->next = MemPool->blockList;
@@ -931,7 +929,7 @@ gcfMEM_AFSMemPoolFreeANode(
     list->isFreed = gcvTRUE;
 #endif
 
-#if !NEW_MEMPOOL
+#if ! NEW_MEMPOOL
     /* Unlink list from blockList. */
     if (list->prev != gcvNULL)
     {
@@ -985,5 +983,5 @@ gcfMEM_AFSMemPoolFreeANode(
 
     return gcvSTATUS_OK;
 }
-#endif /*VIVANTE_NO_3D*/
+#endif /*(gcdENABLE_3D || gcdENABLE_VG)*/
 

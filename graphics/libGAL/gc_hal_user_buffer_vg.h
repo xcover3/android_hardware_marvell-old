@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -11,11 +11,8 @@
 *****************************************************************************/
 
 
-
-
 #ifndef __gc_hal_user_buffer_h_
 #define __gc_hal_user_buffer_h_
-
 
 #ifdef __cplusplus
 extern "C" {
@@ -163,15 +160,11 @@ struct _gcoQUEUE
     gcsQUEUE_PTR                head;
     gcsQUEUE_PTR                tail;
 
-#ifdef __QNXNTO__
-    /* Buffer for records. */
-    gcsQUEUE_PTR                records;
-    gctUINT32                   freeBytes;
-    gctUINT32                   offset;
-#else
+    /* chunks of the records. */
+    gctPOINTER                  chunks;
+
     /* List of free records. */
     gcsQUEUE_PTR                freeList;
-#endif
 };
 
 #ifdef __cplusplus

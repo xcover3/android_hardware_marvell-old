@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -9,10 +9,6 @@
 *    without the express written permission of Vivante Corporation.
 *
 *****************************************************************************/
-
-
-
-
 
 
 #ifndef __gc_hal_engine_vg_h_
@@ -461,6 +457,13 @@ gcsPATH_DATA;
 gceSTATUS
 gcoHAL_QueryPathStorage(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     OUT gcsPATH_BUFFER_INFO_PTR Information
     );
 
@@ -468,6 +471,13 @@ gcoHAL_QueryPathStorage(
 gceSTATUS
 gcoHAL_AssociateCompletion(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcsPATH_DATA_PTR PathData
     );
 
@@ -475,6 +485,13 @@ gcoHAL_AssociateCompletion(
 gceSTATUS
 gcoHAL_DeassociateCompletion(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcsPATH_DATA_PTR PathData
     );
 
@@ -482,6 +499,13 @@ gcoHAL_DeassociateCompletion(
 gceSTATUS
 gcoHAL_CheckCompletion(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcsPATH_DATA_PTR PathData
     );
 
@@ -489,6 +513,13 @@ gcoHAL_CheckCompletion(
 gceSTATUS
 gcoHAL_WaitCompletion(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcsPATH_DATA_PTR PathData
     );
 
@@ -496,12 +527,27 @@ gcoHAL_WaitCompletion(
 gceSTATUS
 gcoHAL_Flush(
     IN gcoHAL Hal
+#if GC355_PROFILER
+    ,
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth
+#endif
     );
 
 /* Split a harwdare address into pool and offset. */
 gceSTATUS
 gcoHAL_SplitAddress(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctUINT32 Address,
     OUT gcePOOL * Pool,
     OUT gctUINT32 * Offset
@@ -511,6 +557,13 @@ gcoHAL_SplitAddress(
 gceSTATUS
 gcoHAL_CombineAddress(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcePOOL Pool,
     IN gctUINT32 Offset,
     OUT gctUINT32 * Address
@@ -520,30 +573,58 @@ gcoHAL_CombineAddress(
 gceSTATUS
 gcoHAL_ScheduleVideoMemory(
     IN gcoHAL Hal,
-    IN gcuVIDMEM_NODE_PTR Node
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
+    IN gctUINT32 Node
     );
 
 /* Free linear video memory allocated with gcoHAL_AllocateLinearVideoMemory. */
 gceSTATUS
 gcoHAL_FreeVideoMemory(
     IN gcoHAL Hal,
-    IN gcuVIDMEM_NODE_PTR Node
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
+    IN gctUINT32 Node
     );
 
 /* Query command buffer attributes. */
 gceSTATUS
 gcoHAL_QueryCommandBuffer(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     OUT gcsCOMMAND_BUFFER_INFO_PTR Information
     );
 /* Allocate and lock linear video memory. */
 gceSTATUS
 gcoHAL_AllocateLinearVideoMemory(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctUINT Size,
     IN gctUINT Alignment,
     IN gcePOOL Pool,
-    OUT gcuVIDMEM_NODE_PTR * Node,
+    OUT gctUINT32 * Node,
     OUT gctUINT32 * Address,
     OUT gctPOINTER * Memory
     );
@@ -552,6 +633,13 @@ gcoHAL_AllocateLinearVideoMemory(
 gceSTATUS
 gcoHAL_GetAlignedSurfaceSize(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gceSURF_TYPE Type,
     IN OUT gctUINT32_PTR Width,
     IN OUT gctUINT32_PTR Height
@@ -560,9 +648,16 @@ gcoHAL_GetAlignedSurfaceSize(
 gceSTATUS
 gcoHAL_ReserveTask(
     IN gcoHAL Hal,
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gceBLOCK Block,
     IN gctUINT TaskCount,
-    IN gctSIZE_T Bytes,
+    IN gctUINT32 Bytes,
     OUT gctPOINTER * Memory
     );
 /******************************************************************************\
@@ -573,23 +668,81 @@ gcoHAL_ReserveTask(
 **
 **  The gcoVG object abstracts the VG hardware pipe.
 */
+#if GC355_PROFILER
+void
+gcoVG_ProfilerEnableDisable(
+    IN gcoVG Vg,
+    IN gctUINT64 appStartTime,
+    IN gctBOOL enableGetAPITimes,
+    IN gctFILE apiTimeFile
+    );
+
+void
+gcoVG_ProfilerTreeDepth(
+    IN gcoVG Vg,
+    IN gctUINT TreeDepth
+    );
+
+void
+gcoVG_ProfilerTag(
+    IN gcoVG Vg,
+    IN gctSTRING Tag
+    );
+
+void
+gcoVG_ProfilerSetStates(
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT treeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth
+    );
+#endif
 
 gctBOOL
 gcoVG_IsMaskSupported(
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gceSURF_FORMAT Format
     );
 
 gctBOOL
 gcoVG_IsTargetSupported(
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gceSURF_FORMAT Format
     );
 
 gctBOOL
 gcoVG_IsImageSupported(
+#if GC355_PROFILER
+    IN gcoVG Vg,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gceSURF_FORMAT Format
     );
 
 gctUINT8 gcoVG_PackColorComponent(
+#if GC355_PROFILER
+    gcoVG Vg,
+    gcsPROFILERFUNCNODE *DList,
+    gctUINT TreeDepth,
+    gctUINT saveLayerTreeDepth,
+    gctUINT varTreeDepth,
+#endif
     gctFLOAT Value
     );
 
@@ -602,64 +755,132 @@ gcoVG_Construct(
 gceSTATUS
 gcoVG_Destroy(
     IN gcoVG Vg
+#if GC355_PROFILER
+    ,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth
+#endif
     );
 
 gceSTATUS
 gcoVG_SetTarget(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF Target
     );
 
 gceSTATUS
 gcoVG_UnsetTarget(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF Surface
     );
 
 gceSTATUS
 gcoVG_SetUserToSurface(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctFLOAT UserToSurface[9]
     );
 
 gceSTATUS
 gcoVG_SetSurfaceToImage(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctFLOAT SurfaceToImage[9]
     );
 
 gceSTATUS
 gcoVG_EnableMask(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctBOOL Enable
     );
 
 gceSTATUS
 gcoVG_SetMask(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF Mask
     );
 
 gceSTATUS
 gcoVG_UnsetMask(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF Surface
     );
 
 gceSTATUS
 gcoVG_FlushMask(
     IN gcoVG Vg
+#if GC355_PROFILER
+    ,
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth
+#endif
     );
 
 gceSTATUS
 gcoVG_EnableScissor(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctBOOL Enable
     );
 
 gceSTATUS
 gcoVG_SetScissor(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctSIZE_T RectangleCount,
     IN gcsVG_RECT_PTR Rectangles
     );
@@ -667,18 +888,36 @@ gcoVG_SetScissor(
 gceSTATUS
 gcoVG_EnableColorTransform(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctBOOL Enable
     );
 
 gceSTATUS
 gcoVG_SetColorTransform(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctFLOAT ColorTransform[8]
     );
 
 gceSTATUS
 gcoVG_SetTileFillColor(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctFLOAT Red,
     IN gctFLOAT Green,
     IN gctFLOAT Blue,
@@ -688,6 +927,12 @@ gcoVG_SetTileFillColor(
 gceSTATUS
 gcoVG_SetSolidPaint(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctUINT8 Red,
     IN gctUINT8 Green,
     IN gctUINT8 Blue,
@@ -697,6 +942,12 @@ gcoVG_SetSolidPaint(
 gceSTATUS
 gcoVG_SetLinearPaint(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctFLOAT Constant,
     IN gctFLOAT StepX,
     IN gctFLOAT StepY
@@ -705,6 +956,12 @@ gcoVG_SetLinearPaint(
 gceSTATUS
 gcoVG_SetRadialPaint(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctFLOAT LinConstant,
     IN gctFLOAT LinStepX,
     IN gctFLOAT LinStepY,
@@ -719,6 +976,12 @@ gcoVG_SetRadialPaint(
 gceSTATUS
 gcoVG_SetPatternPaint(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctFLOAT UConstant,
     IN gctFLOAT UStepX,
     IN gctFLOAT UStepY,
@@ -731,6 +994,12 @@ gcoVG_SetPatternPaint(
 gceSTATUS
 gcoVG_SetColorRamp(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF ColorRamp,
     IN gceTILE_MODE ColorRampSpreadMode
     );
@@ -738,6 +1007,14 @@ gcoVG_SetColorRamp(
 gceSTATUS
 gcoVG_SetPattern(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
+    IN gctINT32 width,
+    IN gctINT32 height,
     IN gcoSURF Pattern,
     IN gceTILE_MODE TileMode,
     IN gceIMAGE_FILTER Filter
@@ -746,24 +1023,48 @@ gcoVG_SetPattern(
 gceSTATUS
 gcoVG_SetImageMode(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gceVG_IMAGE Mode
     );
 
 gceSTATUS
 gcoVG_SetBlendMode(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gceVG_BLEND Mode
     );
 
 gceSTATUS
 gcoVG_SetRenderingQuality(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gceRENDER_QUALITY Quality
     );
 
 gceSTATUS
 gcoVG_SetFillRule(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gceFILL_RULE FillRule
     );
 
@@ -776,6 +1077,12 @@ gcoVG_FinalizePath(
 gceSTATUS
 gcoVG_Clear(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctINT X,
     IN gctINT Y,
     IN gctINT Width,
@@ -785,15 +1092,32 @@ gcoVG_Clear(
 gceSTATUS
 gcoVG_DrawPath(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcsPATH_DATA_PTR PathData,
     IN gctFLOAT Scale,
     IN gctFLOAT Bias,
+#if gcdMOVG
+    IN gctUINT32 Width,
+    IN gctUINT32 Height,
+    IN gctFLOAT *Bounds,
+#endif
     IN gctBOOL SoftwareTesselation
     );
 
 gceSTATUS
 gcoVG_DrawImage(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF Source,
     IN gcsPOINT_PTR SourceOrigin,
     IN gcsPOINT_PTR TargetOrigin,
@@ -804,22 +1128,58 @@ gcoVG_DrawImage(
     IN gctINT TargetY,
     IN gctINT Width,
     IN gctINT Height,
-    IN gctBOOL Mask
+    IN gctBOOL Mask,
+    IN gctBOOL isDrawImage
     );
 
 gceSTATUS
 gcoVG_TesselateImage(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF Image,
     IN gcsVG_RECT_PTR Rectangle,
     IN gceIMAGE_FILTER Filter,
     IN gctBOOL Mask,
+#if gcdMOVG
+    IN gctBOOL SoftwareTesselation,
+    IN gceVG_BLEND BlendMode
+#else
     IN gctBOOL SoftwareTesselation
+#endif
+    );
+
+gceSTATUS
+gcoVG_DrawSurfaceToImage(
+    IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
+    IN gcoSURF Image,
+    IN const gcsVG_RECT_PTR SrcRectangle,
+    IN const gcsVG_RECT_PTR DstRectangle,
+    IN const gctFLOAT Matrix[9],
+    IN gceIMAGE_FILTER Filter,
+    IN gctBOOL Mask,
+    IN gctBOOL FirstTime
     );
 
 gceSTATUS
 gcoVG_Blit(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF Source,
     IN gcoSURF Target,
     IN gcsVG_RECT_PTR SrcRect,
@@ -831,6 +1191,12 @@ gcoVG_Blit(
 gceSTATUS
 gcoVG_ColorMatrix(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF Source,
     IN gcoSURF Target,
     IN const gctFLOAT * Matrix,
@@ -846,6 +1212,12 @@ gcoVG_ColorMatrix(
 gceSTATUS
 gcoVG_SeparableConvolve(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF Source,
     IN gcoSURF Target,
     IN gctINT KernelWidth,
@@ -871,6 +1243,12 @@ gcoVG_SeparableConvolve(
 gceSTATUS
 gcoVG_GaussianBlur(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gcoSURF Source,
     IN gcoSURF Target,
     IN gctFLOAT StdDeviationX,
@@ -890,6 +1268,12 @@ gcoVG_GaussianBlur(
 gceSTATUS
 gcoVG_EnableDither(
     IN gcoVG Vg,
+#if GC355_PROFILER
+    IN gcsPROFILERFUNCNODE *DList,
+    IN gctUINT TreeDepth,
+    IN gctUINT saveLayerTreeDepth,
+    IN gctUINT varTreeDepth,
+#endif
     IN gctBOOL Enable
     );
 

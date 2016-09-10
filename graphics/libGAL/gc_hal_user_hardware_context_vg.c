@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -9,8 +9,6 @@
 *    without the express written permission of Vivante Corporation.
 *
 *****************************************************************************/
-
-
 
 
 #include "gc_hal_user_hardware_precomp_vg.h"
@@ -24,14 +22,14 @@
 \******************************************************************************/
 
 #define gcdEMPTY_MOD_LIST \
-    ((gcsVGCONTEXT_MAP_PTR) ~0)
+    ((gcsVGCONTEXT_MAP_PTR) (gctSIZE_T)~0)
 
 #define _STATE(reg) \
     StateInitFunction(\
         Hardware, \
         InitInfo, \
         index, \
-        reg ## _Address >> 2, \
+        (reg ## _Address) >> 2, \
         reg ## _ResetValue, \
         reg ## _Count \
         )
@@ -74,15 +72,14 @@ typedef struct _gcsVGCONTEXT_INIT
 }
 gcsVGCONTEXT_INIT;
 
-typedef gctSIZE_T (* gctSTATE_INIT) (
+typedef gctUINT32 (* gctSTATE_INIT) (
     IN gcoVGHARDWARE Hardware,
     IN gcsVGCONTEXT_INIT_PTR InitInfo,
-    IN gctSIZE_T BufferIndex,
+    IN gctUINT32 BufferIndex,
     IN gctUINT32 StateIndex,
     IN gctUINT32 ResetValue,
-    IN gctSIZE_T ValueCount
+    IN gctUINT32 ValueCount
     );
-
 
 /*******************************************************************************
 **
@@ -112,18 +109,18 @@ typedef gctSIZE_T (* gctSTATE_INIT) (
 **      The number of buffer indices needed for the states.
 */
 
-static gctSIZE_T
+static gctUINT32
 _MeasureState(
     IN gcoVGHARDWARE Hardware,
     IN gcsVGCONTEXT_INIT_PTR InitInfo,
-    IN gctSIZE_T BufferIndex,
+    IN gctUINT32 BufferIndex,
     IN gctUINT32 StateIndex,
     IN gctUINT32 ResetValue,
-    IN gctSIZE_T ValueCount
+    IN gctUINT32 ValueCount
     )
 {
-    gctSIZE_T result;
-    gctSIZE_T mapLast;
+    gctUINT32 result;
+    gctUINT32 mapLast;
 
     /* End of buffer alignement? */
     if (ValueCount == 0)
@@ -148,7 +145,7 @@ _MeasureState(
         else
         {
             /* Determine if we need alignment. */
-            gctSIZE_T align = BufferIndex & 1;
+            gctUINT32 align = BufferIndex & 1;
 
             /* Save information for this LoadState. */
             InitInfo->bufferIndex = BufferIndex + align;
@@ -162,17 +159,6 @@ _MeasureState(
         mapLast = StateIndex + ValueCount - 1;
 
         /* Update the map dimensions as necessary. */
-#ifndef __QNXNTO__
-        if (mapLast > Hardware->context.mapLast)
-        {
-            Hardware->context.mapLast = mapLast;
-        }
-
-        if (StateIndex < Hardware->context.mapFirst)
-        {
-            Hardware->context.mapFirst = StateIndex;
-        }
-#else
         if (mapLast > Hardware->pContext->mapLast)
         {
             Hardware->pContext->mapLast = mapLast;
@@ -182,13 +168,11 @@ _MeasureState(
         {
             Hardware->pContext->mapFirst = StateIndex;
         }
-#endif
     }
 
     /* Return size for load state. */
     return result;
 }
-
 
 /*******************************************************************************
 **
@@ -218,32 +202,26 @@ _MeasureState(
 **      The number of buffer indices needed for the states.
 */
 
-static gctSIZE_T
+static gctUINT32
 _InitState(
     IN gcoVGHARDWARE Hardware,
     IN gcsVGCONTEXT_INIT_PTR InitInfo,
-    IN gctSIZE_T BufferIndex,
+    IN gctUINT32 BufferIndex,
     IN gctUINT32 StateIndex,
     IN gctUINT32 ResetValue,
-    IN gctSIZE_T ValueCount
+    IN gctUINT32 ValueCount
     )
 {
-    gctSIZE_T result;
+    gctUINT32 result;
     gctUINT32_PTR buffer;
     gcsVGCONTEXT_MAP_PTR mapPrev;
     gcsVGCONTEXT_MAP_PTR mapCurr;
-    gctSIZE_T i;
+    gctUINT32 i;
 
     /* Create shortcuts. */
-#ifndef __QNXNTO__
-    buffer  = Hardware->context.buffer;
-    mapPrev = Hardware->context.mapPrev;
-    mapCurr = Hardware->context.mapCurr;
-#else
     buffer  = Hardware->pContext->buffer;
     mapPrev = Hardware->pContext->mapPrev;
     mapCurr = Hardware->pContext->mapCurr;
-#endif
 
     /* End of buffer alignemnt? */
     if (ValueCount == 0)
@@ -271,11 +249,7 @@ _InitState(
     else
     {
         /* Determnine map index. */
-#ifndef __QNXNTO__
-        gctUINT32 mapIndex = StateIndex - Hardware->context.mapFirst;
-#else
         gctUINT32 mapIndex = StateIndex - Hardware->pContext->mapFirst;
-#endif
 
         /* See if we can append this state to the previous one. */
         if (StateIndex == InitInfo->stateIndex)
@@ -310,7 +284,7 @@ _InitState(
         else
         {
             /* Determine if we need alignment. */
-            gctSIZE_T align = BufferIndex & 1;
+            gctUINT32 align = BufferIndex & 1;
 
             /* Align in case when the previous state left the context
                buffer unaligned. */
@@ -358,7 +332,6 @@ _InitState(
     return result;
 }
 
-
 /*******************************************************************************
 **
 **  _InitializeContextBuffer
@@ -389,7 +362,7 @@ _InitializeContextBuffer(
     )
 {
     /* Set initial index. */
-    gctSIZE_T index = 0;
+    gctUINT32 index = 0;
 
     /* Reset init info. */
     InitInfo->stateIndex = (gctUINT32)~0;
@@ -508,11 +481,8 @@ gcoVGHARDWARE_OpenContext(
     )
 {
     gceSTATUS last, status;
-    gcuVIDMEM_NODE_PTR node = gcvNULL;
-    gcsVGCONTEXT_PTR context;
-#ifdef __QNXNTO__
-    gctPHYS_ADDR physical;
-#endif
+    gctUINT32 node = 0;
+    gcsVGCONTEXT_PTR context = gcvNULL;
 
     gcmHEADER_ARG("Hardware=0x%x", Hardware);
 
@@ -522,18 +492,14 @@ gcoVGHARDWARE_OpenContext(
     do
     {
         gcsVGCONTEXT_INIT initInfo;
-        gctUINT32 mapItemCount, mapSize;
-        gctUINT32 stateSize, dataSize, bufferSize, dataCount;
-        gctUINT32 headerAddress, bufferAddress, bufferOffset;
-        gcsCMDBUFFER_PTR header;
-        gctUINT32_PTR endCommand;
+        gctUINT32 mapItemCount = 0, mapSize = 0;
+        gctUINT32 stateSize = 0, dataSize = 0, bufferSize = 0, dataCount = 0;
+        gctUINT32 headerAddress = 0, bufferAddress = 0, bufferOffset = 0;
+        gcsCMDBUFFER_PTR header  = gcvNULL;
+        gctUINT32_PTR endCommand = gcvNULL;
 
         /* Context shortcut. */
-#ifndef __QNXNTO__
-        context = &Hardware->context;
-#else
         context = Hardware->pContext;
-#endif
 
         /* Set initial pipe. */
         context->currentPipe = 0x2;
@@ -543,7 +509,7 @@ gcoVGHARDWARE_OpenContext(
         context->firstCurrMap = gcdEMPTY_MOD_LIST;
 
         /* Reset map start index. */
-        context->mapFirst = (gctSIZE_T)~0;
+        context->mapFirst = (gctUINT32)~0;
 
         /* Determine state caching enable flag.
            State caching depends on whether or not TS double buffering is
@@ -566,9 +532,9 @@ gcoVGHARDWARE_OpenContext(
            semaphore/stall pairs for TS clear synchronization. */
         context->stateCachingEnabled = Hardware->vgDoubleBuffer;
 #else
-        /* Always enanble state caching here, there is a hardcoded
-           semaphore/stall right before TS clear in this case. */
-        context->stateCachingEnabled = gcvTRUE;
+        /* Logically consist with gcdENABLE_TS_DOUBLE_BUFFER = 1. For MOVG to
+           pass cts. */
+        context->stateCachingEnabled = gcvFALSE;
 #endif
 
         /***********************************************************************
@@ -592,27 +558,19 @@ gcoVGHARDWARE_OpenContext(
             + Hardware->bufferInfo.addressAlignment
             + dataSize;
 
-
         /***********************************************************************
         ** Allocate the state map and the context buffer.
         */
 
         /* Allocate two maps with one allocation. */
-#ifndef __QNXNTO__
         gcmERR_BREAK(gcoOS_Allocate(
             Hardware->os, mapSize, (gctPOINTER *) &context->mapContainer
             ));
-#else
-        context->mapContainerSize = mapSize;
-        gcmERR_BREAK(gcoOS_AllocateNonPagedMemory(
-            gcvNULL, gcvTRUE, &context->mapContainerSize, &physical, (gctPOINTER *) &context->mapContainer
-            ));
-#endif
 
         /* Reset the map. */
-        gcmERR_BREAK(gcoOS_ZeroMemory(
+        gcoOS_ZeroMemory(
             context->mapContainer, mapSize
-            ));
+            );
 
         /* Determine map pointers. */
         context->mapPrev = context->mapContainer;
@@ -622,11 +580,11 @@ gcoVGHARDWARE_OpenContext(
         gcmERR_BREAK(gcoVGHARDWARE_AllocateLinearVideoMemory(
             Hardware,
             bufferSize, 1,
-            gcvPOOL_SYSTEM,
+            gcvPOOL_DEFAULT,
+            gcvALLOC_FLAG_CONTIGUOUS,
             &node, &headerAddress,
             (gctPOINTER *) &header
             ));
-
 
         /***********************************************************************
         ** Initialize the context buffer.
@@ -650,7 +608,7 @@ gcoVGHARDWARE_OpenContext(
 
         /* Initialize gcsCMDBUFFER. */
         header->completion    = gcvVACANT_BUFFER;
-        header->node          = node;
+        header->node          = (gcuVIDMEM_NODE_PTR)(gctUINTPTR_T)node;
         header->address       = bufferAddress;
         header->bufferOffset  = bufferOffset;
         header->size          = stateSize;
@@ -681,7 +639,7 @@ gcoVGHARDWARE_OpenContext(
     while (gcvFALSE);
 
     /* Free the context buffer. */
-    if (node != gcvNULL)
+    if (node != 0)
     {
         gcmCHECK_STATUS(gcoVGHARDWARE_FreeVideoMemory(Hardware, node));
     }
@@ -689,11 +647,7 @@ gcoVGHARDWARE_OpenContext(
     /* Free the state map. */
     if (context->mapContainer != gcvNULL)
     {
-#ifndef __QNXNTO__
         gcmCHECK_STATUS(gcoOS_Free(Hardware->os, context->mapContainer));
-#else
-        gcmCHECK_STATUS(gcoOS_FreeNonPagedMemory(gcvNULL, context->mapContainerSize, gcvNULL, context->mapContainer));
-#endif
     }
     gcmFOOTER();
 
@@ -731,21 +685,13 @@ gcoVGHARDWARE_CloseContext(
     do
     {
         /* Context shortcut. */
-#ifndef __QNXNTO__
-        gcsVGCONTEXT_PTR context = &Hardware->context;
-#else
         gcsVGCONTEXT_PTR context = Hardware->pContext;
-#endif
 
         /* Free the state mapping. */
         if (context->mapContainer != gcvNULL)
         {
             /* Free the map. */
-#ifndef __QNXNTO__
             gcmERR_BREAK(gcoOS_Free(Hardware->os, context->mapContainer));
-#else
-            gcmERR_BREAK(gcoOS_FreeNonPagedMemory(gcvNULL, context->mapContainerSize, gcvNULL, context->mapContainer));
-#endif
 
             /* Reset the pointer. */
             context->mapContainer = gcvNULL;
@@ -759,7 +705,7 @@ gcoVGHARDWARE_CloseContext(
 
             /* Schedule the buffer. */
             gcmERR_BREAK(gcoVGHARDWARE_FreeVideoMemory(
-                Hardware, context->header->node
+                Hardware, (gctUINT32)(gctUINTPTR_T)context->header->node
                 ));
 
             /* Reset the header. */
@@ -810,11 +756,7 @@ gcoVGHARDWARE_MergeContext(
         gcsVGCONTEXT_MAP_PTR temp;
 
         /* Context shortcut. */
-#ifndef __QNXNTO__
-        context = &Hardware->context;
-#else
         context = Hardware->pContext;
-#endif
 
         /* Check to see if there are any accumulated modifications
            to be merged in. */
@@ -906,11 +848,7 @@ gcoVGHARDWARE_UpdateState(
         gcsVGCONTEXT_PTR context;
 
         /* Context shortcut. */
-#ifndef __QNXNTO__
-        context = &Hardware->context;
-#else
         context = Hardware->pContext;
-#endif
 
         /* Is the state a part of the context? */
         if (Address <= context->mapLast)
@@ -1023,7 +961,8 @@ gceSTATUS
 gcoVGHARDWARE_SetState(
     IN gcoVGHARDWARE Hardware,
     IN gctUINT32 Address,
-    IN gctUINT32 Data
+    IN gctUINT32 Data,
+    IN gctBOOL   FromBuffer
     )
 {
     gceSTATUS status;
@@ -1050,7 +989,8 @@ gcoVGHARDWARE_SetState(
         gcmERR_BREAK(gcoVGBUFFER_Reserve(
             Hardware->buffer,
             8, gcvTRUE,
-            (gctPOINTER *) &memory
+            (gctPOINTER *) &memory,
+            FromBuffer
             ));
 
         /* Assemble load state command. */
@@ -1098,7 +1038,7 @@ gceSTATUS
 gcoVGHARDWARE_SetStates(
     IN gcoVGHARDWARE Hardware,
     IN gctUINT32 Address,
-    IN gctSIZE_T Count,
+    IN gctUINT32 Count,
     IN gctPOINTER Data
     )
 {
@@ -1116,11 +1056,7 @@ gcoVGHARDWARE_SetStates(
         gctUINT32_PTR memory;
 
         /* Context shortcut. */
-#ifndef __QNXNTO__
-        context = &Hardware->context;
-#else
         context = Hardware->pContext;
-#endif
 
         /* Is the state a part of the context? */
         if (Address <= context->mapLast)
@@ -1261,7 +1197,8 @@ gcoVGHARDWARE_SetStates(
         gcmERR_BREAK(gcoVGBUFFER_Reserve(
             Hardware->buffer,
             gcmSIZEOF(gctUINT32) * (1 + Count), gcvTRUE,
-            (gctPOINTER *) &memory
+            (gctPOINTER *) &memory,
+            gcvFALSE
             ));
 
         /* Assemble load state command. */
@@ -1280,6 +1217,71 @@ gcoVGHARDWARE_SetStates(
             /* Update the data. */
             memory[i] = ((gctUINT32_PTR) Data) [i];
         }
+    }
+    while (gcvFALSE);
+
+    gcmFOOTER();
+    /* Return the status. */
+    return status;
+}
+
+/******************************************************************************\
+**
+**  gcoVGHARDWARE_SetData
+**
+**  Set all 32 bits of a single state.
+**
+**  INPUT:
+**
+**      gcoVGHARDWARE Hardware
+**          Pointer to the gcoVGHARDWARE object.
+**
+**      gctUINT32 Address
+**          Address of the state to set.
+**
+**      gctUINT32 Data
+**          State value to set.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoVGHARDWARE_SetData(
+    IN gcoVGHARDWARE Hardware,
+    IN gctUINT32 Count,
+    IN gctPOINTER Data
+    )
+{
+    gceSTATUS status;
+    gcmHEADER_ARG("Hardware=0x%x", Hardware);
+
+    gcmGETVGHARDWARE(Hardware);
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Hardware, gcvOBJ_HARDWARE);
+
+    do
+    {
+        gctUINT32_PTR memory;
+
+        Count = gcmALIGN(Count, 8);
+        /* Reserve space in the command buffer. */
+        gcmERR_BREAK(gcoVGBUFFER_Reserve(
+            Hardware->buffer,
+            8 + Count, gcvTRUE,
+            (gctPOINTER *) &memory,
+            gcvFALSE
+            ));
+
+        /* Assemble load state command. */
+        gcmERR_BREAK(gcoVGHARDWARE_DataCommand(
+            Hardware,
+            memory, Count / 8,
+            gcvNULL
+            ));
+
+        /* Set the data value. */
+        gcoOS_MemCopy(&memory[2], Data, Count);
     }
     while (gcvFALSE);
 

@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -11,9 +11,9 @@
 *****************************************************************************/
 
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D || gcdENABLE_VG
 
-#ifndef EGL_API_FB
+#ifdef EGL_API_X
 #include "gc_hal_user_linux.h"
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -236,13 +236,11 @@ _GetColorBitsInfoFromMask(
 
 gceSTATUS
 gcoOS_GetDisplay(
-    OUT HALNativeDisplayType * Display
+    OUT HALNativeDisplayType * Display,
+    IN gctPOINTER Context
     )
 {
     XImage *image;
-    gctINT          screen;
-    Visual *        visual;
-    gctINT          depth;
     gceSTATUS status = gcvSTATUS_OK;
     gcmHEADER();
     do
@@ -252,14 +250,8 @@ gcoOS_GetDisplay(
         if (*Display == gcvNULL)
         {
             status = gcvSTATUS_OUT_OF_RESOURCES;
+            break;
         }
-
-        screen = DefaultScreen(*Display);
-
-        visual = DefaultVisual(*Display, screen);
-
-
-        depth = DefaultDepth(*Display, screen);
 
         image = XGetImage(*Display,
                           DefaultRootWindow(*Display),
@@ -290,10 +282,11 @@ gcoOS_GetDisplay(
 gceSTATUS
 gcoOS_GetDisplayByIndex(
     IN gctINT DisplayIndex,
-    OUT HALNativeDisplayType * Display
+    OUT HALNativeDisplayType * Display,
+    IN gctPOINTER Context
     )
 {
-    return gcoOS_GetDisplay(Display);
+    return gcoOS_GetDisplay(Display, Context);
 }
 
 gceSTATUS
@@ -422,6 +415,8 @@ gcoOS_GetDisplayInfoEx(
     /* No flip. */
     DisplayInfo->flip = 0;
 
+    DisplayInfo->wrapFB = gcvTRUE;
+
     /* Success. */
     gcmFOOTER_ARG("*DisplayInfo=0x%x", *DisplayInfo);
     return status;
@@ -441,8 +436,8 @@ gceSTATUS
 gcoOS_GetDisplayBackbuffer(
     IN HALNativeDisplayType Display,
     IN HALNativeWindowType Window,
-    IN gctPOINTER    context,
-    IN gcoSURF       surface,
+    OUT gctPOINTER  *  context,
+    OUT gcoSURF     *  surface,
     OUT gctUINT * Offset,
     OUT gctINT * X,
     OUT gctINT * Y
@@ -464,6 +459,49 @@ gcoOS_SetDisplayVirtual(
 }
 
 gceSTATUS
+gcoOS_SetDisplayVirtualEx(
+    IN HALNativeDisplayType Display,
+    IN HALNativeWindowType Window,
+    IN gctPOINTER Context,
+    IN gcoSURF Surface,
+    IN gctUINT Offset,
+    IN gctINT X,
+    IN gctINT Y
+    )
+{
+    return gcoOS_SetDisplayVirtual(Display, Window, Offset, X, Y);
+}
+
+gceSTATUS
+gcoOS_SetSwapInterval(
+    IN HALNativeDisplayType Display,
+    IN gctINT Interval
+)
+{
+    return gcvSTATUS_NOT_SUPPORTED;
+}
+
+gceSTATUS
+gcoOS_SetSwapIntervalEx(
+    IN HALNativeDisplayType Display,
+    IN gctINT Interval,
+    IN gctPOINTER localDisplay
+)
+{
+    return gcvSTATUS_NOT_SUPPORTED;
+}
+
+gceSTATUS
+gcoOS_GetSwapInterval(
+    IN HALNativeDisplayType Display,
+    IN gctINT_PTR Min,
+    IN gctINT_PTR Max
+)
+{
+    return gcvSTATUS_NOT_SUPPORTED;
+}
+
+gceSTATUS
 gcoOS_DestroyDisplay(
     IN HALNativeDisplayType Display
     )
@@ -473,6 +511,17 @@ gcoOS_DestroyDisplay(
         XCloseDisplay(Display);
     }
     return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoOS_DisplayBufferRegions(
+    IN HALNativeDisplayType Display,
+    IN HALNativeWindowType Window,
+    IN gctINT NumRects,
+    IN gctINT_PTR Rects
+    )
+{
+    return gcvSTATUS_NOT_SUPPORTED;
 }
 
 /*******************************************************************************
@@ -493,6 +542,9 @@ gcoOS_CreateWindow(
     Screen * screen;
     gctINT width, height;
     gceSTATUS status = gcvSTATUS_OK;
+    gctINT    ignoreDisplaySize = 0;
+    gctCHAR * p;
+
     gcmHEADER_ARG("Display=0x%x X=%d Y=%d Width=%d Height=%d", Display, X, Y, Width, Height);
     /* Test if we have a valid display data structure pointer. */
     if (Display == gcvNULL)
@@ -516,6 +568,11 @@ gcoOS_CreateWindow(
                                | ResizeRedirectMask
                                | PointerMotionMask;
 
+        p = getenv("X_IGNORE_DISPLAY_SIZE");
+        if (p != gcvNULL)
+        {
+            ignoreDisplaySize = atoi(p);
+        }
 
         /* Test for zero width. */
         if (Width == 0)
@@ -548,8 +605,11 @@ gcoOS_CreateWindow(
         /* Clamp coordinates to display. */
         if (X < 0) X = 0;
         if (Y < 0) Y = 0;
-        if (X + Width  > width)  Width  = width  - X;
-        if (Y + Height > height) Height = height - Y;
+        if (!ignoreDisplaySize)
+        {
+            if (X + Width  > width)  Width  = width  - X;
+            if (Y + Height > height) Height = height - Y;
+        }
 
         *Window = XCreateWindow(Display,
                                RootWindow(Display,
@@ -995,7 +1055,7 @@ gcoOS_DrawPixmap(
     GC gc = NULL;
 
     Drawable pixmap = Pixmap;
-    gceSTATUS Status = gcvSTATUS_OK;
+    gceSTATUS eStatus = gcvSTATUS_OK;
     gcmHEADER_ARG("Display=0x%x Pixmap=0x%x Left=%d Top=%d Right=%d Bottom=%d Width=%d Height=%d BitsPerPixel=%d Bits=0x%x",
         Display, Pixmap, Left, Top, Right, Bottom, Width, Height, BitsPerPixel, Bits);
 
@@ -1023,7 +1083,7 @@ gcoOS_DrawPixmap(
         if (xImage == gcvNULL)
         {
             /* Error. */
-            Status = gcvSTATUS_OUT_OF_RESOURCES;
+            eStatus = gcvSTATUS_OUT_OF_RESOURCES;
             break;
         }
 
@@ -1039,7 +1099,7 @@ gcoOS_DrawPixmap(
         if (status != Success)
         {
             /* Error. */
-            Status = gcvSTATUS_INVALID_ARGUMENT;
+            eStatus = gcvSTATUS_INVALID_ARGUMENT;
             break;
         }
 
@@ -1049,7 +1109,7 @@ gcoOS_DrawPixmap(
         if (status != Success)
         {
             /* Error. */
-            Status = gcvSTATUS_INVALID_ARGUMENT;
+            eStatus = gcvSTATUS_INVALID_ARGUMENT;
             break;
         }
     }
@@ -1067,7 +1127,7 @@ gcoOS_DrawPixmap(
 
     /* Return result. */
     gcmFOOTER();
-    return Status;
+    return eStatus;
 }
 
 gceSTATUS
@@ -1212,14 +1272,12 @@ gcoOS_GetEvent(
         }
     }
 
-#if defined(LINUX)
         if (_terminate)
         {
             _terminate = 0;
             Event->type = HAL_CLOSE;
             return gcvSTATUS_OK;
         }
-#endif
 
     return gcvSTATUS_NOT_FOUND;
 }
@@ -1256,6 +1314,320 @@ gcoOS_DestroyClientBuffer(
     return gcvSTATUS_NOT_SUPPORTED;
 }
 
+gceSTATUS
+gcoOS_InitLocalDisplayInfo(
+    IN HALNativeDisplayType Display,
+    IN OUT gctPOINTER * localDisplay
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoOS_DeinitLocalDisplayInfo(
+    IN HALNativeDisplayType Display,
+    IN OUT gctPOINTER * localDisplay
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoOS_GetDisplayInfoEx2(
+    IN HALNativeDisplayType Display,
+    IN HALNativeWindowType Window,
+    IN gctPOINTER  localDisplay,
+    IN gctUINT DisplayInfoSize,
+    OUT halDISPLAY_INFO * DisplayInfo
+    )
+{
+    gceSTATUS status = gcoOS_GetDisplayInfoEx(Display, Window, DisplayInfoSize, DisplayInfo);
+    if(gcmIS_SUCCESS(status))
+    {
+        if ((DisplayInfo->logical == gcvNULL) || (DisplayInfo->physical == ~0U))
+        {
+            /* No offset. */
+            status = gcvSTATUS_NOT_SUPPORTED;
+        }
+        else
+            status = gcvSTATUS_OK;
+    }
+    return status;
+}
+
+gceSTATUS
+gcoOS_GetDisplayBackbufferEx(
+    IN HALNativeDisplayType Display,
+    IN HALNativeWindowType Window,
+    IN gctPOINTER  localDisplay,
+    OUT gctPOINTER  *  context,
+    OUT gcoSURF     *  surface,
+    OUT gctUINT * Offset,
+    OUT gctINT * X,
+    OUT gctINT * Y
+    )
+{
+    return gcoOS_GetDisplayBackbuffer(Display, Window, context, surface, Offset, X, Y);
+}
+
+gceSTATUS
+gcoOS_IsValidDisplay(
+    IN HALNativeDisplayType Display
+    )
+{
+    if(Display != gcvNULL)
+        return gcvSTATUS_OK;
+    return gcvSTATUS_INVALID_ARGUMENT;
+}
+
+gctBOOL
+gcoOS_SynchronousFlip(
+    IN HALNativeDisplayType Display
+    )
+{
+    return gcvFALSE;
+}
+
+gceSTATUS
+gcoOS_GetNativeVisualId(
+    IN HALNativeDisplayType Display,
+    OUT gctINT* nativeVisualId
+    )
+{
+    *nativeVisualId = (gctINT)
+        DefaultVisual(Display,
+                      DefaultScreen(Display))->visualid;
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoOS_GetWindowInfoEx(
+    IN HALNativeDisplayType Display,
+    IN HALNativeWindowType Window,
+    OUT gctINT * X,
+    OUT gctINT * Y,
+    OUT gctINT * Width,
+    OUT gctINT * Height,
+    OUT gctINT * BitsPerPixel,
+    OUT gctUINT * Offset,
+    OUT gceSURF_FORMAT * Format
+    )
+{
+    halDISPLAY_INFO info;
+
+    if (gcmIS_ERROR(gcoOS_GetWindowInfo(
+                          Display,
+                          Window,
+                          X,
+                          Y,
+                          (gctINT_PTR) Width,
+                          (gctINT_PTR) Height,
+                          (gctINT_PTR) BitsPerPixel,
+                          gcvNULL)))
+    {
+        return gcvSTATUS_INVALID_ARGUMENT;
+    }
+
+    if (gcmIS_ERROR(gcoOS_GetDisplayInfoEx(
+        Display,
+        Window,
+        sizeof(info),
+        &info)))
+    {
+        return gcvSTATUS_INVALID_ARGUMENT;
+    }
+
+    /* Get the color format. */
+    switch (info.greenLength)
+    {
+    case 4:
+        if (info.blueOffset == 0)
+        {
+            *Format = (info.alphaLength == 0) ? gcvSURF_X4R4G4B4 : gcvSURF_A4R4G4B4;
+        }
+        else
+        {
+            *Format = (info.alphaLength == 0) ? gcvSURF_X4B4G4R4 : gcvSURF_A4B4G4R4;
+        }
+        break;
+
+    case 5:
+        if (info.blueOffset == 0)
+        {
+            *Format = (info.alphaLength == 0) ? gcvSURF_X1R5G5B5 : gcvSURF_A1R5G5B5;
+        }
+        else
+        {
+            *Format = (info.alphaLength == 0) ? gcvSURF_X1B5G5R5 : gcvSURF_A1B5G5R5;
+        }
+        break;
+
+    case 6:
+        *Format = gcvSURF_R5G6B5;
+        break;
+
+    case 8:
+        if (info.blueOffset == 0)
+        {
+            *Format = (info.alphaLength == 0) ? gcvSURF_X8R8G8B8 : gcvSURF_A8R8G8B8;
+        }
+        else
+        {
+            *Format = (info.alphaLength == 0) ? gcvSURF_X8B8G8R8 : gcvSURF_A8B8G8R8;
+        }
+        break;
+
+    default:
+        /* Unsupported colot depth. */
+        return gcvSTATUS_INVALID_ARGUMENT;
+    }
+
+    /* Success. */
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoOS_DrawImageEx(
+    IN HALNativeDisplayType Display,
+    IN HALNativeWindowType Window,
+    IN gctINT Left,
+    IN gctINT Top,
+    IN gctINT Right,
+    IN gctINT Bottom,
+    IN gctINT Width,
+    IN gctINT Height,
+    IN gctINT BitsPerPixel,
+    IN gctPOINTER Bits,
+    IN gceSURF_FORMAT Format
+    )
+{
+    return gcoOS_DrawImage(Display,
+                           Window,
+                           Left,
+                           Top,
+                           Right,
+                           Bottom,
+                           Width,
+                           Height,
+                           BitsPerPixel,
+                           Bits);
+}
+
+gceSTATUS
+gcoOS_GetPixmapInfoEx(
+    IN HALNativeDisplayType Display,
+    IN HALNativePixmapType Pixmap,
+    OUT gctINT * Width,
+    OUT gctINT * Height,
+    OUT gctINT * BitsPerPixel,
+    OUT gctINT * Stride,
+    OUT gctPOINTER * Bits,
+    OUT gceSURF_FORMAT * Format
+    )
+{
+    if (gcmIS_ERROR(gcoOS_GetPixmapInfo(
+                        Display,
+                        Pixmap,
+                      (gctINT_PTR) Width, (gctINT_PTR) Height,
+                      (gctINT_PTR) BitsPerPixel,
+                      gcvNULL,
+                      gcvNULL)))
+    {
+        return gcvSTATUS_INVALID_ARGUMENT;
+    }
+
+    /* Return format for pixmap depth. */
+    switch (*BitsPerPixel)
+    {
+    case 16:
+        *Format = gcvSURF_R5G6B5;
+        break;
+
+    case 32:
+        *Format = gcvSURF_A8R8G8B8;
+        break;
+
+    default:
+        return gcvSTATUS_INVALID_ARGUMENT;
+    }
+
+    /* Success. */
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoOS_CopyPixmapBits(
+    IN HALNativeDisplayType Display,
+    IN HALNativePixmapType Pixmap,
+    IN gctUINT DstWidth,
+    IN gctUINT DstHeight,
+    IN gctINT DstStride,
+    IN gceSURF_FORMAT DstFormat,
+    OUT gctPOINTER DstBits
+    )
+{
+    return gcvSTATUS_NOT_SUPPORTED;
+}
+gceSTATUS
+gcoOS_CreateContext(
+    IN gctPOINTER Display,
+    IN gctPOINTER Context
+    )
+{
+    return gcvSTATUS_NOT_SUPPORTED;
+}
+
+gceSTATUS
+gcoOS_DestroyContext(
+    IN gctPOINTER Display,
+    IN gctPOINTER Context)
+{
+    return gcvSTATUS_NOT_SUPPORTED;
+}
+
+gceSTATUS
+gcoOS_MakeCurrent(
+    IN gctPOINTER Display,
+    IN HALNativeWindowType DrawDrawable,
+    IN HALNativeWindowType ReadDrawable,
+    IN gctPOINTER Context,
+    IN gcoSURF ResolveTarget
+    )
+{
+    return gcvSTATUS_NOT_SUPPORTED;
+}
+
+gceSTATUS
+gcoOS_CreateDrawable(
+    IN gctPOINTER Display,
+    IN HALNativeWindowType Drawable
+    )
+{
+    return gcvSTATUS_NOT_SUPPORTED;
+}
+
+gceSTATUS
+gcoOS_DestroyDrawable(
+    IN gctPOINTER Display,
+    IN HALNativeWindowType Drawable
+    )
+{
+    return gcvSTATUS_NOT_SUPPORTED;
+}
+
+gceSTATUS
+gcoOS_SwapBuffers(
+    IN gctPOINTER Display,
+    IN HALNativeWindowType Drawable,
+    IN gcoSURF RenderTarget,
+    IN gcoSURF ResolveTarget,
+    IN gctPOINTER ResolveBits,
+    OUT gctUINT *Width,
+    OUT gctUINT *Height
+    )
+{
+    return gcvSTATUS_NOT_SUPPORTED;
+}
 #endif
-#endif /* VIVANTE_NO_3D */
+#endif
 

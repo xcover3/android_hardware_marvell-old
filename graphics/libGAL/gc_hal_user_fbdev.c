@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -11,8 +11,8 @@
 *****************************************************************************/
 
 
-#ifndef VIVANTE_NO_3D
-#ifdef EGL_API_FB
+#if gcdENABLE_3D || gcdENABLE_VG
+#if (defined EGL_API_FB && !defined EGL_API_WL)
 /* Enable sigaction declarations. */
 #if defined(LINUX)
 #if !defined _XOPEN_SOURCE
@@ -38,7 +38,17 @@
 #include <signal.h>
 #include "gc_hal_eglplatform.h"
 
+#define gcdUSE_PIXMAP_SURFACE 1
+
+
 #define _GC_OBJ_ZONE    gcvZONE_OS
+
+#define GC_FB_MAX_SWAP_INTERVAL     10
+#define GC_FB_MIN_SWAP_INTERVAL     0
+
+#ifndef FBIO_WAITFORVSYNC
+#define FBIO_WAITFORVSYNC _IOW('F', 0x20, __u32)
+#endif
 
 /* Structure that defines a display. */
 struct _FBDisplay
@@ -67,6 +77,7 @@ struct _FBDisplay
     gctUINT                blueLength;
     gctUINT                blueOffset;
     gceSURF_FORMAT      format;
+    gctINT                swapInterval;
 };
 
 /* Structure that defines a window. */
@@ -85,6 +96,7 @@ struct _FBWindow
 struct _FBPixmap
 {
     /* Pointer to memory bits. */
+    gctPOINTER       original;
     gctPOINTER       bits;
 
     /* Bits per pixel. */
@@ -92,7 +104,13 @@ struct _FBPixmap
 
     /* Size. */
     gctINT         width, height;
+    gctINT         alignedWidth, alignedHeight;
     gctINT         stride;
+
+#if gcdUSE_PIXMAP_SURFACE
+    gcoSURF         surface;
+    gctUINT32       gpu;
+#endif
 };
 
 static halKeyMap keys[] =
@@ -271,16 +289,18 @@ halOnExit(
 
 gceSTATUS
 gcoOS_GetDisplay(
-    OUT HALNativeDisplayType * Display
+    OUT HALNativeDisplayType * Display,
+    IN gctPOINTER Context
     )
 {
-    return gcoOS_GetDisplayByIndex(0, Display);
+    return gcoOS_GetDisplayByIndex(0, Display, Context);
 }
 
 gceSTATUS
 gcoOS_GetDisplayByIndex(
     IN gctINT DisplayIndex,
-    OUT HALNativeDisplayType * Display
+    OUT HALNativeDisplayType * Display,
+    IN gctPOINTER Context
     )
 {
     char *dev, *p;
@@ -305,11 +325,20 @@ gcoOS_GetDisplayByIndex(
         p = getenv("FB_MULTI_BUFFER");
         if (p == NULL)
         {
-            display->multiBuffer = 0;
+            display->multiBuffer = 1;
         }
         else
         {
             display->multiBuffer = atoi(p);
+            if (display->multiBuffer > 3)
+            {
+                display->multiBuffer = 3;
+            }
+            else
+            if (display->multiBuffer < 1)
+            {
+                display->multiBuffer = 1;
+            }
         }
         switch(DisplayIndex)
         {
@@ -499,9 +528,8 @@ gcoOS_GetDisplayByIndex(
         display->blueLength  = display->varInfo.blue.length;
         display->blueOffset  = display->varInfo.blue.offset;
 
-
-
-
+        /* initialize swap interval, default value is 1 */
+        display->swapInterval = 1;
 
         display->memory = mmap(0,
                                display->size,
@@ -648,11 +676,11 @@ gcoOS_GetDisplayInfoEx(
     /* Determine flip support. */
     DisplayInfo->flip = (display->multiBuffer > 1);
 
-#ifndef __QNXNTO__
     /* 355_FB_MULTI_BUFFER */
     DisplayInfo->multiBuffer = Display->multiBuffer;
     DisplayInfo->backBufferY = Display->backBufferY;
-#endif
+
+    DisplayInfo->wrapFB = gcvTRUE;
 
     /* Success. */
     gcmFOOTER_ARG("*DisplayInfo=0x%x", *DisplayInfo);
@@ -679,10 +707,10 @@ gcoOS_GetDisplayVirtual(
         return status;
     }
 
-    if (display->multiBuffer <= 1)
+    if (display->multiBuffer < 1)
     {
         /* Turned off. */
-        status = gcvSTATUS_NOT_SUPPORTED;
+        status = gcvSTATUS_INVALID_ARGUMENT;
         gcmFOOTER_NO();
         return status;
     }
@@ -701,13 +729,7 @@ gcoOS_GetDisplayVirtual(
     ioctl(display->file, FBIOGET_VSCREENINFO, &(display->varInfo));
 
     /* Compute number of buffers. */
-#ifndef __QNXNTO__
-    /* 355_FB_MULTI_BUFFER */
-    Display->multiBuffer = i;
-    Display->varInfo.yres_virtual = Display->height * i;
-#else
     display->multiBuffer = display->varInfo.yres_virtual / display->height;
-#endif
 
     /* Move to off-screen memory. */
     display->backBufferY = display->varInfo.yoffset + display->height;
@@ -730,8 +752,8 @@ gceSTATUS
 gcoOS_GetDisplayBackbuffer(
     IN HALNativeDisplayType Display,
     IN HALNativeWindowType Window,
-    IN gctPOINTER    context,
-    IN gcoSURF       surface,
+    OUT gctPOINTER  *  context,
+    OUT gcoSURF     *  surface,
     OUT gctUINT * Offset,
     OUT gctINT * X,
     OUT gctINT * Y
@@ -763,9 +785,13 @@ gcoOS_GetDisplayBackbuffer(
     *X = 0;
     *Y = display->backBufferY;
 
-    while (display->backBufferY == (volatile int) (display->varInfo.yoffset))
+    /* if swap interval is zero do not wait for the back buffer to change */
+    if (display->swapInterval != 0)
     {
-        pthread_cond_wait(&(display->cond), &(display->condMutex));
+        while (display->backBufferY == (volatile int) (display->varInfo.yoffset))
+        {
+            pthread_cond_wait(&(display->cond), &(display->condMutex));
+        }
     }
 
     /* Move to next back buffer. */
@@ -796,6 +822,8 @@ gcoOS_SetDisplayVirtual(
     struct _FBDisplay* display;
     gcmHEADER_ARG("Display=0x%x Window=0x%x Offset=%u X=%d Y=%d", Display, Window, Offset, X, Y);
     display = (struct _FBDisplay*)Display;
+    gctINT swapInterval;
+
     if (display == gcvNULL)
     {
         /* Invalid display pointer. */
@@ -806,21 +834,142 @@ gcoOS_SetDisplayVirtual(
 
     if (display->multiBuffer > 1)
     {
-        pthread_mutex_lock(&(display->condMutex));
+        /* clamp swap interval to be safe */
+        swapInterval = display->swapInterval;
+        if (swapInterval > GC_FB_MAX_SWAP_INTERVAL)
+        {
+            swapInterval = GC_FB_MAX_SWAP_INTERVAL;
+        }
+        else if (swapInterval < GC_FB_MIN_SWAP_INTERVAL)
+        {
+            swapInterval = GC_FB_MIN_SWAP_INTERVAL;
+        }
 
-        /* Set display offset. */
-        display->varInfo.xoffset  = X;
-        display->varInfo.yoffset  = Y;
-        display->varInfo.activate = FB_ACTIVATE_VBL;
-        ioctl(display->file, FBIOPAN_DISPLAY, &(display->varInfo));
+        /* if swap interval is 0 skip this step */
+        if (swapInterval != 0)
+        {
+            pthread_mutex_lock(&(display->condMutex));
+            /* Panning will wait for the vsync. */
+            swapInterval--;
+            /* wait for swap interval  * vsync */
+            while(swapInterval--)
+            {
+                ioctl(display->file, FBIO_WAITFORVSYNC, (void *)0);
+            }
 
-        pthread_cond_broadcast(&(display->cond));
-        pthread_mutex_unlock(&(display->condMutex));
+            /* Set display offset. */
+            display->varInfo.xoffset  = X;
+            display->varInfo.yoffset  = Y;
+            display->varInfo.activate = FB_ACTIVATE_VBL;
+            ioctl(display->file, FBIOPAN_DISPLAY, &(display->varInfo));
+
+            pthread_cond_broadcast(&(display->cond));
+            pthread_mutex_unlock(&(display->condMutex));
+        }
     }
 
     /* Success. */
     gcmFOOTER_NO();
     return status;
+}
+
+gceSTATUS
+gcoOS_SetDisplayVirtualEx(
+    IN HALNativeDisplayType Display,
+    IN HALNativeWindowType Window,
+    IN gctPOINTER Context,
+    IN gcoSURF Surface,
+    IN gctUINT Offset,
+    IN gctINT X,
+    IN gctINT Y
+    )
+{
+    return gcoOS_SetDisplayVirtual(Display, Window, Offset, X, Y);
+}
+
+gceSTATUS
+gcoOS_SetSwapInterval(
+    IN HALNativeDisplayType Display,
+    IN gctINT Interval
+)
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    struct _FBDisplay* display;
+    gctINT interval;
+
+    gcmHEADER_ARG("Display=0x%x Interval=%d", Display, Interval);
+
+    display = (struct _FBDisplay*)Display;
+    if (display == gcvNULL)
+    {
+        /* Invalid display pointer. */
+        status = gcvSTATUS_INVALID_ARGUMENT;
+        gcmFOOTER();
+        return status;
+    }
+
+    /* clamp to min and max */
+    interval = Interval;
+    if (interval > GC_FB_MAX_SWAP_INTERVAL)
+    {
+        interval = GC_FB_MAX_SWAP_INTERVAL;
+    }
+    else if (interval < GC_FB_MIN_SWAP_INTERVAL)
+    {
+        interval = GC_FB_MIN_SWAP_INTERVAL;
+    }
+    display->swapInterval = interval;
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return status;
+}
+
+gceSTATUS
+gcoOS_SetSwapIntervalEx(
+    IN HALNativeDisplayType Display,
+    IN gctINT Interval,
+    IN gctPOINTER localDisplay
+)
+{
+    return gcoOS_SetSwapInterval(Display, Interval);
+}
+
+gceSTATUS
+gcoOS_GetSwapInterval(
+    IN HALNativeDisplayType Display,
+    IN gctINT_PTR Min,
+    IN gctINT_PTR Max
+)
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    struct _FBDisplay* display;
+
+    gcmHEADER_ARG("Display=0x%x Min=0x%x Max=0x%x", Display, Min, Max);
+
+    display = (struct _FBDisplay*)Display;
+    if (display == gcvNULL)
+    {
+       /* Invalid display pointer. */
+       status = gcvSTATUS_INVALID_ARGUMENT;
+       gcmFOOTER();
+       return status;
+    }
+
+    if( Min != gcvNULL)
+    {
+        *Min = GC_FB_MIN_SWAP_INTERVAL;
+    }
+
+    if (Max != gcvNULL)
+    {
+        *Max = GC_FB_MAX_SWAP_INTERVAL;
+    }
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return status;
+
 }
 
 gceSTATUS
@@ -856,6 +1005,17 @@ gcoOS_DestroyDisplay(
     return gcvSTATUS_OK;
 }
 
+gceSTATUS
+gcoOS_DisplayBufferRegions(
+    IN HALNativeDisplayType Display,
+    IN HALNativeWindowType Window,
+    IN gctINT NumRects,
+    IN gctINT_PTR Rects
+    )
+{
+    return gcvSTATUS_NOT_SUPPORTED;
+}
+
 /*******************************************************************************
 ** Windows. ********************************************************************
 */
@@ -870,16 +1030,27 @@ gcoOS_CreateWindow(
     OUT HALNativeWindowType * Window
     )
 {
-    gceSTATUS status = gcvSTATUS_OK;
-    struct _FBDisplay* display;
-    struct _FBWindow* window;
-    gcmHEADER_ARG("Display=0x%x X=%d Y=%d Width=%d Height=%d", Display, X, Y, Width, Height);
-    display = (struct _FBDisplay*)Display;
+    gceSTATUS           status = gcvSTATUS_OK;
+    struct _FBDisplay * display;
+    struct _FBWindow *  window;
+    gctINT              ignoreDisplaySize = 0;
+    gctCHAR *           p;
+
+    gcmHEADER_ARG("Display=%p X=%d Y=%d Width=%d Height=%d",
+                  Display, X, Y, Width, Height);
+
+    display = (struct _FBDisplay*) Display;
     if (display == NULL)
     {
         status = gcvSTATUS_INVALID_ARGUMENT;
         gcmFOOTER();
         return status;
+    }
+
+    p = getenv("FB_IGNORE_DISPLAY_SIZE");
+    if (p != gcvNULL)
+    {
+        ignoreDisplaySize = atoi(p);
     }
 
     if (Width == 0)
@@ -904,14 +1075,16 @@ gcoOS_CreateWindow(
 
     if (X < 0) X = 0;
     if (Y < 0) Y = 0;
-    if (X + Width  > display->width)  Width  = display->width  - X;
-    if (Y + Height > display->height) Height = display->height - Y;
+    if (!ignoreDisplaySize)
+    {
+        if (X + Width  > display->width)  Width  = display->width  - X;
+        if (Y + Height > display->height) Height = display->height - Y;
+    }
 
     do
     {
-        window = (struct _FBWindow*) malloc(sizeof(struct _FBWindow));
-
-        if (window == NULL)
+        window = (struct _FBWindow *) malloc(gcmSIZEOF(struct _FBWindow));
+        if (window == gcvNULL)
         {
             status = gcvSTATUS_OUT_OF_RESOURCES;
             break;
@@ -926,7 +1099,7 @@ gcoOS_CreateWindow(
 
         window->width  = Width;
         window->height = Height;
-        *Window = (HALNativeWindowType)window;
+        *Window = (HALNativeWindowType) window;
     }
     while (0);
 
@@ -1103,7 +1276,13 @@ gcoOS_CreatePixmap(
     )
 {
     gceSTATUS status = gcvSTATUS_OK;
+#if !gcdUSE_PIXMAP_SURFACE
+    gctINT alignedWidth, alignedHeight;
+#endif
     struct _FBPixmap* pixmap;
+#if gcdUSE_PIXMAP_SURFACE
+    gceSURF_FORMAT format;
+#endif
     gcmHEADER_ARG("Display=0x%x Width=%d Height=%d BitsPerPixel=%d", Display, Width, Height, BitsPerPixel);
 
     if ((Width <= 0) || (Height <= 0) || (BitsPerPixel <= 0))
@@ -1115,37 +1294,97 @@ gcoOS_CreatePixmap(
 
     do
     {
-        Width   = (Width + 0x0F) & (~0x0F); /* 16 bytes alignment. */
-        Height  = (Height+ 0x03) & (~0x03); /*  4 bytes alignment. */
-
         pixmap = (struct _FBPixmap*) malloc(sizeof (struct _FBPixmap));
 
         if (pixmap == gcvNULL)
         {
             break;
         }
+#if gcdUSE_PIXMAP_SURFACE
+        if (BitsPerPixel <= 16)
+        {
+            format = gcvSURF_R5G6B5;
+        }
+        else if(BitsPerPixel == 24)
+        {
+            format = gcvSURF_X8R8G8B8;
+        }
+        else
+        {
+            format = gcvSURF_A8R8G8B8;
+        }
 
-        pixmap->bits = malloc(Width * Height * (BitsPerPixel + 7) / 8);
-        if (pixmap->bits == gcvNULL)
+        gcmERR_BREAK(gcoSURF_Construct(
+            gcvNULL,
+            Width, Height, 1,
+            gcvSURF_BITMAP,
+            format,
+            gcvPOOL_DEFAULT,
+            &pixmap->surface
+        ));
+
+        gcmERR_BREAK(gcoSURF_Lock(
+            pixmap->surface,
+                    &pixmap->gpu,
+            &pixmap->bits
+        ));
+
+        gcmERR_BREAK(gcoSURF_GetSize(
+            pixmap->surface,
+            (gctUINT *) &pixmap->width,
+            (gctUINT *) &pixmap->height,
+            gcvNULL
+        ));
+
+        gcmERR_BREAK(gcoSURF_GetAlignedSize(
+            pixmap->surface,
+            gcvNULL,
+            gcvNULL,
+            &pixmap->stride
+        ));
+
+        pixmap->bpp = (BitsPerPixel <= 16) ? 16 : 32;
+#else
+        alignedWidth   = (Width + 0x0F) & (~0x0F);
+        alignedHeight  = (Height + 0x3) & (~0x03);
+        pixmap->original = malloc(alignedWidth * alignedHeight * (BitsPerPixel + 7) / 8 + 64);
+        if (pixmap->original == gcvNULL)
         {
             free(pixmap);
             pixmap = gcvNULL;
 
             break;
         }
-
-        /*pixmap->display = (struct _FBDisplay*)Display;*/
+        pixmap->bits = (gctPOINTER)(((gctUINTPTR_T)(gctCHAR*)pixmap->original + 0x3F) & (~0x3F));
 
         pixmap->width = Width;
         pixmap->height = Height;
-
+        pixmap->alignedWidth    = alignedWidth;
+        pixmap->alignedHeight   = alignedHeight;
         pixmap->bpp     = (BitsPerPixel + 0x07) & (~0x07);
         pixmap->stride  = Width * (pixmap->bpp) / 8;
+#endif
+
         *Pixmap = (HALNativePixmapType)pixmap;
         gcmFOOTER_ARG("*Pixmap=0x%x", *Pixmap);
         return status;
     }
     while (0);
+
+#if gcdUSE_PIXMAP_SURFACE
+    if (pixmap!= gcvNULL)
+    {
+        if (pixmap->bits != gcvNULL)
+        {
+            gcoSURF_Unlock(pixmap->surface, pixmap->bits);
+        }
+        if (pixmap->surface != gcvNULL)
+        {
+            gcoSURF_Destroy(pixmap->surface);
+        }
+        free(pixmap);
+    }
+#endif
 
     status = gcvSTATUS_OUT_OF_RESOURCES;
     gcmFOOTER();
@@ -1196,7 +1435,7 @@ gcoOS_GetPixmapInfo(
 
     if (Bits != NULL)
     {
-        *Bits = pixmap->bits;
+        *Bits = (pixmap->bits ? pixmap->bits : pixmap->original);
     }
 
     gcmFOOTER_NO();
@@ -1213,10 +1452,21 @@ gcoOS_DestroyPixmap(
     pixmap = (struct _FBPixmap*)Pixmap;
     if (pixmap != gcvNULL)
     {
-        if (pixmap->bits != NULL)
+#if gcdUSE_PIXMAP_SURFACE
+        if (pixmap->bits != gcvNULL)
         {
-            free(pixmap->bits);
+            gcoSURF_Unlock(pixmap->surface, pixmap->bits);
         }
+        if (pixmap->surface != gcvNULL)
+        {
+            gcoSURF_Destroy(pixmap->surface);
+        }
+#else
+        if (pixmap->original != NULL)
+        {
+            free(pixmap->original);
+        }
+#endif
         free(pixmap);
         pixmap = gcvNULL;
         Pixmap = gcvNULL;
@@ -1274,6 +1524,9 @@ gcoOS_FreeEGLLibrary(
     IN gctHANDLE Handle
     )
 {
+#if gcdSTATIC_LINK
+    return gcvSTATUS_OK;
+#else
     if (Handle != gcvNULL)
     {
         void (*fini)(void);
@@ -1316,6 +1569,7 @@ gcoOS_FreeEGLLibrary(
     file    = -1;
     mice    = -1;
     return gcvSTATUS_OK;
+#endif
 }
 
 gceSTATUS
@@ -1324,7 +1578,8 @@ gcoOS_ShowWindow(
     IN HALNativeWindowType Window
     )
 {
-    int i, fd, term = -1;
+#if gcdUSE_INPUT_DEVICE
+    int i, fd=0, term = -1;
     struct stat st;
     struct vt_stat v;
     struct termios t;
@@ -1404,6 +1659,26 @@ gcoOS_ShowWindow(
         ioctl(file, VT_WAITACTIVE, term);
         ioctl(file, KDSETMODE, KD_GRAPHICS);
 
+        /* Check FB config since it may be affected by VT_ACTIVATE. */
+        {
+            struct _FBDisplay* display;
+            display = (struct _FBDisplay*)Display;
+            ioctl(display->file, FBIOGET_VSCREENINFO, &(display->varInfo));
+            display->varInfo.yres_virtual = Display->height * Display->multiBuffer;
+            if (ioctl(display->file, FBIOPUT_VSCREENINFO, &display->varInfo) >= 0)
+            {
+                ioctl(display->file, FBIOGET_VSCREENINFO, &(display->varInfo));
+                if (display->varInfo.yres_virtual != Display->height * Display->multiBuffer)
+                {   /* Fallback to single buffer. */
+                    Display->multiBuffer = 1;
+                }
+            }
+            else
+            {   /* Fallback to single buffer. */
+                Display->multiBuffer = 1;
+            }
+        }
+
         ioctl(file, KDGKBMODE, &mode);
         tcgetattr(file, &tty);
 
@@ -1433,6 +1708,9 @@ gcoOS_ShowWindow(
     }
 
     return gcvSTATUS_NOT_SUPPORTED;
+#else
+    return gcvSTATUS_OK;
+#endif
 }
 
 gceSTATUS
@@ -1621,5 +1899,318 @@ gcoOS_DestroyClientBuffer(
     return gcvSTATUS_NOT_SUPPORTED;
 }
 
+gceSTATUS
+gcoOS_InitLocalDisplayInfo(
+    IN HALNativeDisplayType Display,
+    IN OUT gctPOINTER * localDisplay
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoOS_DeinitLocalDisplayInfo(
+    IN HALNativeDisplayType Display,
+    IN OUT gctPOINTER * localDisplay
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoOS_GetDisplayInfoEx2(
+    IN HALNativeDisplayType Display,
+    IN HALNativeWindowType Window,
+    IN gctPOINTER  localDisplay,
+    IN gctUINT DisplayInfoSize,
+    OUT halDISPLAY_INFO * DisplayInfo
+    )
+{
+    gceSTATUS status = gcoOS_GetDisplayInfoEx(Display, Window, DisplayInfoSize, DisplayInfo);
+    if(gcmIS_SUCCESS(status))
+    {
+        if ((DisplayInfo->logical == gcvNULL) || (DisplayInfo->physical == ~0U))
+        {
+            /* No offset. */
+            status = gcvSTATUS_NOT_SUPPORTED;
+        }
+        else
+            status = gcvSTATUS_OK;
+    }
+    return status;
+}
+
+gceSTATUS
+gcoOS_GetDisplayBackbufferEx(
+    IN HALNativeDisplayType Display,
+    IN HALNativeWindowType Window,
+    IN gctPOINTER  localDisplay,
+    OUT gctPOINTER  *  context,
+    OUT gcoSURF     *  surface,
+    OUT gctUINT * Offset,
+    OUT gctINT * X,
+    OUT gctINT * Y
+    )
+{
+    return gcoOS_GetDisplayBackbuffer(Display, Window, context, surface, Offset, X, Y);
+}
+
+gceSTATUS
+gcoOS_IsValidDisplay(
+    IN HALNativeDisplayType Display
+    )
+{
+    if(Display != gcvNULL)
+        return gcvSTATUS_OK;
+    return gcvSTATUS_INVALID_ARGUMENT;
+}
+
+gceSTATUS
+gcoOS_GetNativeVisualId(
+    IN HALNativeDisplayType Display,
+    OUT gctINT* nativeVisualId
+    )
+{
+    *nativeVisualId = 0;
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoOS_GetWindowInfoEx(
+    IN HALNativeDisplayType Display,
+    IN HALNativeWindowType Window,
+    OUT gctINT * X,
+    OUT gctINT * Y,
+    OUT gctINT * Width,
+    OUT gctINT * Height,
+    OUT gctINT * BitsPerPixel,
+    OUT gctUINT * Offset,
+    OUT gceSURF_FORMAT * Format
+    )
+{
+    halDISPLAY_INFO info;
+
+    if (gcmIS_ERROR(gcoOS_GetWindowInfo(
+                          Display,
+                          Window,
+                          X,
+                          Y,
+                          (gctINT_PTR) Width,
+                          (gctINT_PTR) Height,
+                          (gctINT_PTR) BitsPerPixel,
+                          gcvNULL)))
+    {
+        return gcvSTATUS_INVALID_ARGUMENT;
+    }
+
+    if (gcmIS_ERROR(gcoOS_GetDisplayInfoEx(
+        Display,
+        Window,
+        sizeof(info),
+        &info)))
+    {
+        return gcvSTATUS_INVALID_ARGUMENT;
+    }
+
+    /* Get the color format. */
+    switch (info.greenLength)
+    {
+    case 4:
+        if (info.blueOffset == 0)
+        {
+            *Format = (info.alphaLength == 0) ? gcvSURF_X4R4G4B4 : gcvSURF_A4R4G4B4;
+        }
+        else
+        {
+            *Format = (info.alphaLength == 0) ? gcvSURF_X4B4G4R4 : gcvSURF_A4B4G4R4;
+        }
+        break;
+
+    case 5:
+        if (info.blueOffset == 0)
+        {
+            *Format = (info.alphaLength == 0) ? gcvSURF_X1R5G5B5 : gcvSURF_A1R5G5B5;
+        }
+        else
+        {
+            *Format = (info.alphaLength == 0) ? gcvSURF_X1B5G5R5 : gcvSURF_A1B5G5R5;
+        }
+        break;
+
+    case 6:
+        *Format = gcvSURF_R5G6B5;
+        break;
+
+    case 8:
+        if (info.blueOffset == 0)
+        {
+            *Format = (info.alphaLength == 0) ? gcvSURF_X8R8G8B8 : gcvSURF_A8R8G8B8;
+        }
+        else
+        {
+            *Format = (info.alphaLength == 0) ? gcvSURF_X8B8G8R8 : gcvSURF_A8B8G8R8;
+        }
+        break;
+
+    default:
+        /* Unsupported colot depth. */
+        return gcvSTATUS_INVALID_ARGUMENT;
+    }
+
+    /* Success. */
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoOS_DrawImageEx(
+    IN HALNativeDisplayType Display,
+    IN HALNativeWindowType Window,
+    IN gctINT Left,
+    IN gctINT Top,
+    IN gctINT Right,
+    IN gctINT Bottom,
+    IN gctINT Width,
+    IN gctINT Height,
+    IN gctINT BitsPerPixel,
+    IN gctPOINTER Bits,
+    IN gceSURF_FORMAT Format
+    )
+{
+    return gcoOS_DrawImage(Display,
+                           Window,
+                           Left,
+                           Top,
+                           Right,
+                           Bottom,
+                           Width,
+                           Height,
+                           BitsPerPixel,
+                           Bits);
+}
+
+gceSTATUS
+gcoOS_GetPixmapInfoEx(
+    IN HALNativeDisplayType Display,
+    IN HALNativePixmapType Pixmap,
+    OUT gctINT * Width,
+    OUT gctINT * Height,
+    OUT gctINT * BitsPerPixel,
+    OUT gctINT * Stride,
+    OUT gctPOINTER * Bits,
+    OUT gceSURF_FORMAT * Format
+    )
+{
+    if (gcmIS_ERROR(gcoOS_GetPixmapInfo(
+                        Display,
+                        Pixmap,
+                      (gctINT_PTR) Width, (gctINT_PTR) Height,
+                      (gctINT_PTR) BitsPerPixel,
+                      gcvNULL,
+                      gcvNULL)))
+    {
+        return gcvSTATUS_INVALID_ARGUMENT;
+    }
+
+    /* Return format for pixmap depth. */
+    switch (*BitsPerPixel)
+    {
+    case 16:
+        *Format = gcvSURF_R5G6B5;
+        break;
+
+    case 32:
+        *Format = gcvSURF_A8R8G8B8;
+        break;
+
+    default:
+        return gcvSTATUS_INVALID_ARGUMENT;
+    }
+
+    /* Success. */
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoOS_CopyPixmapBits(
+    IN HALNativeDisplayType Display,
+    IN HALNativePixmapType Pixmap,
+    IN gctUINT DstWidth,
+    IN gctUINT DstHeight,
+    IN gctINT DstStride,
+    IN gceSURF_FORMAT DstFormat,
+    OUT gctPOINTER DstBits
+    )
+{
+    return gcvSTATUS_NOT_SUPPORTED;
+}
+
+gctBOOL
+gcoOS_SynchronousFlip(
+    IN HALNativeDisplayType Display
+    )
+{
+    return gcvFALSE;
+}
+gceSTATUS
+gcoOS_CreateContext(
+    IN gctPOINTER Display,
+    IN gctPOINTER Context
+    )
+{
+    return gcvSTATUS_NOT_SUPPORTED;
+}
+gceSTATUS
+gcoOS_DestroyContext(
+    IN gctPOINTER Display,
+    IN gctPOINTER Context)
+{
+    return gcvSTATUS_NOT_SUPPORTED;
+}
+
+gceSTATUS
+gcoOS_MakeCurrent(
+    IN gctPOINTER Display,
+    IN HALNativeWindowType DrawDrawable,
+    IN HALNativeWindowType ReadDrawable,
+    IN gctPOINTER Context,
+    IN gcoSURF ResolveTarget
+    )
+{
+    return gcvSTATUS_NOT_SUPPORTED;
+}
+
+gceSTATUS
+gcoOS_CreateDrawable(
+    IN gctPOINTER Display,
+    IN HALNativeWindowType Drawable
+    )
+{
+    return gcvSTATUS_NOT_SUPPORTED;
+}
+
+gceSTATUS
+gcoOS_DestroyDrawable(
+    IN gctPOINTER Display,
+    IN HALNativeWindowType Drawable
+    )
+{
+    return gcvSTATUS_NOT_SUPPORTED;
+}
+
+gceSTATUS
+gcoOS_SwapBuffers(
+    IN gctPOINTER Display,
+    IN HALNativeWindowType Drawable,
+    IN gcoSURF RenderTarget,
+    IN gcoSURF ResolveTarget,
+    IN gctPOINTER ResolveBits,
+    OUT gctUINT *Width,
+    OUT gctUINT *Height
+    )
+{
+    return gcvSTATUS_NOT_SUPPORTED;
+}
+
 #endif
-#endif /* VIVANTE_NO_3D */
+#endif
+

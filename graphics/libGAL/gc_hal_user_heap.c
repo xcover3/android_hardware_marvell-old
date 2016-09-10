@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -9,8 +9,6 @@
 *    without the express written permission of Vivante Corporation.
 *
 *****************************************************************************/
-
-
 
 
 /**
@@ -48,8 +46,7 @@ static gctUINT _InitNumber[gcdNumOfBuckets] = {  0, 50, 50, 50, 100, 100,
 /*******************************************************************************
 ***** Structures ***************************************************************
 *******************************************************************************/
-
-#define gcdIN_USE               ((gcsNODE_PTR) ~0)
+#define gcdIN_USE               ((gcsNODE_PTR)gcvMAXUINTPTR_T)
 
 typedef struct _gcsNODE *       gcsNODE_PTR;
 typedef struct _gcsNODE
@@ -304,7 +301,7 @@ _CompactHeap(
                 }
 #endif
 
-                /* Test of this is the first free node. */
+                /* Test if this is the first free node. */
                 if (lastFree == gcvNULL)
                 {
                     /* Initialzie the free list. */
@@ -441,71 +438,7 @@ gcoHEAP_Construct(
     OUT gcoHEAP * Heap
     )
 {
-    gceSTATUS status;
-    gcoHEAP heap = gcvNULL;
-    gctPOINTER pointer = gcvNULL;
-#if gcdUSE_NEW_HEAP
-    gctINT i;
-#endif
-
-    gcmHEADER_ARG("AllocationSize=%lu", AllocationSize);
-
-    /* Verify the arguments. */
-    gcmDEBUG_VERIFY_ARGUMENT(Heap != gcvNULL);
-
-    /* Allocate the gcoHEAP object. */
-    gcmONERROR(
-        gcoOS_AllocateMemory(gcvNULL,
-                             gcmSIZEOF(struct _gcoHEAP),
-                             &pointer));
-
-    heap = pointer;
-
-    /* Initialize the gcoHEAP object. */
-    heap->object.type    = gcvOBJ_HEAP;
-    heap->allocationSize = AllocationSize;
-    heap->heap           = gcvNULL;
-#if gcmIS_DEBUG(gcdDEBUG_CODE)
-    heap->timeStamp      = 0;
-#endif
-
-#if gcdUSE_NEW_HEAP
-    heap->blockList = gcvNULL;
-    for (i = 0; i < gcdNumOfBuckets; i++)
-    {
-        heap->buckets[i] = gcvNULL;
-        heap->nodesInBuckets[i] = 0;
-    }
-    heap->snodeOverhead = SNODE_NEXT_OFFSET / gcmSIZEOF(gctINT_PTR);
-#endif
-
-#if VIVANTE_PROFILER || gcmIS_DEBUG(gcdDEBUG_CODE)
-    /* Zero the counters. */
-    gcoHEAP_ProfileStart(heap);
-#endif
-
-    /* Create the mutex. */
-    gcmONERROR(gcoOS_CreateMutex(gcvNULL, &heap->mutex));
-
-    /* Return the pointer to the gcoHEAP object. */
-    *Heap = heap;
-
-    /* Success. */
-    gcmFOOTER_ARG("*Heap=0x%x", Heap);
-    return gcvSTATUS_OK;
-
-OnError:
-    /* Roll back. */
-    if (heap != gcvNULL)
-    {
-        /* Free the heap structure. */
-        gcmVERIFY_OK(gcoOS_FreeMemory(gcvNULL, heap));
-        heap = gcvNULL;
-    }
-
-    /* Return the status. */
-    gcmFOOTER();
-    return status;
+    return gcvSTATUS_NOT_SUPPORTED;
 }
 
 /*******************************************************************************
@@ -724,13 +657,16 @@ gcoHEAP_Allocate(
 
     acquired = gcvTRUE;
 
-    /* Check if this allocation is bigger than the default allocation size. */
-    if (bytes > Heap->allocationSize - gcmSIZEOF(gcsHEAP) - gcmSIZEOF(gcsNODE))
+    /* Check if this allocation is bigger than the default allocation size.
+       Need to account for the sentinel as well, hence the gcmSIZEOF(gcsNODE). */
+    if ((bytes + gcmSIZEOF(gcsHEAP) + gcmSIZEOF(gcsNODE)) >= Heap->allocationSize)
     {
         /* Adjust allocation size. */
         Heap->allocationSize = bytes * 2;
-    }
 
+        /* If this assert is hit, we should keep increasing the allocationSize. */
+        gcmASSERT(bytes + gcmSIZEOF(gcsHEAP) + gcmSIZEOF(gcsNODE) < Heap->allocationSize);
+    }
     else if (Heap->heap != gcvNULL)
     {
         gctINT i;
@@ -861,14 +797,13 @@ UseNode:
 
     /* Check if there is enough free space left after usage for another free
     ** node. */
-    if (node->bytes - bytes >= gcmSIZEOF(gcsNODE))
+    if (node->bytes > 2*gcmSIZEOF(gcsNODE) + bytes)
     {
-        /* Allocated used space from the back of the free list. */
+        /* Allocate used space from the back of the free list. */
         used = (gcsNODE_PTR) ((gctUINT8_PTR) node + node->bytes - bytes);
 
         /* Adjust the number of free bytes. */
         node->bytes -= bytes;
-        gcmASSERT(node->bytes >= gcmSIZEOF(gcsNODE));
     }
     else
     {
@@ -902,11 +837,9 @@ UseNode:
 
 #if gcdDEBUG_HEAP_SIGNATURE
     /* Create the signatures. */
-    gcmVERIFY_OK(
-        gcoOS_MemCopy(used->signature, _Signature, 8));
+    gcoOS_MemCopy(used->signature, _Signature, 8);
 
-    gcmVERIFY_OK(
-        gcoOS_MemCopy((gctUINT8_PTR) (used + 1) + Bytes, _Signature, 8));
+    gcoOS_MemCopy((gctUINT8_PTR) (used + 1) + Bytes, _Signature, 8);
 #endif
 
 #if VIVANTE_PROFILER || gcmIS_DEBUG(gcdDEBUG_CODE)
@@ -1089,8 +1022,7 @@ gcoHEAP_Free(
 
 #if gcdDEBUG_HEAP_WRITE_AFTER_FREE
     /* Fill the memory. */
-    gcmVERIFY_OK(
-        gcoOS_MemFill(Memory, gcdDEBUG_FILLER, node->bytes - gcmSIZEOF(*node)));
+    gcoOS_MemFill(Memory, gcdDEBUG_FILLER, node->bytes - gcmSIZEOF(*node));
 #endif
 
 #if VIVANTE_PROFILER || gcmIS_DEBUG(gcdDEBUG_CODE)

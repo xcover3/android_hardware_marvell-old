@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -9,8 +9,6 @@
 *    without the express written permission of Vivante Corporation.
 *
 *****************************************************************************/
-
-
 
 
 #ifndef __gc_hal_user_hardware_vg_h_
@@ -39,11 +37,7 @@ struct _gcoVGHARDWARE
     gcsCOMMAND_BUFFER_INFO      bufferInfo;
 
     /* Context buffer. */
-#ifndef __QNXNTO__
-    gcsVGCONTEXT                context;
-#else
     gcsVGCONTEXT              * pContext;
-#endif
 
     /* Chip characteristics. */
     gceCHIPMODEL                chipModel;
@@ -74,6 +68,7 @@ struct _gcoVGHARDWARE
     gcsFILTER_BLIT_ARRAY        horBlurFilterKernel;
     gcsFILTER_BLIT_ARRAY        verBlurFilterKernel;
 
+#if gcdENABLE_3D
     /* Depth mode. */
     gceDEPTH_MODE               depthMode;
     gctBOOL                     depthOnly;
@@ -87,6 +82,7 @@ struct _gcoVGHARDWARE
     gctUINT32                   stencilMode;
     gctBOOL                     stencilKeepFront[3];
     gctBOOL                     stencilKeepBack[3];
+#endif
 
     /* Texture sampler modes. */
     gctUINT32                   samplerMode[12];
@@ -99,7 +95,9 @@ struct _gcoVGHARDWARE
     /* Anti-alias mode. */
     gctUINT32                   sampleMask;
     gctUINT32                   sampleEnable;
+#if gcdENABLE_3D
     gcsSAMPLES                  samples;
+#endif
     struct
     {
         gctUINT8                x;

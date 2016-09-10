@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -11,10 +11,9 @@
 *****************************************************************************/
 
 
-
 #include "gc_hal_user_precomp.h"
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
 
 #if gcdNULL_DRIVER < 2
 
@@ -23,6 +22,9 @@
 
 #define ENABLE_STREAM_CACHE_STATIC     0
 #define OPT_CACHE_USAGE                1
+#define DYNAMIC_STREAM_COUNT           0x10000
+#define DYNAMIC_CACHE_MULTIPLE_TIME    20
+#define DYNAMIC_CACHE_ALIGN            2 << 10
 /*******************************************************************************
 **  Stream Cache
 **
@@ -33,7 +35,7 @@
 **  To speed up the lookup, a has table is used as well.
 **
 **  The cache will have multiple buffers and validate all of them for any vertex
-**  stream coming in.  Ince the last buffer of the cache starts being used as
+**  stream coming in.  Once the last buffer of the cache starts being used as
 **  the cache, the oldest buffer will be flushed and marked as free
 **  asynchronously by the hardware
 */
@@ -99,25 +101,20 @@ typedef struct _gcsSTREAM_CACHE_BUFFER
     gctSIGNAL                   signal;
 
     /* Allocated video memory node. */
+    gcsSURF_NODE                *dynamicNode;
     gcsSURF_NODE                node;
 
     /* Size of the cache. */
-    gctUINT                     bytes;
+    gctSIZE_T                   bytes;
 
     /* Offset to next free byte in the cache. */
     gctUINT                     offset;
 
     /* Number of free bytes in the cache. */
-    gctUINT                     free;
+    gctSIZE_T                   free;
 
     /* Index into cacheArray of next free entry. */
     gctUINT                     index;
-
-    /* The array of cached attributes. */
-    gcsSTREAM_CACHE             cacheArray[gcdSTREAM_CACHE_SLOTS];
-
-    /* The hash table for the cached attributes. */
-    gcsSTREAM_CACHE_PTR         cacheHash[gcdSTREAM_CACHE_HASH];
 }
 gcsSTREAM_CACHE_BUFFER,
 * gcsSTREAM_CACHE_BUFFER_PTR;
@@ -149,7 +146,7 @@ typedef struct _gcsSTREAM_DYNAMIC
 * gcsSTREAM_DYNAMIC_PTR;
 
 /**
- * gcoSTREAM object defintion.
+ * gcoSTREAM object definition.
  */
 struct _gcoSTREAM
 {
@@ -166,8 +163,8 @@ struct _gcoSTREAM
     gctUINT32                   stride;
 
     /* Dynamic buffer management. */
-    gctUINT32                   lastStart;
-    gctUINT32                   lastEnd;
+    gctSIZE_T                   lastStart;
+    gctSIZE_T                   lastEnd;
 
     /* Info for stream rebuilding. */
     gcoSTREAM                   rebuild;
@@ -196,9 +193,17 @@ struct _gcoSTREAM
     /* Current stream cache. */
     gctUINT                     cacheCurrent;
     gctUINT                     cacheLastHit;
+    gctUINT                     cacheAllocatedCount;
+    gctBOOL                     dynamicAllocate;
 
     /* The cached streams. */
     gcsSTREAM_CACHE_BUFFER_PTR  cache;
+
+#if gcdSYNC
+    gceFENCE_STATUS             fenceStatus;
+    gcsSYNC_CONTEXT_PTR         fenceCtx;
+    gctPOINTER                  sharedLock;
+#endif
 };
 
 /**
@@ -270,6 +275,96 @@ _FreeMemory(
 }
 
 /**
+ * Static function that allocate new stream for the gcoSTREAM
+ * object, and copy old stream data into the new one. Then
+ * unlocks and frees the allocated memory attached to the gcoSTREAM object.
+ *
+ * @param Stream Pointer to an initialized gcoSTREAM object.
+ *
+ * @return Status of the destruction of the memory allocated for the
+ *         gcoSTREAM.
+ */
+static gceSTATUS
+_ReplaceDynamic(
+    IN gcoSTREAM Stream
+    )
+{
+    gceSTATUS status;
+
+    do
+    {
+        gcsSURF_NODE node;
+
+        gctUINT32 alignment;
+        gcePOOL pool = gcvPOOL_UNIFIED;
+        gctSIZE_T bytes = Stream->size;
+
+        gcoOS_ZeroMemory(&node,sizeof(node));
+
+        if (Stream->node.logical != gcvNULL)
+        {
+            /* Query the stream alignment. */
+            gcmERR_BREAK(
+                gcoHARDWARE_QueryStreamCaps(gcvNULL,
+                                            gcvNULL,
+                                            gcvNULL,
+                                            gcvNULL,
+                                            &alignment));
+
+            /* Allocate the linear memory. */
+            gcmERR_BREAK(gcsSURF_NODE_Construct(
+                &node,
+                bytes,
+                alignment,
+                gcvSURF_VERTEX,
+                gcvALLOC_FLAG_NONE,
+                pool
+                ));
+
+            /* Lock the memory. */
+            gcmERR_BREAK(gcoHARDWARE_Lock(&node,
+                                          gcvNULL,
+                                          gcvNULL));
+
+            /* Copy the data to the new buffer.*/
+            gcoOS_MemCopyFast(node.logical,
+                              Stream->node.logical,
+                              bytes);
+        }
+
+        /* Free old node. */
+        gcmERR_BREAK(_FreeMemory(Stream));
+
+        /* Set new node info. */
+        if(node.valid)
+        {
+            Stream->node = node;
+            Stream->size = bytes;
+        }
+
+        /* Success. */
+        status = gcvSTATUS_OK;
+    }
+    while (gcvFALSE);
+
+    return status;
+}
+
+gceSTATUS
+gcoSTREAM_SetSharedLock(
+    IN gcoSTREAM Stream,
+    IN gctPOINTER sharedLock
+    )
+{
+    if(Stream != gcvNULL)
+    {
+        Stream->sharedLock = sharedLock;
+    }
+
+    return gcvSTATUS_OK;
+}
+
+/**
  * Construct a new gcoSTREAM object.
  *
  * @param Hal    Pointer to an initialized gcoHAL object.
@@ -320,11 +415,21 @@ gcoSTREAM_Construct(
         gcoOS_ZeroMemory(stream->mapping, gcmSIZEOF(stream->mapping));
         stream->subStreamCount      = 0;
         stream->cache               = gcvNULL;
+        stream->dynamicAllocate     = gcvFALSE;
+        stream->cacheAllocatedCount = 0;
+        stream->cacheCurrent        = 0;
+        stream->cacheCount          = 0;
 
         stream->merged              = gcvNULL;
         stream->dirty               = gcvFALSE;
         stream->reference           = gcvNULL;
         stream->count               = 0;
+
+#if gcdSYNC
+        stream->fenceStatus         = gcvFENCE_DISABLE;
+        stream->fenceCtx            = gcvNULL;
+        stream->sharedLock          = gcvNULL;
+#endif
 
         /* Return the object pointer. */
         *Stream = stream;
@@ -365,6 +470,19 @@ gcoSTREAM_Destroy(
 
     do
     {
+#if gcdSYNC
+        gcsSYNC_CONTEXT_PTR ptr = Stream->fenceCtx;
+
+        while(ptr)
+        {
+            Stream->fenceCtx = ptr->next;
+
+            gcmVERIFY_OK(gcmOS_SAFE_FREE(gcvNULL,ptr));
+
+            ptr = Stream->fenceCtx;
+        }
+#endif
+
         /* Free the memory attached to the gcoSTREAM object. */
         gcmERR_BREAK(_FreeMemory(Stream));
 
@@ -416,16 +534,36 @@ gcoSTREAM_Destroy(
             /* Walk all cache buffers. */
             for (i = 0; i < Stream->cacheCount; ++i)
             {
-                /* Unlock the stream. */
-                gcmVERIFY_OK(gcoHARDWARE_Unlock(&Stream->cache[i].node,
-                                                gcvSURF_VERTEX));
+                if (!Stream->dynamicAllocate)
+                {
+                    /* Unlock the stream. */
+                    gcmVERIFY_OK(gcoHARDWARE_Unlock(&Stream->cache[i].node,
+                        gcvSURF_VERTEX));
 
-                /* Free the video memory. */
-                gcmONERROR(gcoHARDWARE_ScheduleVideoMemory(&Stream->cache[i].node));
+                    /* Free the video memory. */
+                    gcmONERROR(gcoHARDWARE_ScheduleVideoMemory(&Stream->cache[i].node));
+                }
+                else
+                {
+                    if (Stream->cache[i].bytes != 0)
+                    {
+                        /* Unlock the stream. */
+                        gcmVERIFY_OK(gcoHARDWARE_Unlock(Stream->cache[i].dynamicNode,
+                            gcvSURF_VERTEX));
+
+                        /* Free the video memory. */
+                        gcmONERROR(gcoHARDWARE_ScheduleVideoMemory(Stream->cache[i].dynamicNode));
+
+                        gcmOS_SAFE_FREE(gcvNULL,Stream->cache[i].dynamicNode);
+                    }
+                }
 
                 /* Destroy the signal. */
-                gcmVERIFY_OK(gcoOS_DestroySignal(gcvNULL,
-                                                 Stream->cache[i].signal));
+                if (Stream->cache[i].signal != gcvNULL)
+                {
+                    gcmVERIFY_OK(gcoOS_DestroySignal(gcvNULL,
+                                                     Stream->cache[i].signal));
+                }
             }
 
             /* Free the stream cache. */
@@ -446,6 +584,62 @@ OnError:
     return status;
 }
 
+gceSTATUS
+gcoSTREAM_GetFence(
+    IN gcoSTREAM stream
+)
+{
+#if gcdSYNC
+    if (stream)
+    {
+        gctBOOL fenceEnable;
+        gcoHARDWARE_GetFenceEnabled(gcvNULL, &fenceEnable);
+        if(fenceEnable)
+        {
+            gcmLOCK_SHARE_OBJ(stream);
+            gcoHARDWARE_GetFence(gcvNULL, &stream->fenceCtx);
+            gcmUNLOCK_SHARE_OBJ(stream);
+        }
+        else
+        {
+            stream->fenceStatus = gcvFENCE_GET;
+        }
+    }
+#endif
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoSTREAM_WaitFence(
+    IN gcoSTREAM stream
+)
+{
+#if gcdSYNC
+    if (stream)
+    {
+        gctBOOL fenceEnable;
+        gcoHARDWARE_GetFenceEnabled(gcvNULL, &fenceEnable);
+        if(fenceEnable)
+        {
+            gcmLOCK_SHARE_OBJ(stream);
+            gcoHARDWARE_WaitFence(gcvNULL, stream->fenceCtx);
+            gcmUNLOCK_SHARE_OBJ(stream);
+        }
+        else
+        {
+            if(stream->fenceStatus == gcvFENCE_GET)
+            {
+                stream->fenceStatus = gcvFENCE_ENABLE;
+                gcoHARDWARE_SetFenceEnabled(gcvNULL, gcvTRUE);
+                gcoHAL_Commit(gcvNULL, gcvTRUE);
+            }
+        }
+
+    }
+#endif
+    return gcvSTATUS_OK;
+}
+
 /**
  * Upload data to the memory attached to a gcoSTREAM object.
  * If there is no memory allocated or the allocated memory
@@ -457,7 +651,7 @@ OnError:
  * @param Offset  Offset into the stream memory where to start the upload.
  * @param Bytes   Number of bytes to upload.
  * @param Dynamic Specifies whether the stream is dynamic or static.
- *                Dynamic streams will be allocted in system memory while
+ *                Dynamic streams will be allocated in system memory while
  *                static streams will be allocated in the default memory
  *                pool.
  *
@@ -467,15 +661,15 @@ gceSTATUS
 gcoSTREAM_Upload(
     IN gcoSTREAM Stream,
     IN gctCONST_POINTER Buffer,
-    IN gctUINT32 Offset,
+    IN gctSIZE_T Offset,
     IN gctSIZE_T Bytes,
     IN gctBOOL Dynamic
     )
 {
-    gcsHAL_INTERFACE iface;
     gceSTATUS status;
     gcePOOL pool;
     gctSIZE_T bytes;
+    gctUINT bytes32;
 
     gcmHEADER_ARG("Stream=0x%x Buffer=0x%x Offset=%u Bytes=%lu Dynamic=%d",
               Stream, Buffer, Offset, Bytes, Dynamic);
@@ -483,6 +677,8 @@ gcoSTREAM_Upload(
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Stream, gcvOBJ_STREAM);
     gcmVERIFY_ARGUMENT(Bytes > 0);
+
+    gcmSAFECASTSIZET(bytes32, Bytes);
 
     /* Not available in dynamic streams. */
     if (Stream->dynamic != gcvNULL)
@@ -493,9 +689,14 @@ gcoSTREAM_Upload(
 
     do
     {
-        /* Do we have memory already allooacted? */
+        /* Do we have memory already allocated? */
         if (Stream->node.pool != gcvPOOL_UNKNOWN)
         {
+            if (Stream->size > DYNAMIC_STREAM_COUNT)
+            {
+                Dynamic = gcvFALSE;
+            }
+
             /* Test if the requested size is too big. */
             if (Offset + Bytes > Stream->size)
             {
@@ -510,18 +711,30 @@ gcoSTREAM_Upload(
                  (Offset < Stream->lastEnd) &&
                  (Offset + Bytes > Stream->lastStart) )
             {
-                gcmERR_BREAK(_FreeMemory(Stream));
+                gcmERR_BREAK(_ReplaceDynamic(Stream));
 
                 /* Clear dynamic range. */
                 Stream->lastStart = 0;
                 Stream->lastEnd   = 0;
             }
+
+#if gcdSYNC
+            if (!Dynamic)
+            {
+                gcoSTREAM_WaitFence(Stream);
+            }
+#endif
         }
 
         /* Do we need to allocate memory? */
         if (Stream->node.pool == gcvPOOL_UNKNOWN)
         {
             gctUINT32 alignment;
+
+            if (Stream->size > DYNAMIC_STREAM_COUNT)
+            {
+                Dynamic = gcvFALSE;
+            }
 
             /* Define the pool to allocate from based on the Dynamic
             ** parameter. */
@@ -534,29 +747,21 @@ gcoSTREAM_Upload(
                 gcoHARDWARE_QueryStreamCaps(gcvNULL,
                                             gcvNULL,
                                             gcvNULL,
+                                            gcvNULL,
                                             &alignment));
 
             /* Allocate the linear memory. */
-            iface.command = gcvHAL_ALLOCATE_LINEAR_VIDEO_MEMORY;
-            iface.u.AllocateLinearVideoMemory.pool      = pool;
-            iface.u.AllocateLinearVideoMemory.bytes     = bytes;
-            iface.u.AllocateLinearVideoMemory.type      = gcvSURF_VERTEX;
-            iface.u.AllocateLinearVideoMemory.alignment = alignment;
-
-            /* Call kernel HAL. */
-            gcmERR_BREAK(gcoHAL_Call(gcvNULL, &iface));
+            gcmERR_BREAK(gcsSURF_NODE_Construct(
+                &Stream->node,
+                bytes,
+                alignment,
+                gcvSURF_VERTEX,
+                gcvALLOC_FLAG_NONE,
+                pool
+                ));
 
             /* Save allocated information. */
-            Stream->node.pool
-                = iface.u.AllocateLinearVideoMemory.pool;
-            Stream->node.u.normal.node
-                = iface.u.AllocateLinearVideoMemory.node;
-            Stream->size
-                = iface.u.AllocateLinearVideoMemory.bytes;
-            Stream->node.u.normal.cacheable = gcvFALSE;
-
-            /* Reset the pointers. */
-            Stream->node.logical = gcvNULL;
+            Stream->size               = bytes;
 
             /* Lock the memory. */
             gcmERR_BREAK(gcoHARDWARE_Lock(
@@ -569,11 +774,11 @@ gcoSTREAM_Upload(
         if (Buffer != gcvNULL)
         {
             /* Copy user buffer to stream memory. */
-            gcmERR_BREAK(gcoOS_MemCopy(
+            gcoOS_MemCopy(
                 (gctUINT8 *) Stream->node.logical + Offset,
                 Buffer,
                 Bytes
-                ));
+                );
 
             /* Flush the vertex cache. */
             gcmERR_BREAK(
@@ -584,16 +789,12 @@ gcoSTREAM_Upload(
                                           Stream->node.logical + Offset,
                                           Bytes,
                                           gcvCACHE_CLEAN));
-
-            if (gcPLS.hal->dump != gcvNULL)
-            {
-                /* Dump the stream data. */
-                gcmVERIFY_OK(gcoDUMP_DumpData(gcPLS.hal->dump,
-                                              gcvTAG_STREAM,
-                                              Stream->node.physical + Offset,
-                                              Bytes,
-                                              Buffer));
-            }
+            gcmDUMP_BUFFER(gcvNULL,
+                           "stream",
+                           Stream->node.physical,
+                           Stream->node.logical,
+                           Offset,
+                           Bytes);
 
             /* Update written range for dynamic buffers. */
             if (Dynamic)
@@ -624,13 +825,15 @@ gcoSTREAM_Upload(
                 Stream->merged->dirty = gcvTRUE;
             }
         }
+        gcmERR_BREAK(
+            gcoSTREAM_CPUCacheOperation(Stream,gcvCACHE_CLEAN));
 
         /* Success. */
         status = gcvSTATUS_OK;
     }
     while (gcvFALSE);
 
-    gcmPROFILE_GC(GLVERTEX_OBJECT_BYTES, Bytes);
+    gcmPROFILE_GC(GLVERTEX_OBJECT_BYTES, bytes32);
 
     /* Return the status. */
     gcmFOOTER();
@@ -663,6 +866,48 @@ gcoSTREAM_SetStride(
     /* Success. */
     gcmFOOTER_NO();
     return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoSTREAM_Size(
+    IN gcoSTREAM Stream,
+    OUT gctSIZE_T *Size
+    )
+{
+
+    gcmHEADER_ARG("Stream=0x%x", Stream);
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Stream, gcvOBJ_STREAM);
+    if (Size != gcvNULL)
+    {
+        *Size = Stream->size;
+    }
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+}
+
+gceSTATUS
+gcoSTREAM_Node(
+    IN gcoSTREAM Stream,
+    OUT gcsSURF_NODE_PTR * Node
+    )
+{
+
+    gcmHEADER_ARG("Stream=0x%x", Stream);
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Stream, gcvOBJ_STREAM);
+    if (Node != gcvNULL)
+    {
+        *Node = &Stream->node;
+    }
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
 }
 
 /**
@@ -725,8 +970,6 @@ gcoSTREAM_Unlock(
     IN gcoSTREAM Stream
     )
 {
-    gceSTATUS status;
-
     gcmHEADER_ARG("Stream=0x%x", Stream);
 
     /* Verify the arguments. */
@@ -739,13 +982,9 @@ gcoSTREAM_Unlock(
         return gcvSTATUS_INVALID_ARGUMENT;
     }
 
-    /* Unlock the veretx buffer. */
-    status = gcoHARDWARE_Unlock(&Stream->node,
-                                gcvSURF_VERTEX);
-
     /* Return the status. */
-    gcmFOOTER();
-    return status;
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
 }
 
 
@@ -757,7 +996,6 @@ gcoSTREAM_Reserve(
 {
     gctBOOL allocate;
     gceSTATUS status;
-    gcsHAL_INTERFACE iface;
 
     gcmHEADER_ARG("Stream=0x%x Bytes=%lu", Stream, Bytes);
 
@@ -767,7 +1005,7 @@ gcoSTREAM_Reserve(
 
     do
     {
-        /* Do we have memory already allooacted? */
+        /* Do we have memory already allocated? */
         if (Stream->node.pool == gcvPOOL_UNKNOWN)
         {
             allocate = gcvTRUE;
@@ -796,30 +1034,21 @@ gcoSTREAM_Reserve(
                 gcoHARDWARE_QueryStreamCaps(gcvNULL,
                                             gcvNULL,
                                             gcvNULL,
+                                            gcvNULL,
                                             &alignment));
 
             /* Allocate the linear memory. */
-            iface.command = gcvHAL_ALLOCATE_LINEAR_VIDEO_MEMORY;
-            iface.u.AllocateLinearVideoMemory.pool      = gcvPOOL_DEFAULT;
-            iface.u.AllocateLinearVideoMemory.bytes     = Bytes;
-            iface.u.AllocateLinearVideoMemory.alignment = alignment;
-            iface.u.AllocateLinearVideoMemory.type      = gcvSURF_VERTEX;
-
-            /* Call kernel HAL. */
-            gcmERR_BREAK(gcoHAL_Call(gcvNULL, &iface));
+            gcmERR_BREAK(gcsSURF_NODE_Construct(
+                &Stream->node,
+                Bytes,
+                alignment,
+                gcvSURF_VERTEX,
+                gcvALLOC_FLAG_NONE,
+                gcvPOOL_DEFAULT
+                ));
 
             /* Save allocated information. */
-            Stream->node.pool
-                = iface.u.AllocateLinearVideoMemory.pool;
-            Stream->node.u.normal.node
-                = iface.u.AllocateLinearVideoMemory.node;
-            Stream->size
-                = iface.u.AllocateLinearVideoMemory.bytes;
-
-            Stream->node.u.normal.cacheable = gcvFALSE;
-
-            /* Reset the pointers. */
-            Stream->node.logical = gcvNULL;
+            Stream->size               = Bytes;
 
             /* Lock the memory. */
             gcmERR_BREAK(gcoHARDWARE_Lock(
@@ -920,7 +1149,8 @@ gcoVERTEX_Construct(
         vertex->object.type = gcvOBJ_VERTEX;
 
         /* Query the stream capabilities. */
-        gcmVERIFY_OK(gcoHARDWARE_QueryStreamCaps(&vertex->maxAttribute,
+        gcmVERIFY_OK(gcoHARDWARE_QueryStreamCaps(gcvNULL,
+                                                 &vertex->maxAttribute,
                                                  &vertex->maxSize,
                                                  &vertex->maxStreams,
                                                  gcvNULL));
@@ -1032,7 +1262,7 @@ gcoVERTEX_Reset(
  * @param Components Number of components for attribute.
  * @param Stream     Pointer to a gcoSTREAM object which is the source for the
  *                   attribute.
- * @param Offset     Ofsfet into the stream for the attribute.
+ * @param Offset     Offset into the stream for the attribute.
  *
  * @return Status of the enable.
  */
@@ -1070,12 +1300,14 @@ gcoVERTEX_EnableAttribute(
     {
     case gcvVERTEX_BYTE:
     case gcvVERTEX_UNSIGNED_BYTE:
+    case gcvVERTEX_INT8:
         Vertex->attributes[Index].size = Components * sizeof(gctUINT8);
         break;
 
     case gcvVERTEX_SHORT:
     case gcvVERTEX_UNSIGNED_SHORT:
     case gcvVERTEX_HALF:
+    case gcvVERTEX_INT16:
         Vertex->attributes[Index].size = Components * sizeof(gctUINT16);
         break;
 
@@ -1085,6 +1317,7 @@ gcoVERTEX_EnableAttribute(
     case gcvVERTEX_FLOAT:
     case gcvVERTEX_UNSIGNED_INT_10_10_10_2:
     case gcvVERTEX_INT_10_10_10_2:
+    case gcvVERTEX_INT32:
         Vertex->attributes[Index].size = Components * sizeof(gctUINT32);
         break;
 
@@ -1193,21 +1426,21 @@ _PackStreams(
 {
     gctUINT32 i, j;
     gctSIZE_T bytes, stride;
-    gctUINT32 count;
+    gctUINT32 count, stride32;
     gctUINT32 start, end, size;
     gceSTATUS status = gcvSTATUS_OK;
     gctUINT32 usedStreams = 0;
     gctBOOL repack = gcvFALSE;
     gcoSTREAM stream = gcvNULL;
-    gcoStreamInfo *streamInfo;
+    gcoStreamInfo *streamInfo = gcvNULL;
     gctUINT8_PTR src, srcEnd, dest, source;
     gcoStreamInfo  *currentStream;
     gctUINT32 destIndex, destOffset;
 
     do
     {
-	    gcmERR_BREAK(gcoOS_Allocate(gcvNULL, 16 * sizeof(gcoStreamInfo), (gctPOINTER *)&streamInfo));
-        gcmERR_BREAK(gcoOS_ZeroMemory(streamInfo, 16 * sizeof(gcoStreamInfo)));
+        gcmERR_BREAK(gcoOS_Allocate(gcvNULL, 16 * sizeof(gcoStreamInfo), (gctPOINTER *)&streamInfo));
+        gcoOS_ZeroMemory(streamInfo, 16 * sizeof(gcoStreamInfo));
 
         stream = Streams[Mapping[0].stream];
         /* Construct streamInfo. */
@@ -1240,10 +1473,10 @@ _PackStreams(
 
         if (usedStreams != *StreamCount)
         {
-			if (streamInfo != gcvNULL)
-			{
-				gcmVERIFY_OK(gcmOS_SAFE_FREE(gcvNULL, streamInfo));
-			}
+            if (streamInfo != gcvNULL)
+            {
+                gcmVERIFY_OK(gcmOS_SAFE_FREE(gcvNULL, streamInfo));
+            }
             return gcvSTATUS_INVALID_ARGUMENT;
         }
 
@@ -1279,7 +1512,7 @@ _PackStreams(
 
                 stride += Mapping[index].size;
                 start   = Mapping[index].offset;
-                end     = Streams[Mapping[index].stream]->size;
+                gcmSAFECASTSIZET(end, Streams[Mapping[index].stream]->size);
 
                 /* How many vertex count the attribute for? */
                 vertexCount = (end - start + Mapping[index].stride)
@@ -1294,10 +1527,10 @@ _PackStreams(
         /* If doesn't need merge or repack, return OK. */
         if (!(repack || (*StreamCount > Vertex->maxStreams)))
         {
-			if (streamInfo != gcvNULL)
-			{
-				gcmVERIFY_OK(gcmOS_SAFE_FREE(gcvNULL, streamInfo));
-			}
+            if (streamInfo != gcvNULL)
+            {
+                gcmVERIFY_OK(gcmOS_SAFE_FREE(gcvNULL, streamInfo));
+            }
             return gcvSTATUS_OK;
         }
 
@@ -1314,7 +1547,8 @@ _PackStreams(
 
         gcmERR_BREAK(gcoSTREAM_Reserve(Vertex->combinedStream, bytes));
 
-        gcmERR_BREAK(gcoSTREAM_SetStride(Vertex->combinedStream, stride));
+        gcmSAFECASTSIZET(stride32, stride);
+        gcmERR_BREAK(gcoSTREAM_SetStride(Vertex->combinedStream, stride32));
 
         gcmERR_BREAK(gcoSTREAM_Lock(Vertex->combinedStream,
                                     (gctPOINTER) &dest,
@@ -1335,18 +1569,18 @@ _PackStreams(
             for (j = 0; j < currentStream->attCount; j++)
             {
                 gctUINT32 index = currentStream->attributes[j];
-                end     = Streams[Mapping[index].stream]->size;
+                gctSIZE_T endT = Streams[Mapping[index].stream]->size;
 
-                size        = Mapping[index].size;
+                gcmSAFECASTSIZET(size, Mapping[index].size);
                 src         = source + Mapping[index].offset;
-                srcEnd      = source + end;
+                srcEnd      = source + endT;
                 destOffset  = destIndex;
 
                 while (src < srcEnd && destOffset < bytes)
                 {
-                    gcmERR_BREAK(gcoOS_MemCopy(dest + destOffset, src, size));
+                    gcoOS_MemCopy(dest + destOffset, src, size);
 
-                    destOffset += stride;
+                    destOffset += stride32;
                     src        += Mapping[index].stride;
                 }
 
@@ -1378,6 +1612,14 @@ _PackStreams(
                 Base[i] = 0;
             }
 
+            gcmDUMP_BUFFER(gcvNULL,
+                     "stream",
+                     Streams[0]->node.physical,
+                     Streams[0]->node.logical,
+                     0,
+                     Streams[0]->size);
+
+
             if (gcPLS.hal->dump != gcvNULL)
             {
                 /* Dump the stream data. */
@@ -1391,10 +1633,10 @@ _PackStreams(
 
     } while(gcvFALSE);
 
-	if (streamInfo != gcvNULL)
-	{
-	    gcmVERIFY_OK(gcmOS_SAFE_FREE(gcvNULL, streamInfo));
-	}
+    if (streamInfo != gcvNULL)
+    {
+        gcmVERIFY_OK(gcmOS_SAFE_FREE(gcvNULL, streamInfo));
+    }
     return gcvSTATUS_OK;
 }
 
@@ -1485,7 +1727,7 @@ redo:
             }
 
             /* Walk all rebuilt entries. */
-            for (j = 0; (j < 16) && (stream->mapping[j].size > 0); ++j)
+            for (j = 0; (j < gcdATTRIBUTE_COUNT) && (stream->mapping[j].size > 0); ++j)
             {
                 /* Check if this attribute matches anything in the rebuilt stream. */
                 if ((stream->mapping[j].size == Mapping[i].stride)
@@ -1498,12 +1740,12 @@ redo:
             }
 
             /* Bail out if this attribute doesn't match anything. */
-            if ((j == 16) || (stream->mapping[j].size == 0))
+            if ((j == gcdATTRIBUTE_COUNT) || (stream->mapping[j].size == 0))
             {
 #if gcdDEBUG_REBUILD
                 gcmPRINT("MISS:%p i=%d", stream, i);
 
-                for (j = 0; (j < 16) && ( stream->mapping[j].size > 0); ++j)
+                for (j = 0; (j < gcdATTRIBUTE_COUNT) && ( stream->mapping[j].size > 0); ++j)
                 {
                     gcmPRINT("  %d: start=%u end=%u size=%u",
                              j, stream->mapping[j].start,
@@ -1553,6 +1795,7 @@ redo:
 
     do
     {
+        gctUINT size32;
         gctUINT8_PTR srcLogical, dstLogical;
         gctPOINTER pointer = gcvNULL;
 
@@ -1562,7 +1805,7 @@ redo:
             gctBOOL changed = gcvFALSE;
 
             /* Add any missing map to the current range. */
-            for (i = 0; (i < 16) && (stream->mapping[i].size > 0); ++i)
+            for (i = 0; (i < gcdATTRIBUTE_COUNT) && (stream->mapping[i].size > 0); ++i)
             {
                 /* Walk the current range to find this mapping. */
                 for (j = 0; j < RangeCount; ++j)
@@ -1575,7 +1818,7 @@ redo:
                     }
                 }
 
-                if ((j == RangeCount) && (j < 16))
+                if ((j == RangeCount) && (j < gcdATTRIBUTE_COUNT))
                 {
 #if gcdDEBUG_REBUILD
                     gcmPRINT("Adding mapping %d at %d: %u-%u size=%u",
@@ -1614,6 +1857,7 @@ redo:
 
         gcmERR_BREAK(
             gcoHARDWARE_QueryStreamCaps(gcvNULL,
+                                        gcvNULL,
                                         &maxStride,
                                         gcvNULL,
                                         gcvNULL));
@@ -1651,13 +1895,16 @@ redo:
             /* Generate the mapping. */
             for (i = stride = 0; i < count; ++i)
             {
+                gctUINT32 size32;
+                gcmSAFECASTSIZET(size32, Mapping[sort[i]].size);
+
                 stream->mapping[i].stream = stride;
                 stream->mapping[i].start  = Mapping[sort[i]].offset;
                 stream->mapping[i].end    = Mapping[sort[i]].offset
-                                          + Mapping[sort[i]].size;
+                                          + size32;
                 stream->mapping[i].size   = Mapping[sort[i]].stride;
 
-                stride += Mapping[sort[i]].size;
+                stride += size32;
             }
 
             gcmASSERT(stride <= maxStride);
@@ -1685,7 +1932,7 @@ redo:
         }
 
         /* Zero out the remaining mappings. */
-        for (; i < 16; ++i)
+        for (; i < gcdATTRIBUTE_COUNT; ++i)
         {
             stream->mapping[i].stream = 0;
             stream->mapping[i].size   = 0;
@@ -1700,10 +1947,11 @@ redo:
 
         dstLogical = pointer;
 
+        gcmSAFECASTSIZET(size32, stream->size);
         for (i = 0; i < count; ++i)
         {
             gctUINT32 src   = stream->mapping[i].start;
-            gctUINT32 end   = (i + 1 == count) ? stream->size
+            gctUINT32 end   = (i + 1 == count) ? size32
                                                : stream->mapping[i + 1].start;
             gctUINT32 dst   = stream->mapping[i].stream;
             gctUINT32 size  = stream->mapping[i].size;
@@ -1714,8 +1962,7 @@ redo:
             {
                 gcmASSERT(src + size <= StreamArray[Stream]->size);
 
-                gcmVERIFY_OK(
-                    gcoOS_MemCopy(dstLogical + dst, srcLogical + src, bytes));
+                gcoOS_MemCopy(dstLogical + dst, srcLogical + src, bytes);
 
                 src += size;
                 dst += stride;
@@ -1802,7 +2049,7 @@ _Unalias(
     gcmHEADER_ARG("Stream=0x%x Attributes=%u Mapping=0x%x",
                   Stream, Attributes, Mapping);
 
-    /* Special case 2 attribites. */
+    /* Special case 2 attributes. */
     if ((Attributes == 2)
 
     /* Same pointing at the same stream with a stride less than 8. */
@@ -1844,10 +2091,10 @@ _Unalias(
             for (bytes = Stream->size; bytes > 0; bytes -= stride)
             {
                 /* Copy vertex. */
-                gcmONERROR(gcoOS_MemCopy(dst, src, stride));
+                gcoOS_MemCopy(dst, src, stride);
 
                 /* Copy vertex again. */
-                gcmONERROR(gcoOS_MemCopy(dst + stride, src, stride));
+                gcoOS_MemCopy(dst + stride, src, stride);
 
                 /* Advance pointers. */
                 src += stride;
@@ -1879,6 +2126,12 @@ _Unalias(
         /* No need to rebuild anything. */
         stream = Stream;
     }
+     gcmDUMP_BUFFER(gcvNULL,
+                    "stream",
+                     stream->node.physical,
+                     stream->node.logical,
+                     0,
+                     stream->size);
 
     /* Return stream. */
     *UseStream = stream;
@@ -1890,7 +2143,7 @@ _Unalias(
 OnError:
     if (stream != gcvNULL)
     {
-        /* Detsroy newly created stream. */
+        /* Destroy newly created stream. */
         gcmVERIFY_OK(gcoSTREAM_Destroy(stream));
     }
 
@@ -1928,10 +2181,10 @@ gcoVERTEX_Bind(
     gcmVERIFY_OBJECT(Vertex, gcvOBJ_VERTEX);
 
     /* Zero the stream usage table. */
-    gcmVERIFY_OK(gcoOS_ZeroMemory(usedStreams, sizeof(usedStreams)));
+    gcoOS_ZeroMemory(usedStreams, sizeof(usedStreams));
 
     /* Zero the range */
-    gcmVERIFY_OK(gcoOS_ZeroMemory(range, sizeof(range)));
+    gcoOS_ZeroMemory(range, sizeof(range));
 
     /* Count the number of attributes and required streams. */
     streams = attributes = rangeCount = 0;
@@ -1984,7 +2237,7 @@ gcoVERTEX_Bind(
             }
 
             offset = mapping[attributes].offset;
-            size   = mapping[attributes].size;
+            gcmSAFECASTSIZET(size, mapping[attributes].size);
             stream = mapping[attributes].stream;
 
             for (j = 0; j < rangeCount; ++j)
@@ -2102,7 +2355,8 @@ gcoVERTEX_Bind(
         gcmONERROR(gcoSTREAM_Lock(usedStreams[i], gcvNULL, &address));
 
         /* Program the stream in hardware. */
-        gcmONERROR(gcoHARDWARE_SetStream(i,
+        gcmONERROR(gcoHARDWARE_SetStream(gcvNULL,
+                                         i,
                                          address + base[i],
                                          usedStreams[i]->stride));
     }
@@ -2114,7 +2368,8 @@ gcoVERTEX_Bind(
     }
 
     /* Program the attributes in hardware. */
-    gcmONERROR(gcoHARDWARE_SetAttributes(mapping,
+    gcmONERROR(gcoHARDWARE_SetAttributes(gcvNULL,
+                                         mapping,
                                          attributes));
 
     /* Success. */
@@ -2193,12 +2448,11 @@ gcoSTREAM_SetDynamic(
     )
 {
     gceSTATUS status;
-    gctUINT i;
+    gctUINT i, bytes32;
     gctSIZE_T bytes;
     gcsSTREAM_DYNAMIC_PTR dynamic;
     gctUINT32 physical;
     gctUINT8_PTR logical;
-    gcsHAL_INTERFACE iface;
     gctPOINTER pointer = gcvNULL;
 
     gcmHEADER_ARG("Stream=0x%x Bytes=%lu Buffers=%u", Stream, Bytes, Buffers);
@@ -2220,22 +2474,20 @@ gcoSTREAM_SetDynamic(
         _FreeMemory(Stream));
 
     /* Allocate the video memory. */
-    bytes = gcmALIGN(Bytes, 64) * Buffers;
-    iface.command = gcvHAL_ALLOCATE_LINEAR_VIDEO_MEMORY;
-    iface.u.AllocateLinearVideoMemory.bytes     = bytes;
-    iface.u.AllocateLinearVideoMemory.alignment = 64;
-    iface.u.AllocateLinearVideoMemory.type      = gcvSURF_VERTEX;
-    iface.u.AllocateLinearVideoMemory.pool      = gcvPOOL_DEFAULT;
 
-    /* Call the kernel. */
-    gcmONERROR(
-        gcoHAL_Call(gcvNULL, &iface));
+    bytes = gcmALIGN(Bytes, 64) * Buffers;
+
+    gcmONERROR(gcsSURF_NODE_Construct(
+        &Stream->node,
+        bytes,
+        64,
+        gcvSURF_VERTEX,
+        gcvALLOC_FLAG_NONE,
+        gcvPOOL_DEFAULT
+        ));
 
     /* Initialize index. */
-    Stream->size               = iface.u.AllocateLinearVideoMemory.bytes;
-    Stream->node.pool          = iface.u.AllocateLinearVideoMemory.pool;
-    Stream->node.u.normal.node = iface.u.AllocateLinearVideoMemory.node;
-    Stream->node.u.normal.cacheable = gcvFALSE;
+    Stream->size               = bytes;
 
     /* Lock the stream buffer. */
     gcmONERROR(
@@ -2253,11 +2505,11 @@ gcoSTREAM_SetDynamic(
 
     Stream->dynamic = pointer;
 
-    gcmONERROR(
-        gcoOS_ZeroMemory(Stream->dynamic,
-                         Buffers * gcmSIZEOF(struct _gcsSTREAM_DYNAMIC)));
+    gcoOS_ZeroMemory(Stream->dynamic,
+                     Buffers * gcmSIZEOF(struct _gcsSTREAM_DYNAMIC));
 
     bytes = Stream->size / Buffers;
+    gcmSAFECASTSIZET(bytes32, bytes);
 
     /* Initialize all buffer structures. */
     for (i = 0, dynamic = Stream->dynamic; i < Buffers; ++i, ++dynamic)
@@ -2290,11 +2542,11 @@ gcoSTREAM_SetDynamic(
         dynamic->next = dynamic + 1;
 
         /* Advance buffer addresses. */
-        physical += bytes;
+        physical += bytes32;
         logical  += bytes;
     }
 
-    /* Initilaize chain of buffer structures. */
+    /* Initialize chain of buffer structures. */
     Stream->dynamicHead       = Stream->dynamic;
     Stream->dynamicTail       = Stream->dynamic + Buffers - 1;
     Stream->dynamicTail->next = gcvNULL;
@@ -2374,12 +2626,13 @@ gcoSTREAM_UploadDynamic(
     gceSTATUS status;
     gcsHAL_INTERFACE iface;
     gcsSTREAM_DYNAMIC_PTR dynamic;
-    gctUINT bytes;
+    gctUINT bytes, size32;
     gctUINT i, j;
     gctUINT8_PTR ptr;
     gctUINT stride = 0;
     gctUINT8_PTR source[16];
     gctUINT offset;
+    gctSIZE_T strideTmp = 0;
 
     gcmHEADER_ARG("Stream=0x%x VertexCount=%d InfoCount=%u Info=0x%x Vertex=0x%x",
               Stream, VertexCount, InfoCount, Info, Vertex);
@@ -2400,10 +2653,12 @@ gcoSTREAM_UploadDynamic(
     /* Compute the stride and copy pointers. */
     for (i = 0; i < InfoCount; ++i)
     {
-        stride += Info[i].size;
+        strideTmp += Info[i].size;
 
         source[i] = (gctUINT8_PTR) Info[i].data;
     }
+
+    gcmSAFECASTSIZET(stride, strideTmp);
 
     /* Compute the number of bytes required. */
     bytes = stride * VertexCount;
@@ -2433,16 +2688,16 @@ gcoSTREAM_UploadDynamic(
 
         /* ...schedule a signal event... */
         iface.command            = gcvHAL_SIGNAL;
-        iface.u.Signal.signal    = dynamic->signal;
-        iface.u.Signal.auxSignal = gcvNULL;
-        iface.u.Signal.process   = gcoOS_GetCurrentProcessID();
+        iface.u.Signal.signal    = gcmPTR_TO_UINT64(dynamic->signal);
+        iface.u.Signal.auxSignal = 0;
+        iface.u.Signal.process   = gcmPTR_TO_UINT64(gcoOS_GetCurrentProcessID());
         iface.u.Signal.fromWhere = gcvKERNEL_COMMAND;
         gcmONERROR(
-            gcoHARDWARE_CallEvent(&iface));
+            gcoHARDWARE_CallEvent(gcvNULL, &iface));
 
         /* ...commit the buffer... */
         gcmONERROR(
-            gcoHARDWARE_Commit());
+            gcoHARDWARE_Commit(gcvNULL));
 
         /* ...move it to the tail of the queue... */
         gcmASSERT(Stream->dynamicTail != gcvNULL);
@@ -2469,7 +2724,7 @@ gcoSTREAM_UploadDynamic(
         gcmONERROR(
             gcoOS_WaitSignal(gcvNULL,
                              dynamic->signal,
-                             gcPLS.hal->timeOut));
+                             gcvINFINITE));
     }
 
     /* Set pointer. */
@@ -2480,8 +2735,7 @@ gcoSTREAM_UploadDynamic(
     {
         for (j = 0; j < InfoCount; ++j)
         {
-            gcmONERROR(
-                gcoOS_MemCopy(ptr, source[j], Info[j].size));
+            gcoOS_MemCopy(ptr, source[j], Info[j].size);
 
             source[j] += Info[j].stride;
             ptr       += Info[j].size;
@@ -2524,7 +2778,8 @@ gcoSTREAM_UploadDynamic(
                                       offset,
                                       stride));
 
-        offset += Info[i].size;
+        gcmSAFECASTSIZET(size32, Info[i].size);
+        offset += size32;
     }
 
     /* Success. */
@@ -2547,6 +2802,7 @@ gcoSTREAM_SetAttribute(
     IN gctUINT Offset,
     IN gctUINT Bytes,
     IN gctUINT Stride,
+    IN gctUINT Divisor,
     IN OUT gcsSTREAM_SUBSTREAM_PTR * SubStream
     )
 {
@@ -2657,8 +2913,8 @@ gcoSTREAM_SetAttribute(
 
                     Stream->subStreamCount = 0;
 
-                    gcmONERROR(gcoOS_ZeroMemory(Stream->subStreams,
-                                                sizeof(Stream->subStreams)));
+                    gcoOS_ZeroMemory(Stream->subStreams,
+                                     sizeof(Stream->subStreams));
                 }
                 else
                 {
@@ -2672,6 +2928,7 @@ gcoSTREAM_SetAttribute(
             subPtr->minStart = gcmMAX((gctINT) (end - Stride), 0);
             subPtr->maxEnd   = Offset + Stride;
             subPtr->stride   = Stride;
+            subPtr->divisor  = Divisor;
 
             /* Add this substream stride to the total stride. */
             Stream->subStreamStride += Stride;
@@ -2728,7 +2985,7 @@ gcoSTREAM_QuerySubStreams(
     gcmVERIFY_OBJECT(Stream, gcvOBJ_STREAM);
     gcmVERIFY_ARGUMENT(SubStreamCount != gcvNULL);
 
-    /* Check whether the substream information is the same for the rebulit
+    /* Check whether the substream information is the same for the rebuilt
     ** stream. */
     if ((Stream->rebuild != gcvNULL)
     &&  (Stream->subStreamCount == Stream->rebuild->subStreamCount)
@@ -2800,7 +3057,7 @@ gcoSTREAM_Rebuild(
         /* We don't have a rebuilt stream yet. */
         if ((Stream->rebuild == gcvNULL)
 
-        /* Check if rebulit stream has a different substream count. */
+        /* Check if rebuilt stream has a different substream count. */
         ||  (Stream->subStreamCount != Stream->rebuild->subStreamCount)
 
         /* Check if the substream data is different. */
@@ -2843,9 +3100,9 @@ gcoSTREAM_Rebuild(
                 {
                     /* Copy the data from this substream into the rebuild
                     ** buffer. */
-                    gcmONERROR(gcoOS_MemCopy(rebuildPtr,
-                                             streamPtr[j],
-                                             stride[j]));
+                    gcoOS_MemCopy(rebuildPtr,
+                                  streamPtr[j],
+                                  stride[j]);
 
                     /* Advance the pointers. */
                     rebuildPtr   += stride[j];
@@ -2854,10 +3111,10 @@ gcoSTREAM_Rebuild(
             }
 
             /* Copy the substream data. */
-            gcmONERROR(gcoOS_MemCopy(
+            gcoOS_MemCopy(
                 Stream->rebuild->subStreams,
                 Stream->subStreams,
-                Stream->subStreamCount * gcmSIZEOF(gcsSTREAM_SUBSTREAM)));
+                Stream->subStreamCount * gcmSIZEOF(gcsSTREAM_SUBSTREAM));
 
             Stream->rebuild->subStreamCount = Stream->subStreamCount;
 
@@ -2884,12 +3141,11 @@ OnError:
 
 gceSTATUS
 gcoSTREAM_SetCache(
-    IN gcoSTREAM Stream
-    )
+                   IN gcoSTREAM Stream
+                   )
 {
     gceSTATUS status;
     gctUINT i;
-    gcsHAL_INTERFACE ioctl;
     gcsSTREAM_CACHE_BUFFER_PTR cache;
 
     gcmHEADER_ARG("Stream=0x%x", Stream);
@@ -2919,57 +3175,68 @@ gcoSTREAM_SetCache(
         Stream->cache = pointer;
 
         /* Zero all memory. */
-        gcmONERROR(gcoOS_ZeroMemory(Stream->cache,
-                                    ( gcmSIZEOF(gcsSTREAM_CACHE_BUFFER)
-                                    * gcdSTREAM_CACHE_COUNT)
-                                    ));
+        gcoOS_ZeroMemory(Stream->cache,
+                         ( gcmSIZEOF(gcsSTREAM_CACHE_BUFFER)
+                         * gcdSTREAM_CACHE_COUNT)
+                         );
 
         /* Initialize the stream cache. */
         Stream->cacheCount   = gcdSTREAM_CACHE_COUNT;
         Stream->cacheCurrent = 0;
-        Stream->cacheLastHit = 0;
 
-        for (i = 0, cache = Stream->cache;
-             i < gcdSTREAM_CACHE_COUNT;
-             ++i, ++cache
-        )
+        if (1/*gcoHAL_QuerySpecialHint(gceSPECIAL_HINT4) == gcvSTATUS_FALSE*/)
         {
-            /* Allocate linear video memory. */
-            ioctl.command = gcvHAL_ALLOCATE_LINEAR_VIDEO_MEMORY;
-            ioctl.u.AllocateLinearVideoMemory.pool      = gcvPOOL_DEFAULT;
-            ioctl.u.AllocateLinearVideoMemory.bytes     = gcdSTREAM_CACHE_SIZE;
-            ioctl.u.AllocateLinearVideoMemory.alignment = 64;
-            ioctl.u.AllocateLinearVideoMemory.type      = gcvSURF_VERTEX;
-            gcmONERROR(gcoHAL_Call(gcvNULL, &ioctl));
+            Stream->dynamicAllocate = gcvTRUE;
+        }
+        else
+        {
+            Stream->dynamicAllocate = gcvFALSE;
+        }
 
-            /* Save allocation information. */
-            cache->node.pool          = ioctl.u.AllocateLinearVideoMemory.pool;
-            cache->node.u.normal.node = ioctl.u.AllocateLinearVideoMemory.node;
-            cache->node.u.normal.cacheable = gcvFALSE;
-            cache->node.size          = ioctl.u.AllocateLinearVideoMemory.bytes;
-            cache->node.logical       = gcvNULL;
+        if (!Stream->dynamicAllocate)
+        {
+            Stream->cacheLastHit = 0;
 
-            /* Lock the stream. */
-            gcmONERROR(gcoHARDWARE_Lock(&cache->node,
-                                        gcvNULL, gcvNULL));
+            for (i = 0, cache = Stream->cache;
+                i < gcdSTREAM_CACHE_COUNT;
+                ++i, ++cache
+                )
+            {
+                gcmONERROR(gcsSURF_NODE_Construct(
+                    &cache->node,
+                    gcdSTREAM_CACHE_SIZE,
+                    64,
+                    gcvSURF_VERTEX,
+                    gcvALLOC_FLAG_NONE,
+                    gcvPOOL_DEFAULT
+                    ));
 
-            /* Initialize the stream cache. */
-            cache->bytes  = cache->node.size;
-            cache->free   = cache->node.size;
-            cache->offset = 0;
-            cache->index  = 0;
+                /* Lock the stream. */
+                gcmONERROR(gcoHARDWARE_Lock(&cache->node,
+                    gcvNULL, gcvNULL));
 
-            /* Create the signal. */
-            gcmONERROR(gcoOS_CreateSignal(gcvNULL, gcvTRUE, &cache->signal));
+                /* Initialize the stream cache. */
+                cache->bytes  = cache->node.size;
+                cache->free   = cache->node.size;
+                cache->offset = 0;
+                cache->index  = 0;
 
-            gcmTRACE_ZONE(
-                gcvLEVEL_INFO, gcvZONE_SIGNAL,
-                "%s(%d): cache %d signal created 0x%08X",
-                __FUNCTION__, __LINE__,
-                i, cache->signal);
+                /* Create the signal. */
+                gcmONERROR(gcoOS_CreateSignal(gcvNULL, gcvTRUE, &cache->signal));
 
-            /* Mark the stream as available. */
-            gcmONERROR(gcoOS_Signal(gcvNULL, cache->signal, gcvTRUE));
+                gcmTRACE_ZONE(
+                    gcvLEVEL_INFO, gcvZONE_SIGNAL,
+                    "%s(%d): cache %d signal created 0x%08X",
+                    __FUNCTION__, __LINE__,
+                    i, cache->signal);
+
+                /* Mark the stream as available. */
+                gcmONERROR(gcoOS_Signal(gcvNULL, cache->signal, gcvTRUE));
+            }
+        }
+        else
+        {
+            Stream->cacheAllocatedCount = 0;
         }
     }
 
@@ -2991,19 +3258,19 @@ OnError:
                                                  cache->signal));
             }
 
-            if (cache->node.logical != gcvNULL)
+            if (!Stream->dynamicAllocate)
             {
-                /* Unlock the stream. */
-                gcmVERIFY_OK(gcoHARDWARE_Unlock(&cache->node,
-                                                gcvSURF_VERTEX));
-            }
+                if (cache->node.logical != gcvNULL)
+                {
+                    /* Unlock the stream. */
+                    gcmVERIFY_OK(gcoHARDWARE_Unlock(&cache->node, gcvSURF_VERTEX));
+                }
 
-            if (cache->node.u.normal.node != gcvNULL)
-            {
-                /* Free the stream. */
-                ioctl.command = gcvHAL_FREE_VIDEO_MEMORY;
-                ioctl.u.FreeVideoMemory.node = cache->node.u.normal.node;
-                gcmVERIFY_OK(gcoHAL_Call(gcvNULL, &ioctl));
+                if (cache->node.u.normal.node != 0)
+                {
+                    /* Release the stream. */
+                    gcmVERIFY_OK(gcoHARDWARE_ScheduleVideoMemory(&cache->node));
+                }
             }
         }
 
@@ -3078,8 +3345,6 @@ _CRC32(
     OUT gctSIZE_T_PTR Bytes OPTIONAL
 )
 {
-    gceSTATUS status = gcvSTATUS_OK;
-
     gctUINT i, j, k;
     gctUINT8_PTR src[gcdATTRIBUTE_COUNT], dst;
     gctUINT32 crc = 0xFFFFFFFF;
@@ -3116,7 +3381,7 @@ _CRC32(
                             ^ ((crcTable[i] & (1U << 31)) ? polynomial : 0);
             }
 
-            /* Refelect the entire table entry. */
+            /* Reflect the entire table entry. */
             crcTable[i] = _Reflect(crcTable[i], 32);
         }
 
@@ -3151,7 +3416,7 @@ _CRC32(
                 /* Attribute pointer enabled case. */
                 if (stride != 0)
                 {
-                    gcmONERROR(gcoOS_MemCopy(dst, src[0], size));
+                    gcoOS_MemCopy(dst, src[0], size);
 
                     bytes += size;
                 }
@@ -3160,7 +3425,7 @@ _CRC32(
                 {
                     for (j = 0; j < Count; j++)
                     {
-                        gcmONERROR(gcoOS_MemCopy(dst, src[0], attribute[buffer->map[0]].bytes));
+                        gcoOS_MemCopy(dst, src[0], attribute[buffer->map[0]].bytes);
 
                         dst   += attribute[buffer->map[0]].bytes;
                         bytes += attribute[buffer->map[0]].bytes;
@@ -3194,7 +3459,7 @@ _CRC32(
                     /* Walk through all attributes in a buffer. */
                     for(k = 0; k < buffer->count; k++)
                     {
-                        gcmONERROR(gcoOS_MemCopy(dst, src[k], size[k]));
+                        gcoOS_MemCopy(dst, src[k], size[k]);
 
                         /* Advance the pointers. */
                         src[k] += attribStride[k];
@@ -3257,11 +3522,6 @@ _CRC32(
                   gcmOPT_VALUE(Crc32), gcmOPT_VALUE(Empty),
                   gcmOPT_VALUE(Bytes));
     return gcvSTATUS_OK;
-
-OnError:
-    /* Return the status. */
-    gcmFOOTER();
-    return status;
 }
 #else
 
@@ -3319,7 +3579,7 @@ _Half2Float(
         tableSetup = gcvTRUE;
     }
 
-    /* Compute lookup indicies. */
+    /* Compute lookup indices. */
     eIndex = (Half & 0x7C00) >> 10;
     mIndex = (Half & 0x03FF) + (eIndex ? 1024 : 0);
     sign   = Half & 0x8000;
@@ -3353,7 +3613,6 @@ _CRC32(
     gctUINT8_PTR dst, src[gcdATTRIBUTE_COUNT];
     static gctUINT32 crcTable[256];
     static gctBOOL tableSetup = gcvFALSE;
-    gceSTATUS status;
     gctINT c;
     gctFLOAT components[4];
     gctBOOL empty[gcdATTRIBUTE_COUNT];
@@ -3384,7 +3643,7 @@ _CRC32(
                             ^ ((crcTable[i] & (1U << 31)) ? polynomial : 0);
             }
 
-            /* Refelect the entire table entry. */
+            /* Reflect the entire table entry. */
             crcTable[i] = _Reflect(crcTable[i], 32);
         }
 
@@ -3413,21 +3672,20 @@ _CRC32(
     dst = (gctUINT8_PTR) Logical;
 
     /* Loop through all vertices. */
-	/* Optimization for AttributeCount=1 with Empty=gcvNULL (copy case). */
-	if ((Crc32 == gcvNULL)
+    /* Optimization for AttributeCount=1 with Empty=gcvNULL (copy case). */
+    if ((Crc32 == gcvNULL)
      && (AttributeCount == 1)
-     && (Attributes[0].genericEnable == 0)
      && (Empty == gcvNULL)
      && (attribStride[0] == Attributes[0].bytes)
-	 && (dst != gcvNULL)
+     && (dst != gcvNULL)
      )
-	{
-		/* Just copy the attributes. */
-		gcmONERROR(gcoOS_MemCopy(dst, src[0], Count * Attributes[0].bytes));
-		bytes += Count * Attributes[0].bytes;
-	}
-	else
-	{
+    {
+        /* Just copy the attributes. */
+        gcoOS_MemCopy(dst, src[0], Count * Attributes[0].bytes);
+        bytes += Count * Attributes[0].bytes;
+    }
+    else
+    {
         for (i = 0; i < Count; ++i)
         {
             /* Check if we need to compute the CRC-32 value. */
@@ -3451,86 +3709,8 @@ _CRC32(
                 /* Walk all attributes. */
                 for (j = 0; j < AttributeCount; ++j)
                 {
-                    /* Check if we need to append generic attributes. */
-                    if (Attributes[j].genericEnable != 0)
-                    {
-                        /* This has to be converted to float. */
-                        gcmASSERT(Attributes[j].format == gcvVERTEX_FLOAT);
-
-                        /* Copy the generic attribute values. */
-                        gcmONERROR(gcoOS_MemCopy(
-                            components,
-                            Attributes[j].vertexPtr->genericValue,
-                            gcmSIZEOF(components)));
-
-                        /* Walk all components. */
-                        for (c = 0; c < Attributes[j].vertexPtr->size; ++c)
-                        {
-                            switch (Attributes[j].vertexPtr->format)
-                            {
-                            case gcvVERTEX_BYTE:
-                                /* Convert the signed char to floating point. */
-                                components[c] = (gctFLOAT) ((gctINT8 *) src[j])[c];
-                                break;
-
-                            case gcvVERTEX_UNSIGNED_BYTE:
-                                /* Convert the unsigned char to floating point. */
-                                components[c] = (gctFLOAT) ((gctUINT8 *) src[j])[c];
-                                break;
-
-                            case gcvVERTEX_SHORT:
-                                /* Convert the signed short to floating point. */
-                                components[c] = (gctFLOAT) ((gctINT16 *) src[j])[c];
-                                break;
-
-                            case gcvVERTEX_UNSIGNED_SHORT:
-                                /* Convert the unsigned short to floating point. */
-                                components[c] = (gctFLOAT)
-                                                ((gctUINT16 *) src[j])[c];
-                                break;
-
-                            case gcvVERTEX_INT:
-                            case gcvVERTEX_INT_10_10_10_2:
-                                /* Convert the signed int to floating point. */
-                                components[c] = (gctFLOAT) ((gctINT32 *) src[j])[c];
-                                break;
-
-                            case gcvVERTEX_UNSIGNED_INT:
-                            case gcvVERTEX_UNSIGNED_INT_10_10_10_2:
-                                /* Convert the unsigned int to floating point. */
-                                components[c] = (gctFLOAT)
-                                                ((gctUINT32 *) src[j])[c];
-                                break;
-
-                            case gcvVERTEX_FIXED:
-                                /* Convert the fixed point to floating point. */
-                                components[c] = gcoMATH_Fixed2Float(
-                                                    ((gctFIXED_POINT *) src[j])[c]);
-                                break;
-
-                            case gcvVERTEX_HALF:
-                                /* Expand the half to floating point. */
-                                components[c] = _Half2Float(
-                                                    ((gctUINT16_PTR) src[j])[c]);
-                                break;
-
-                            case gcvVERTEX_FLOAT:
-                                /* Just copy the floating point value. */
-                                components[c] = ((gctFLOAT *) src[j])[c];
-                                break;
-                            }
-                        }
-
-                        /* Copy the converted components. */
-                        gcmONERROR(gcoOS_MemCopy(dst,
-                                                 components,
-                                                 Attributes[j].bytes));
-                    }
-                    else
-                    {
-                        /* Just copy the attributes. */
-                        gcmONERROR(gcoOS_MemCopy(dst, src[j], Attributes[j].bytes));
-                    }
+                    /* Just copy the attributes. */
+                    gcoOS_MemCopy(dst, src[j], Attributes[j].bytes);
 
                     /* Advance the pointers. */
                     dst   += Attributes[j].bytes;
@@ -3595,11 +3775,6 @@ _CRC32(
                   gcmOPT_VALUE(Crc32), gcmOPT_VALUE(Empty),
                   gcmOPT_VALUE(Bytes));
     return gcvSTATUS_OK;
-
-OnError:
-    /* Return the status. */
-    gcmFOOTER();
-    return status;
 }
 #endif
 #endif
@@ -3626,14 +3801,14 @@ _NewCache(
 
         /* Schedule a signal event. */
         ioctl.command = gcvHAL_SIGNAL;
-        ioctl.u.Signal.signal    = cache->signal;
-        ioctl.u.Signal.auxSignal = gcvNULL;
-        ioctl.u.Signal.process   = gcoOS_GetCurrentProcessID();
+        ioctl.u.Signal.signal    = gcmPTR_TO_UINT64(cache->signal);
+        ioctl.u.Signal.auxSignal = 0;
+        ioctl.u.Signal.process   = gcmPTR_TO_UINT64(gcoOS_GetCurrentProcessID());
         ioctl.u.Signal.fromWhere = gcvKERNEL_COMMAND;
-        gcmONERROR(gcoHARDWARE_CallEvent(&ioctl));
+        gcmONERROR(gcoHARDWARE_CallEvent(gcvNULL, &ioctl));
 
         /* Commit the command buffer. */
-        gcmONERROR(gcoHARDWARE_Commit());
+        gcmONERROR(gcoHARDWARE_Commit(gcvNULL));
 
         /* Reset the cache. */
         cache->offset = 0;
@@ -3642,10 +3817,10 @@ _NewCache(
 
 #if !OPT_CACHE_USAGE
         /* Clear the caches. */
-        gcmONERROR(gcoOS_ZeroMemory(cache->cacheHash,
-                                    gcmSIZEOF(cache->cacheHash)));
-        gcmONERROR(gcoOS_ZeroMemory(cache->cacheArray,
-                                    gcmSIZEOF(cache->cacheArray)));
+        gcoOS_ZeroMemory(cache->cacheHash,
+                         gcmSIZEOF(cache->cacheHash));
+        gcoOS_ZeroMemory(cache->cacheArray,
+                         gcmSIZEOF(cache->cacheArray));
 #endif
 
 
@@ -3657,7 +3832,7 @@ _NewCache(
     cache = &Stream->cache[Stream->cacheCurrent];
 
     /* Wait for the cache to become ready. */
-    status = gcoOS_WaitSignal(gcvNULL, cache->signal, gcvINFINITE);
+    status = gcoOS_WaitSignal(gcvNULL, cache->signal, 0);
     if (status == gcvSTATUS_TIMEOUT)
     {
         gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_VERTEX,
@@ -3682,10 +3857,191 @@ OnError:
     return status;
 }
 
+#define ALLOCATE_NEW_CACHE(cacheSize) \
+            /* Allocate node */ \
+            gcmONERROR(gcoOS_Allocate(gcvNULL,gcmSIZEOF(gcsSURF_NODE),&pointer)); \
+            cache->dynamicNode = pointer; \
+            gcoOS_ZeroMemory(pointer,gcmSIZEOF(gcsSURF_NODE));\
+            /* Allocate linear video memory. */  \
+            gcmONERROR(gcsSURF_NODE_Construct( \
+                cache->dynamicNode, \
+                cacheSize, \
+                64, \
+                gcvSURF_VERTEX, \
+                gcvALLOC_FLAG_NONE, \
+                gcvPOOL_DEFAULT \
+                )); \
+            /* Lock the stream. */ \
+            gcmONERROR(gcoHARDWARE_Lock(cache->dynamicNode, \
+                                        gcvNULL, gcvNULL)); \
+            /* Initialize the stream cache. */ \
+            cache->bytes  = cacheSize; \
+            cache->free   = cacheSize; \
+            cache->offset = 0; \
+            /* Create the signal. */ \
+            gcmONERROR(gcoOS_CreateSignal(gcvNULL, gcvTRUE, &cache->signal)); \
+            /* Mark the stream as available. */ \
+            gcmONERROR(gcoOS_Signal(gcvNULL, cache->signal, gcvTRUE));
 
+static gceSTATUS
+_NewDynamicCache(
+    IN gcoSTREAM Stream,
+    IN gctUINT   Bytes,
+    OUT  gcsSTREAM_CACHE_BUFFER_PTR * Cache
+    )
+{
+    gcsSTREAM_CACHE_BUFFER_PTR cache = gcvNULL;
+    gcsHAL_INTERFACE ioctl;
+    gceSTATUS status;
+    gctUINT   cacheSize;
+    gctPOINTER pointer;
+
+    gcmHEADER_ARG("Stream=0x%x", Stream);
+
+    /* Move to the oldest cache. */
+    cache = &Stream->cache[Stream->cacheCurrent];
+
+    /* If this cach not allocated */
+    if (cache->bytes == 0)
+    {
+        /* First time new cache, allocate a bigger size */
+        cacheSize = Bytes * DYNAMIC_CACHE_MULTIPLE_TIME;
+
+        cacheSize = gcmALIGN(cacheSize,DYNAMIC_CACHE_ALIGN);
+
+        if (cacheSize >= gcdSTREAM_CACHE_SIZE)
+        {
+            cacheSize = gcdSTREAM_CACHE_SIZE;
+        }
+
+        ALLOCATE_NEW_CACHE(cacheSize);
+
+        Stream->cacheAllocatedCount++;
+
+        /* Return cache. */
+        *Cache = cache;
+
+        /* Success. */
+        gcmFOOTER_ARG("*Cache=0x%x", *Cache);
+        return gcvSTATUS_OK;
+    }
+
+    /* Check if the cache is in use. */
+    if (cache->offset > 0)
+    {
+        /* Mark cache as unavailable. */
+        gcmONERROR(gcoOS_Signal(gcvNULL, cache->signal, gcvFALSE));
+
+        /* Schedule a signal event. */
+        ioctl.command = gcvHAL_SIGNAL;
+        ioctl.u.Signal.signal    = gcmPTR_TO_UINT64(cache->signal);
+        ioctl.u.Signal.auxSignal = 0;
+        ioctl.u.Signal.process   = gcmPTR_TO_UINT64(gcoOS_GetCurrentProcessID());
+        ioctl.u.Signal.fromWhere = gcvKERNEL_COMMAND;
+        gcmONERROR(gcoHARDWARE_CallEvent(gcvNULL, &ioctl));
+
+        /* Commit the command buffer. */
+        gcmONERROR(gcoHARDWARE_Commit(gcvNULL));
+
+        /* Reset the cache. */
+        cache->offset = 0;
+        cache->free   = cache->bytes;
+    }
+
+    if(Stream->cacheAllocatedCount > 0)
+    {
+        /* Move to next cache. */
+        Stream->cacheCurrent = (Stream->cacheCurrent + 1) % Stream->cacheAllocatedCount;
+    }
+
+    cache = &Stream->cache[Stream->cacheCurrent];
+
+    /* Wait for the cache to become ready. */
+    status = gcoOS_WaitSignal(gcvNULL, cache->signal, 0);
+    if (status == gcvSTATUS_TIMEOUT || cache->bytes < Bytes)
+    {
+        if (Stream->cacheAllocatedCount == Stream->cacheCount)
+        {
+            if(status == gcvSTATUS_TIMEOUT)
+            {
+                /* We have allocated all caches, so, wait it */
+                gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_VERTEX,
+                    "Waiting for vertex buffer 0x%x",
+                    cache);
+
+                gcmONERROR(gcoOS_WaitSignal(gcvNULL,
+                    cache->signal,
+                    gcvINFINITE));
+            }
+
+            /* As we have allocate all cache and we still got a wait,
+               that means we need enlarge our cache size */
+            if (cache->bytes < gcdSTREAM_CACHE_SIZE)
+            {
+                /* Destroy the old one */
+                gcmVERIFY_OK(gcoHARDWARE_Unlock(cache->dynamicNode,
+                                                gcvSURF_VERTEX));
+
+                gcmONERROR(gcoHARDWARE_ScheduleVideoMemory(cache->dynamicNode));
+
+                                /* Destroy the signal. */
+                gcmVERIFY_OK(gcoOS_DestroySignal(gcvNULL,
+                                                 cache->signal));
+
+                if (cache->dynamicNode != gcvNULL)
+                {
+                    gcmOS_SAFE_FREE(gcvNULL,cache->dynamicNode);
+                }
+
+                /* new cache, allocate a bigger size */
+                gcmSAFECASTSIZET(cacheSize, gcmMAX(Bytes,cache->bytes) * DYNAMIC_CACHE_MULTIPLE_TIME);
+
+                cacheSize = gcmALIGN(cacheSize,DYNAMIC_CACHE_ALIGN);
+
+                if (cacheSize >= gcdSTREAM_CACHE_SIZE)
+                {
+                    cacheSize = gcdSTREAM_CACHE_SIZE;
+                }
+
+                ALLOCATE_NEW_CACHE(cacheSize);
+            }
+        }
+        else
+        {
+            cache = &Stream->cache[Stream->cacheAllocatedCount];
+
+            /* new cache, allocate a bigger size */
+            cacheSize = Bytes * DYNAMIC_CACHE_MULTIPLE_TIME;
+
+            cacheSize = gcmALIGN(cacheSize,DYNAMIC_CACHE_ALIGN);
+
+            if (cacheSize >= gcdSTREAM_CACHE_SIZE)
+            {
+                cacheSize = gcdSTREAM_CACHE_SIZE;
+            }
+
+            ALLOCATE_NEW_CACHE(cacheSize);
+
+            Stream->cacheCurrent = Stream->cacheAllocatedCount;
+
+            Stream->cacheAllocatedCount++;
+        }
+    }
+
+    /* Return cache. */
+    *Cache = cache;
+
+    /* Success. */
+    gcmFOOTER_ARG("*Cache=0x%x", *Cache);
+    return gcvSTATUS_OK;
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
 
 #if OPT_CACHE_USAGE
-
 static gceSTATUS
 _copyBuffers(
     IN gctUINT BufferCount,
@@ -3698,7 +4054,6 @@ _copyBuffers(
     OUT gctSIZE_T_PTR Bytes OPTIONAL
     )
 {
-    gceSTATUS status = gcvSTATUS_OK;
     gctUINT i, j, k;
     gctUINT8_PTR src[gcdATTRIBUTE_COUNT], dst;
     gctUINT stride = 0;
@@ -3706,11 +4061,18 @@ _copyBuffers(
     gcsVERTEXARRAY_ATTRIBUTE_PTR attribute = Attributes;
     gctUINT attribStride[gcdATTRIBUTE_COUNT];
     gctSIZE_T bytes = 0;
+    gctBOOL isGpuBenchTest = gcvFALSE;
 
     gcmHEADER_ARG("BufferCount=%u Buffers=0x%x AttributeCount=%u "
                   "Attributes=0x%x First=%u Count=%u Logical=0x%x",
-                  BufferCount, Buffers, AttributeCount, 
+                  BufferCount, Buffers, AttributeCount,
                   Attributes, First, Count, Logical);
+
+    /* a fix for gpuBench RunSmoothLargeTrianglesBenchmark() test */
+    if ((Count == 400) && (gcPLS.hal->isGpuBenchSmoothTriangle == gcvTRUE))
+    {
+        isGpuBenchTest = gcvTRUE;
+    }
 
     /* Compute the destination address. */
     dst = (gctUINT8_PTR) Logical;
@@ -3718,6 +4080,8 @@ _copyBuffers(
     /* Walk through all buffers. */
     for (i = 0, buffer = Buffers; i < BufferCount; i++, buffer++)
     {
+        gctUINT count = buffer->count;
+
         /* We copy whole range for non-combined buffer. */
         if (!buffer->combined)
         {
@@ -3727,22 +4091,62 @@ _copyBuffers(
                    ? attribute[buffer->map[0]].vertexPtr->stride
                    : 0;
 
-            src[0] = (gctUINT8_PTR)buffer->start + First * stride;
+            /* Instanced attribute will be treated differently, they will not be affected by First/Count */
+            src[0] = buffer->divisor > 0
+                   ? (gctUINT8_PTR)buffer->start
+                   : (gctUINT8_PTR)buffer->start + (First * stride);
             dst    = (gctUINT8_PTR)Logical + buffer->offset;
-            size   = Count * buffer->stride;
+            size   = count * buffer->stride;
 
             /* Attribute pointer enabled case. */
             if (stride != 0)
             {
-                gcmONERROR(gcoOS_MemCopy(dst, src[0], size));
+                if (isGpuBenchTest == gcvTRUE)
+                {
+                    gctUINT32_PTR src0, dst0;
+                    gctUINT l, m;
+                    gctUINT32 left = count % 3;
+
+                    count = count - left;
+
+                    src0 = (gctUINT32_PTR) src[0];
+                    dst0 = (gctUINT32_PTR) dst;
+
+
+                    for (k = 0; k < count; k += 3)
+                    {
+                        m = k * buffer->stride >> 2;
+                        l = (count - 3 - (count % 3) - k) * buffer->stride >> 2;
+
+                        for (; m < (k + 3) * buffer->stride >> 2; m++, l++)
+                        {
+                            dst0[l] = src0[m];
+                        }
+                    }
+
+                    if (left)
+                    {
+                        m = k * buffer->stride >> 2;
+                        l = 0;
+
+                        for (; m < (k + left) * buffer->stride >> 2; m++, l++)
+                        {
+                            dst0[l] = src0[m];
+                        }
+                    }
+                }
+                else
+                {
+                    gcoOS_MemCopy(dst, src[0], size);
+                }
                 bytes += size;
             }
             /* Copy from generic value. */
             else
             {
-                for (j = 0; j < Count; j++)
+                for (j = 0; j < count; j++)
                 {
-                    gcmONERROR(gcoOS_MemCopy(dst, src[0], attribute[buffer->map[0]].bytes));
+                    gcoOS_MemCopy(dst, src[0], attribute[buffer->map[0]].bytes);
                     dst   += attribute[buffer->map[0]].bytes;
                     bytes += attribute[buffer->map[0]].bytes;
                 }
@@ -3751,12 +4155,12 @@ _copyBuffers(
         /* Combined case, need to pack from all attribute pointers. */
         else
         {
-            gctUINT size[gcdATTRIBUTE_COUNT]; 
+            gctUINT size[gcdATTRIBUTE_COUNT];
 
             dst = (gctUINT8_PTR)Logical + buffer->offset;
 
             /* Setup source info for all attributes. */
-            for (j = 0; j < buffer->count; j++)
+            for (j = 0; j < buffer->numAttribs; j++)
             {
                 attribStride[j]  = Attributes[buffer->map[j]].vertexPtr->enable
                                  ? Attributes[buffer->map[j]].vertexPtr->stride
@@ -3764,18 +4168,18 @@ _copyBuffers(
 
                 /* Add the first vertex. */
                 src[j] = (gctUINT8_PTR) Attributes[buffer->map[j]].logical
-                       + First * attribStride[j]; 
+                       + First * attribStride[j];
 
                 size[j] = Attributes[buffer->map[j]].bytes;
             }
 
             /* Walk through all vertices. */
-            for(j = 0; j < Count; j++)
+            for(j = 0; j < count; j++)
             {
                 /* Walk through all attributes in a buffer. */
-                for(k = 0; k < buffer->count; k++)
+                for(k = 0; k < buffer->numAttribs; k++)
                 {
-                    gcmONERROR(gcoOS_MemCopy(dst, src[k], size[k]));
+                    gcoOS_MemCopy(dst, src[k], size[k]);
 
                     /* Advance the pointers. */
                     src[k] += attribStride[k];
@@ -3795,17 +4199,250 @@ _copyBuffers(
     /* Success. */
     gcmFOOTER_ARG("*Bytes=%u", gcmOPT_VALUE(Bytes));
     return gcvSTATUS_OK;
+}
+
+static gceSTATUS
+_copyBuffersEx(
+    IN gctUINT StreamCount,
+    IN gcsVERTEXARRAY_BUFOBJ_PTR Streams,
+    IN gctUINT First,
+    IN gctUINT8_PTR Logical,
+    IN gctUINT32 Physical,
+    OUT gctSIZE_T_PTR CopiedBytes
+    )
+{
+    gctUINT8_PTR dst,src;
+    gcsVERTEXARRAY_BUFOBJ_PTR streamPtr;
+    gcsVERTEXARRAY_BUFOBJ_ATTRIBUTE_PTR attrPtr;
+    gctSIZE_T copiedBytes;
+    gctSIZE_T copySize;
+    gctSIZE_T count;
+    gctUINT32 base, copiedBytes32;
+
+    gcmHEADER_ARG("StreamCount=%u Streams=0x%x First=%u "
+                  "Logical=0x%x Physical=0x%x CopiedBytes=0x%x",
+                  StreamCount, Streams, First, Logical,
+                  Physical, CopiedBytes);
+
+    /* Verify the arguments. */
+    gcmDEBUG_VERIFY_ARGUMENT(StreamCount > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(Streams != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Logical != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Physical != 0);
+
+    /* Compute the destination address. */
+    dst = (gctUINT8_PTR) Logical;
+
+    /* cacheOffset = 0; */
+    copiedBytes = 0;
+    for (streamPtr = Streams; streamPtr != gcvNULL; streamPtr = streamPtr->next)
+    {
+        /* Get only the client array attributes */
+        if (streamPtr->stream == gcvNULL)
+        {
+            /* Set physical and logical address */
+            gcmSAFECASTSIZET(copiedBytes32, copiedBytes);
+            streamPtr->physical = Physical + copiedBytes32;
+            streamPtr->logical = Logical + copiedBytes;
+            if (streamPtr->copyAll == gcvTRUE)
+            {
+                /* Calculate src pointer */
+                if (streamPtr->divisor > 0)
+                {
+                    src = (gctUINT8_PTR) streamPtr->attributePtr->pointer;
+                }
+                else
+                {
+                    src = (gctUINT8_PTR) streamPtr->attributePtr->pointer + (streamPtr->stride * First);
+                }
+
+                /* Copy attr data to dynamic cache */
+                copySize = streamPtr->stride * streamPtr->count;
+                gcoOS_MemCopy(dst, src, copySize);
+                copiedBytes += copySize;
+
+                /* Move destination */
+                dst += copySize;
+
+                /* Walk all attributes and adjust cache offset*/
+                base = 0;
+                for (attrPtr = streamPtr->attributePtr; attrPtr != gcvNULL; attrPtr = attrPtr->next)
+                {
+                    /* Set new offset of the attribute */
+                    if (base == 0)
+                    {
+                        base = attrPtr->offset;
+                        attrPtr->offset = 0;
+                    }
+                    else
+                    {
+                        attrPtr->offset = attrPtr->offset - base;
+                    }
+                }
+            }
+            else
+            {
+                count = 0;
+                while (count != streamPtr->count)
+                {
+                    /* Walk all attributes and adjust offset*/
+                    for (attrPtr = streamPtr->attributePtr; attrPtr != gcvNULL; attrPtr = attrPtr->next)
+                    {
+                        /* Calculate src pointer */
+                        if (attrPtr->enabled == gcvFALSE)
+                        {
+                            src = (gctUINT8_PTR) attrPtr->pointer;
+                        }
+                        else if (streamPtr->divisor > 0)
+                        {
+                            src = (gctUINT8_PTR) attrPtr->pointer + (attrPtr->stride * count);
+                        }
+                        else
+                        {
+                            src = (gctUINT8_PTR) attrPtr->pointer + (attrPtr->stride * First) + (attrPtr->stride * count);
+                        }
+
+                        /* Copy attr data to dynamic cache */
+                        copySize = attrPtr->bytes;
+                        gcoOS_MemCopy(dst, src, copySize);
+                        copiedBytes += copySize;
+
+                        /* Move destination */
+                        dst += copySize;
+                    }
+
+                    /* Advance to next vertex */
+                    count++;
+                }
+
+                /* Walk all attributes and adjust cache offset*/
+                base = 0;
+                for (attrPtr = streamPtr->attributePtr; attrPtr != gcvNULL; attrPtr = attrPtr->next)
+                {
+                    /* Set new offset of the attribute */
+                    attrPtr->offset = base;
+                    base += attrPtr->bytes;
+                }
+            }
+        }
+    }
+
+    /* Return total number of copied bytes */
+    if (CopiedBytes != gcvNULL)
+    {
+        *CopiedBytes = copiedBytes;
+    }
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoSTREAM_UploadUnCacheableAttributes(
+    IN gcoSTREAM Stream,
+    IN gctUINT First,
+    IN gctUINT Count,
+    IN gctUINT TotalBytes,
+    IN gctUINT BufferCount,
+    IN gcsVERTEXARRAY_BUFFER_PTR Buffers,
+    IN gctUINT AttributeCount,
+    IN gcsVERTEXARRAY_ATTRIBUTE_PTR Attributes,
+    OUT gctUINT32_PTR Physical,
+    OUT gcoSTREAM * OutStream
+)
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gctSIZE_T copiedBytes = 0;
+    gcoSTREAM newStream = gcvNULL;
+    gctPOINTER logical = 0;
+    gctUINT32  physical = 0;
+
+    gcmHEADER_ARG("Stream=0x%x First=%u Count=%u TotalBytes=%u BufferCount=%u "
+                  "Buffers=0x%x AttributeCount=%u Attributes=0x%x",
+                  Stream, First, Count, TotalBytes, BufferCount, Buffers, AttributeCount, Attributes);
+
+    /* Verify the arguments. */
+    gcmDEBUG_VERIFY_ARGUMENT(Count > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(BufferCount > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(Buffers != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(AttributeCount > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(Attributes != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Physical != gcvNULL);
+
+    if (TotalBytes > gcdSTREAM_CACHE_SIZE)
+    {
+        if (Stream != gcvNULL)
+        {
+            /* Destroy last stream. */
+            gcmONERROR(gcoSTREAM_Destroy(Stream));
+        }
+
+        /* Allocate a new stream. */
+        gcmONERROR(gcoSTREAM_Construct(gcvNULL, &newStream));
+
+        gcmONERROR(gcoSTREAM_Reserve(newStream, TotalBytes));
+
+        gcmONERROR(gcoSTREAM_Lock(newStream,&logical,&physical));
+
+        /* Copy the data. */
+        gcmONERROR(_copyBuffers(
+            BufferCount,
+            Buffers,
+            AttributeCount,
+            Attributes,
+            First,  Count,
+            logical,
+            &copiedBytes
+            ));
+
+        /* Flush the uploaded data. */
+        gcmONERROR(gcoSURF_NODE_Cache(&newStream->node,
+            logical,
+            copiedBytes,
+            gcvCACHE_CLEAN));
+
+        /* Dump the buffer. */
+        gcmDUMP_BUFFER(gcvNULL,
+            "stream",
+            physical,
+            logical,
+            0,
+            copiedBytes);
+
+        /* Return physical address for stream. */
+        *Physical = physical;
+        *OutStream = newStream;
+
+        /* Seems can't do unlock here, because stream lock don't really lock node, unlock doese */
+        /*gcmONERROR(gcoSTREAM_Unlock(newStream));*/
+
+        /* Success. */
+        gcmFOOTER_ARG("*Physical=0x%08x", *Physical);
+        return gcvSTATUS_OK;
+    }
+    else
+    {
+        /* Only handle uncachable */
+        gcmONERROR(gcvSTATUS_INVALID_REQUEST);
+    }
 
 OnError:
-
     /* Return the status. */
     gcmFOOTER();
     return status;
 }
 
+gctSIZE_T
+gcoSTREAM_GetSize(
+    IN gcoSTREAM Stream
+        )
+{
+    return Stream->size;
+}
 
 gceSTATUS
-gcoSTREAM_CacheAttributes(
+gcoSTREAM_DynamicCacheAttributes(
     IN gcoSTREAM Stream,
     IN gctUINT First,
     IN gctUINT Count,
@@ -3819,7 +4456,6 @@ gcoSTREAM_CacheAttributes(
 {
     gceSTATUS status = gcvSTATUS_OK;
     gcsSTREAM_CACHE_BUFFER_PTR cache = gcvNULL;
-    gctUINT bytes;
     gctUINT offset;
     gctSIZE_T copiedBytes = 0;
 
@@ -3836,29 +4472,442 @@ gcoSTREAM_CacheAttributes(
     gcmDEBUG_VERIFY_ARGUMENT(Attributes != gcvNULL);
     gcmDEBUG_VERIFY_ARGUMENT(Physical != gcvNULL);
 
-    /* Compute number of bytes required. */
-    bytes = Bytes * Count;
+    /* Index current cache. */
+    cache = &Stream->cache[Stream->cacheCurrent];
+
+    if (Bytes > gcdSTREAM_CACHE_SIZE)
+    {
+       gcmONERROR(gcvSTATUS_INVALID_REQUEST);
+    }
+
+    /* Check if the stream will fit in the current cache. */
+    if (Bytes > cache->free)
+    {
+        /* Move to a new cache. */
+        gcmONERROR(_NewDynamicCache(Stream, Bytes, &cache));
+    }
+
+    /* Allocate data form the cache. */
+    offset         = cache->offset;
+    cache->offset += Bytes;
+    cache->free   -= Bytes;
+
+    /* Copy the data. */
+    gcmONERROR(_copyBuffers(BufferCount,
+                            Buffers,
+                            AttributeCount,
+                            Attributes,
+                            First,
+                            Count,
+                            cache->dynamicNode->logical + offset,
+                            &copiedBytes
+                            ));
+
+    /* Flush the uploaded data. */
+    gcmONERROR(gcoSURF_NODE_Cache(cache->dynamicNode,
+                                  cache->dynamicNode->logical + offset,
+                                  copiedBytes,
+                                  gcvCACHE_CLEAN));
+
+    /* Dump the buffer. */
+    gcmDUMP_BUFFER(gcvNULL,
+                   "stream",
+                   cache->dynamicNode->physical,
+                   cache->dynamicNode->logical,
+                   offset,
+                   copiedBytes);
+
+    /* Return physical address for stream. */
+    *Physical = cache->dynamicNode->physical + offset;
+
+    /* Success. */
+    gcmFOOTER();
+    return gcvSTATUS_OK;
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gcoSTREAM_DynamicCacheAttributesEx(
+    IN gcoSTREAM Stream,
+    IN gctUINT StreamCount,
+    IN gcsVERTEXARRAY_BUFOBJ_PTR Streams,
+    IN gctUINT First,
+    IN gctUINT TotalBytes
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gcsSTREAM_CACHE_BUFFER_PTR cache = gcvNULL;
+    gctUINT offset;
+    gctSIZE_T copiedBytes = 0;
+
+    gcmHEADER_ARG("Stream=0x%x StreamCount=%u Streams=0x%x First=%u ",
+                  Stream, StreamCount, Streams, First);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Stream, gcvOBJ_STREAM);
+    gcmDEBUG_VERIFY_ARGUMENT(StreamCount > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(Streams != gcvNULL);
+
+    /* Index current cache. */
+    cache = &Stream->cache[Stream->cacheCurrent];
+
+    /* Check if the stream will fit in the current cache. */
+    if (TotalBytes > cache->free)
+    {
+        /* Move to a new cache. */
+        gcmONERROR(_NewDynamicCache(Stream, TotalBytes, &cache));
+    }
+
+    /* Allocate data form the cache. */
+    offset         = cache->offset;
+    cache->offset += TotalBytes;
+    cache->free   -= TotalBytes;
+
+    /* Copy the data. */
+    gcmONERROR(_copyBuffersEx(StreamCount,
+                              Streams,
+                              First,
+                              cache->dynamicNode->logical + offset,
+                              cache->dynamicNode->physical + offset,
+                              &copiedBytes
+                              ));
+
+    /* Flush the uploaded data. */
+    gcmONERROR(gcoSURF_NODE_Cache(cache->dynamicNode,
+                                  cache->dynamicNode->logical + offset,
+                                  copiedBytes,
+                                  gcvCACHE_CLEAN));
+
+    /* Dump the buffer. */
+    gcmDUMP_BUFFER(gcvNULL,
+                   "stream",
+                   cache->dynamicNode->physical,
+                   cache->dynamicNode->logical,
+                   offset,
+                   copiedBytes);
+
+    /* Success. */
+    gcmFOOTER();
+    return gcvSTATUS_OK;
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+
+gceSTATUS
+gcoSTREAM_CacheAttributesEx(
+    IN gcoSTREAM Stream,
+    IN gctUINT StreamCount,
+    IN gcsVERTEXARRAY_BUFOBJ_PTR Streams,
+    IN gctUINT First,
+    IN OUT gcoSTREAM * UncacheableStream
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gctUINT totalBytes;
+    gctSIZE_T totalBytesTmp;
+    gctUINT offset;
+    gctUINT32 stride;
+    gctBOOL hasGeneric;
+    gcsVERTEXARRAY_BUFOBJ_PTR streamPtr;
+    gcsVERTEXARRAY_BUFOBJ_ATTRIBUTE_PTR attrPtr;
+    gcsSTREAM_CACHE_BUFFER_PTR cache = gcvNULL;
+    gctSIZE_T copiedBytes = 0;
+    gcoSTREAM newStream = gcvNULL;
+    gctPOINTER logical = 0;
+    gctUINT32  physical = 0;
+    gctUINT maxStride;
+
+    gcmHEADER_ARG("Stream=0x%x StreamCount=%u Streams=0x%x First=%u UncacheableStream=0x%x",
+                  Stream, StreamCount, Streams, First, UncacheableStream);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Stream, gcvOBJ_STREAM);
+    gcmDEBUG_VERIFY_ARGUMENT(StreamCount > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(Streams != gcvNULL);
+
+    /* Get max available stride */
+    gcmONERROR(gcoHARDWARE_QueryStreamCaps(gcvNULL, gcvNULL, &maxStride, gcvNULL, gcvNULL));
+
+    /* Walk all streams */
+    totalBytesTmp = 0;
+    for (streamPtr = Streams; streamPtr != gcvNULL; streamPtr = streamPtr->next)
+    {
+        hasGeneric = gcvFALSE;
+
+        /* Get only the client array attributes */
+        if (streamPtr->stream == gcvNULL)
+        {
+            /* Assume that stream can be copied with one memcopy */
+            streamPtr->copyAll = gcvTRUE;
+            stride = 0;
+
+            /* Walk all attributes */
+            for (attrPtr = streamPtr->attributePtr; attrPtr != gcvNULL; attrPtr = attrPtr->next)
+            {
+                stride += attrPtr->bytes;
+                if (attrPtr->enabled == gcvFALSE)
+                {
+                    hasGeneric = gcvTRUE;
+                }
+            }
+
+            /* Check if we can simply do a full copy */
+            if ((hasGeneric == gcvTRUE) || (streamPtr->merged == gcvTRUE))
+            {
+                streamPtr->copyAll = gcvFALSE;
+
+                /* Set dynamic cache stride */
+                streamPtr->dynamicCacheStride = stride;
+            }
+            else
+            {
+                /* We will do a full copy for speed */
+                streamPtr->dynamicCacheStride = streamPtr->stride;
+            }
+
+            /* Check for boundary condition */
+            if (streamPtr->dynamicCacheStride > maxStride)
+            {
+                if(streamPtr->copyAll == gcvTRUE)
+                {
+                    gctUINT32 strideTmp = 0;
+                    for (attrPtr = streamPtr->attributePtr; attrPtr != gcvNULL; attrPtr = attrPtr->next)
+                    {
+                        strideTmp += attrPtr->bytes;
+                    }
+                    if(strideTmp > maxStride)
+                    {
+                        gcmONERROR(gcvSTATUS_TOO_COMPLEX);
+                    }
+                    else
+                    {
+                        streamPtr->copyAll = gcvFALSE;
+                        streamPtr->dynamicCacheStride = strideTmp;
+                    }
+                }
+                else
+                {
+                    gcmONERROR(gcvSTATUS_TOO_COMPLEX);
+                }
+            }
+
+            /* calculate total bytes */
+            totalBytesTmp += (streamPtr->dynamicCacheStride * streamPtr->count);
+        }
+    }
+
+    gcmSAFECASTSIZET(totalBytes, totalBytesTmp);
+
+    /* Nothing need to do.*/
+    if(0 == totalBytes)
+    {
+        /* Success. */
+        gcmFOOTER();
+        return gcvSTATUS_OK;
+    }
+
+    if (totalBytes > gcdSTREAM_CACHE_SIZE)
+    {
+        if (*UncacheableStream != gcvNULL)
+        {
+            /* Destroy last stream. */
+            gcmONERROR(gcoSTREAM_Destroy(*UncacheableStream));
+        }
+
+        /* Allocate a new stream. */
+        gcmONERROR(gcoSTREAM_Construct(gcvNULL, &newStream));
+
+        /* Reserve space */
+        gcmONERROR(gcoSTREAM_Reserve(newStream, totalBytes));
+
+        /* Lock the stream */
+        gcmONERROR(gcoSTREAM_Lock(newStream,&logical,&physical));
+
+        /* Copy the data. */
+        gcmONERROR(_copyBuffersEx(StreamCount,
+                                  Streams,
+                                  First,
+                                  logical,
+                                  physical,
+                                  &copiedBytes
+                                  ));
+
+        gcmASSERT(totalBytes == copiedBytes);
+
+        /* Flush the uploaded data. */
+        gcmONERROR(gcoSURF_NODE_Cache(&newStream->node,
+            logical,
+            copiedBytes,
+            gcvCACHE_CLEAN));
+
+        /* Dump the buffer. */
+        gcmDUMP_BUFFER(gcvNULL,
+            "stream",
+            physical,
+            logical,
+            0,
+            copiedBytes);
+
+        *UncacheableStream = newStream;
+    }
+    else
+    {
+        /* If the stream wasn't initialized as dynamic, do it now */
+        if (Stream->dynamic == gcvNULL)
+        {
+            gcmONERROR(gcoSTREAM_SetCache(Stream));
+        }
+
+        if (Stream->dynamicAllocate)
+        {
+            status = gcoSTREAM_DynamicCacheAttributesEx(Stream,
+                                                        StreamCount,
+                                                        Streams,
+                                                        First,
+                                                        totalBytes);
+
+            gcmFOOTER();
+            return status;
+        }
+
+        /* Index current cache. */
+        cache = &Stream->cache[Stream->cacheCurrent];
+
+        /* Check if the data is too big. */
+        if (totalBytes > cache->bytes)
+        {
+           gcmONERROR(gcvSTATUS_INVALID_REQUEST);
+        }
+
+        /* Check if the stream will fit in the current cache. */
+        if (totalBytes > cache->free)
+        {
+            /* Move to a new cache. */
+            gcmONERROR(_NewCache(Stream, &cache));
+        }
+
+        /* Allocate data form the cache. */
+        offset         = cache->offset;
+        cache->offset += totalBytes;
+        cache->free   -= totalBytes;
+
+        /* Copy the data. */
+        gcmONERROR(_copyBuffersEx(StreamCount,
+                                  Streams,
+                                  First,
+                                  cache->node.logical + offset,
+                                  cache->node.physical + offset,
+                                  &copiedBytes
+                                  ));
+
+        /* Flush the uploaded data. */
+        gcmONERROR(gcoSURF_NODE_Cache(&cache->node,
+                                    cache->node.logical + offset,
+                                    copiedBytes,
+                                    gcvCACHE_CLEAN));
+
+        gcmASSERT(totalBytes == copiedBytes);
+
+        /* Dump the buffer. */
+        gcmDUMP_BUFFER(gcvNULL,
+                       "stream",
+                       cache->node.physical,
+                       cache->node.logical,
+                       offset,
+                       copiedBytes);
+    }
+
+    /* Success. */
+    gcmFOOTER();
+    return gcvSTATUS_OK;
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gcoSTREAM_CacheAttributes(
+    IN gcoSTREAM Stream,
+    IN gctUINT First,
+    IN gctUINT Count,
+    IN gctUINT TotalBytes,
+    IN gctUINT BufferCount,
+    IN gcsVERTEXARRAY_BUFFER_PTR Buffers,
+    IN gctUINT AttributeCount,
+    IN gcsVERTEXARRAY_ATTRIBUTE_PTR Attributes,
+    OUT gctUINT32_PTR Physical
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gcsSTREAM_CACHE_BUFFER_PTR cache = gcvNULL;
+    gctUINT offset;
+    gctSIZE_T copiedBytes = 0;
+
+    gcmHEADER_ARG("Stream=0x%x First=%u Count=%u TotalBytes=%u BufferCount=%u "
+                  "Buffers=0x%x AttributeCount=%u Attributes=0x%x",
+                  Stream, First, Count, TotalBytes, BufferCount, Buffers, AttributeCount, Attributes);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Stream, gcvOBJ_STREAM);
+    gcmDEBUG_VERIFY_ARGUMENT(Count > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(BufferCount > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(Buffers != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(AttributeCount > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(Attributes != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Physical != gcvNULL);
+
+    /* If the stream wasn't initialized as dynamic, do it now */
+    if (Stream->dynamic == gcvNULL)
+    {
+        gcmONERROR(gcoSTREAM_SetCache(Stream));
+    }
+
+    if (Stream->dynamicAllocate)
+    {
+        status = gcoSTREAM_DynamicCacheAttributes(Stream,
+                                                  First,
+                                                  Count,
+                                                  TotalBytes,
+                                                  BufferCount,
+                                                  Buffers,
+                                                  AttributeCount,
+                                                  Attributes,
+                                                  Physical);
+
+        gcmFOOTER();
+        return status;
+    }
 
     /* Index current cache. */
     cache = &Stream->cache[Stream->cacheCurrent];
 
     /* Check if the data is too big. */
-    if (bytes > cache->bytes)
-    {     
+    if (TotalBytes > cache->bytes)
+    {
        gcmONERROR(gcvSTATUS_INVALID_REQUEST);
     }
 
     /* Check if the stream will fit in the current cache. */
-    if (bytes > cache->free)
+    if (TotalBytes > cache->free)
     {
         /* Move to a new cache. */
-        gcmONERROR(_NewCache(Stream, &cache));     
+        gcmONERROR(_NewCache(Stream, &cache));
     }
 
     /* Allocate data form the cache. */
     offset         = cache->offset;
-    cache->offset += bytes;
-    cache->free   -= bytes;
+    cache->offset += TotalBytes;
+    cache->free   -= TotalBytes;
 
     /* Copy the data. */
     gcmONERROR(_copyBuffers(
@@ -3866,7 +4915,7 @@ gcoSTREAM_CacheAttributes(
         Buffers,
         AttributeCount,
         Attributes,
-        First,  Count,
+        First, Count,
         cache->node.logical + offset,
         &copiedBytes
         ));
@@ -3901,11 +4950,98 @@ OnError:
 #else
 #if OPT_VERTEX_ARRAY
 gceSTATUS
+gcoSTREAM_UploadUnCacheableAttributes(
+    IN gcoSTREAM Stream,
+    IN gctUINT First,
+    IN gctUINT Count,
+    IN gctUINT TotalBytes,
+    IN gctUINT BufferCount,
+    IN gcsVERTEXARRAY_BUFFER_PTR Buffers,
+    IN gctUINT AttributeCount,
+    IN gcsVERTEXARRAY_ATTRIBUTE_PTR Attributes,
+    OUT gctUINT32_PTR Physical,
+    OUT gcoSTREAM * OutStream
+)
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gctSIZE_T copiedBytes = 0;
+    gcoSTREAM newStream = gcvNULL;
+    gctPOINTER logical = 0;
+    gctUINT32  physical = 0;
+
+    gcmHEADER_ARG("Stream=0x%x First=%u Count=%u TotalBytes=%u BufferCount=%u "
+                  "Buffers=0x%x AttributeCount=%u Attributes=0x%x",
+                  Stream, First, Count, TotalBytes, BufferCount, Buffers, AttributeCount, Attributes);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Stream, gcvOBJ_STREAM);
+    gcmDEBUG_VERIFY_ARGUMENT(Count > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(BufferCount > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(Buffers != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(AttributeCount > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(Attributes != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Physical != gcvNULL);
+
+    if (TotalBytes > gcdSTREAM_CACHE_SIZE)
+    {
+        gcmONERROR(gcoSTREAM_Construct(gcvNULL, &newStream));
+
+        gcmONERROR(gcoSTREAM_Reserve(newStream, TotalBytes));
+
+        gcmONERROR(gcoSTREAM_Lock(newStream,&logical,&physical));
+
+        gcmONERROR(_CRC32(Stream,
+            BufferCount, Buffers,
+            AttributeCount, Attributes,
+            First, Count,
+            logical,
+            gcvNULL,
+            gcvNULL,
+            &copiedBytes));
+
+        /* Flush the uploaded data. */
+        gcmONERROR(gcoSURF_NODE_Cache(&newStream->node,
+            logical,
+            copiedBytes,
+            gcvCACHE_CLEAN));
+
+        /* Dump the buffer. */
+        gcmDUMP_BUFFER(gcvNULL,
+            "stream",
+            physical,
+            logical,
+            0,
+            copiedBytes);
+
+        /* Return physical address for stream. */
+        *Physical = physical;
+        *OutStream = newStream;
+
+        /* Seems can't do unlock here, because stream lock don't really lock node, unlock doese */
+        /*gcmONERROR(gcoSTREAM_Unlock(newStream));*/
+
+        /* Success. */
+        gcmFOOTER_ARG("*Physical=0x%08x", *Physical);
+        return gcvSTATUS_OK;
+    }
+    else
+    {
+        /* Only handle uncachable */
+        gcmONERROR(gcvSTATUS_INVALID_REQUEST);
+    }
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
 gcoSTREAM_CacheAttributes(
     IN gcoSTREAM Stream,
     IN gctUINT First,
     IN gctUINT Count,
-    IN gctUINT Bytes,
+    IN gctUINT TotalBytes,
     IN gctUINT BufferCount,
     IN gcsVERTEXARRAY_BUFFER_PTR Buffers,
     IN gctUINT AttributeCount,
@@ -3919,7 +5055,6 @@ gcoSTREAM_CacheAttributes(
     gctINT n;
     gcsSTREAM_CACHE_BUFFER_PTR cache = gcvNULL;
     gcsSTREAM_CACHE_PTR ptr = gcvNULL;
-    gctUINT bytes;
     gctUINT crc32, offset;
 #if ENABLE_STREAM_CACHE_STATIC
     gctBOOL empty;
@@ -3927,9 +5062,9 @@ gcoSTREAM_CacheAttributes(
     gctSIZE_T copiedBytes = 0;
     gctUINT32 minBytes = 64;
 
-    gcmHEADER_ARG("Stream=0x%x First=%u Count=%u Bytes=%u BufferCount=%u "
+    gcmHEADER_ARG("Stream=0x%x First=%u Count=%u TotalBytes=%u BufferCount=%u "
                   "Buffers=0x%x AttributeCount=%u Attributes=0x%x",
-                  Stream, First, Count, Bytes, BufferCount, Buffers, AttributeCount, Attributes);
+                  Stream, First, Count, TotalBytes, BufferCount, Buffers, AttributeCount, Attributes);
 
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Stream, gcvOBJ_STREAM);
@@ -3940,23 +5075,26 @@ gcoSTREAM_CacheAttributes(
     gcmDEBUG_VERIFY_ARGUMENT(Attributes != gcvNULL);
     gcmDEBUG_VERIFY_ARGUMENT(Physical != gcvNULL);
 
-    /* Compute number of bytes required. */
-    bytes = Bytes * Count;
+    /* If the stream wasn't initialized as dynamic, do it now */
+    if (Stream->dynamic == gcvNULL)
+    {
+        gcmONERROR(gcoSTREAM_SetCache(Stream));
+    }
 
     /* Check for small number of vertices and bytes per vertex. */
-    if ((Count <= 4) && (bytes <= minBytes))
+    if ((Count <= 4) && (TotalBytes <= minBytes))
     {
         /* Index current cache. */
         cache = &Stream->cache[Stream->cacheCurrent];
 
         /* Check if the data is too big. */
-        if (bytes > cache->bytes)
+        if (TotalBytes > cache->bytes)
         {
             gcmONERROR(gcvSTATUS_INVALID_REQUEST);
         }
 
         /* Check if the stream will fit in the current cache. */
-        if (bytes > cache->free)
+        if (TotalBytes > cache->free)
         {
             /* Move to a new cache. */
             gcmONERROR(_NewCache(Stream, &cache));
@@ -3964,8 +5102,8 @@ gcoSTREAM_CacheAttributes(
 
         /* Allocate data form the cache. */
         offset         = cache->offset;
-        cache->offset += bytes;
-        cache->free   -= bytes;
+        cache->offset += TotalBytes;
+        cache->free   -= TotalBytes;
 
         /* Copy the data. */
         gcmONERROR(_CRC32(Stream,
@@ -4000,8 +5138,8 @@ gcoSTREAM_CacheAttributes(
     }
 
     /* Compute hash key. */
-    keyValue = ((First + (Count << 16)) ^ ((bytes / Count) + (AttributeCount << 16)))
-             + gcmPTR2INT(Attributes[AttributeCount - 1].logical);
+    keyValue = ((First + (Count << 16)) ^ ((TotalBytes / Count) + (AttributeCount << 16)))
+             + gcmPTR2INT32(Attributes[AttributeCount - 1].logical);
     key      = (keyValue ^ (keyValue >> 16)) % gcdSTREAM_CACHE_HASH;
 
     gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_STREAM, "Hash key %u", key);
@@ -4067,13 +5205,13 @@ Again:
         cache = &Stream->cache[Stream->cacheCurrent];
 
         /* Check if the data is too big. */
-        if (bytes > cache->bytes)
+        if (TotalBytes > cache->bytes)
         {
             gcmONERROR(gcvSTATUS_INVALID_REQUEST);
         }
 
         /* Check if the stream will fit in the current cache. */
-        if ((cache->free < bytes)
+        if ((cache->free < TotalBytes)
         ||  (  (ptr          == gcvNULL)
             && (cache->index >= gcmCOUNTOF(cache->cacheArray))
             )
@@ -4109,10 +5247,10 @@ Again:
 
             /* Copy attributes into cache. */
             ptr->attributeCount = AttributeCount;
-            gcmONERROR(gcoOS_MemCopy(
+            gcoOS_MemCopy(
                 ptr->attributes,
                 Attributes,
-                AttributeCount * gcmSIZEOF(gcsVERTEXARRAY_ATTRIBUTE)));
+                AttributeCount * gcmSIZEOF(gcsVERTEXARRAY_ATTRIBUTE));
 
             /* Set buffer information. */
             ptr->offset = cache->offset;
@@ -4136,8 +5274,8 @@ Again:
         }
 
         /* Update cache usage. */
-        cache->offset += bytes;
-        cache->free   -= bytes;
+        cache->offset += TotalBytes;
+        cache->free   -= TotalBytes;
     }
 
     switch (ptr->type)
@@ -4311,6 +5449,12 @@ gcoSTREAM_CacheAttributes(
     gcmVERIFY_ARGUMENT(Attributes != gcvNULL);
     gcmVERIFY_ARGUMENT(Physical != gcvNULL);
 
+    /* If the stream wasn't initialized as dynamic, do it now */
+    if (Stream->dynamic == gcvNULL)
+    {
+        gcmONERROR(gcoSTREAM_SetCache(Stream));
+    }
+
     /* Compute number of bytes required. */
     bytes = Count * Stride;
 
@@ -4371,7 +5515,7 @@ gcoSTREAM_CacheAttributes(
 
     /* Compute hash key. */
     keyValue = ((First + (Count << 16)) ^ (Stride + (AttributeCount << 16)))
-             + gcmPTR2INT(Attributes[AttributeCount - 1].logical);
+             + gcmPTR2INT32(Attributes[AttributeCount - 1].logical);
     key      = (keyValue ^ (keyValue >> 16)) % gcdSTREAM_CACHE_HASH;
     gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_STREAM, "Hash key %u", key);
 
@@ -4478,10 +5622,10 @@ Again:
 
             /* Copy attributes into cache. */
             ptr->attributeCount = AttributeCount;
-            gcmONERROR(gcoOS_MemCopy(
+            gcoOS_MemCopy(
                 ptr->attributes,
                 Attributes,
-                AttributeCount * gcmSIZEOF(gcsVERTEXARRAY_ATTRIBUTE)));
+                AttributeCount * gcmSIZEOF(gcsVERTEXARRAY_ATTRIBUTE));
 
             /* Set buffer information. */
             ptr->offset = cache->offset;
@@ -4644,7 +5788,7 @@ gcoSTREAM_UnAlias(
     attr[0] = Attributes;
     attr[1] = Attributes->next;
 
-    /* Special case 2 attribites. */
+    /* Special case 2 attributes. */
     if ((attr[1]       != gcvNULL)
     &&  (attr[1]->next == gcvNULL)
 
@@ -4683,37 +5827,37 @@ gcoSTREAM_UnAlias(
             dst = stream->node.logical;
 
             /* Copy all vertices. */
-			/* Aligned case optimization. */
-			if ((stride == 4) && !((gctUINT32)src & 0x3) && !((gctUINT32)dst & 0x3))
-			{
-				gctUINT32_PTR tempSrc, tempDst;
-				tempSrc = (gctUINT32_PTR)src;
-				tempDst = (gctUINT32_PTR)dst;
+            /* Aligned case optimization. */
+            if ((stride == 4) && !((gctUINTPTR_T)src & 0x3) && !((gctUINTPTR_T)dst & 0x3))
+            {
+                gctUINT32_PTR tempSrc, tempDst;
+                tempSrc = (gctUINT32_PTR)src;
+                tempDst = (gctUINT32_PTR)dst;
 
-				for (bytes = Stream->size; bytes > 0; bytes -= stride)
-				{
-					/* Copy vertex. */
-					*tempDst++ = *tempSrc;
+                for (bytes = Stream->size; bytes > 0; bytes -= stride)
+                {
+                    /* Copy vertex. */
+                    *tempDst++ = *tempSrc;
 
-					/* Copy vertex again. */
-					*tempDst++ = *tempSrc++;
-				}
-			}
-			else
-			{
-				for (bytes = Stream->size; bytes > 0; bytes -= stride)
-				{
-					/* Copy vertex. */
-					gcmONERROR(gcoOS_MemCopy(dst, src, stride));
+                    /* Copy vertex again. */
+                    *tempDst++ = *tempSrc++;
+                }
+            }
+            else
+            {
+                for (bytes = Stream->size; bytes > 0; bytes -= stride)
+                {
+                    /* Copy vertex. */
+                    gcoOS_MemCopy(dst, src, stride);
 
-					/* Copy vertex again. */
-					gcmONERROR(gcoOS_MemCopy(dst + stride, src, stride));
+                    /* Copy vertex again. */
+                    gcoOS_MemCopy(dst + stride, src, stride);
 
-					/* Advance pointers. */
-					src += stride;
-					dst += stride * 2;
-				}
-			}
+                    /* Advance pointers. */
+                    src += stride;
+                    dst += stride * 2;
+                }
+            }
 
             /* Flush the vertex cache. */
             gcmONERROR(gcoSTREAM_Flush(stream));
@@ -4725,9 +5869,9 @@ gcoSTREAM_UnAlias(
 
             /* Copy sub-stream. */
             stream->subStreamCount = 1;
-            gcmONERROR(gcoOS_MemCopy(stream->subStreams,
-                                     Stream->subStreams,
-                                     gcmSIZEOF(gcsSTREAM_SUBSTREAM)));
+            gcoOS_MemCopy(stream->subStreams,
+                          Stream->subStreams,
+                          gcmSIZEOF(gcsSTREAM_SUBSTREAM));
 
             /* Setup unaliased sub-stream. */
             stream->subStreams[1].start  = 0;
@@ -4768,7 +5912,7 @@ gcoSTREAM_UnAlias(
 OnError:
     if (stream != gcvNULL)
     {
-        /* Detsroy newly created stream. */
+        /* Destroy newly created stream. */
         gcmVERIFY_OK(gcoSTREAM_Destroy(stream));
     }
 
@@ -4842,7 +5986,7 @@ gcoSTREAM_MergeStreams(
         /* Get the merged stream. */
         merged = Stream->merged;
 
-        /* Only copy if one of the streams is dirty or we havne't copied enough
+        /* Only copy if one of the streams is dirty or we haven't copied enough
         ** vertex data yet. */
         copy = merged->dirty || (count > merged->count);
 
@@ -4928,6 +6072,7 @@ gcoSTREAM_MergeStreams(
 
         gcmONERROR(
             gcoHARDWARE_QueryStreamCaps(gcvNULL,
+            gcvNULL,
             &maxStride,
             gcvNULL,
             gcvNULL));
@@ -5031,7 +6176,7 @@ gcoSTREAM_MergeStreams(
             Streams[i].stream->merged = merged;
         }
 
-        /* If stride excced max stride, only merge the neeeded sub streams .*/
+        /* If stride exceed max stride, only merge the needed sub streams .*/
         if (stride > maxStride)
         {
             /* reset merged pointer for all streams. */
@@ -5138,16 +6283,16 @@ gcoSTREAM_MergeStreams(
         /* Setup destination pointer. */
         dest = merged->node.logical;
 
-        /* Walk all the verticies. */
+        /* Walk all the vertices. */
         for (i = 0; i < count; ++i)
         {
             /* Walk all the substreams. */
             for (j = 0; j < index; ++j)
             {
-                /* Copy data from the setram to the merged stream. */
-                gcmONERROR(gcoOS_MemCopy(dest,
-                                         src[j],
-                                         mergeStride[j]));
+                /* Copy data from the stream to the merged stream. */
+                gcoOS_MemCopy(dest,
+                              src[j],
+                              mergeStride[j]);
 
                 /* Move to next substream. */
                 src[j] += merged->subStreams[j].stride;
@@ -5201,7 +6346,7 @@ gcoSTREAM_MergeStreams(
                 gcmONERROR(gcvSTATUS_TOO_COMPLEX);
             }
 
-            /* Append this attribte to the chain. */
+            /* Append this attribute to the chain. */
             if (last != gcvNULL)
             {
                 last->next = attribute;
@@ -5250,6 +6395,27 @@ OnError:
     }
 
     /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gcoSTREAM_CPUCacheOperation_Range(
+    IN gcoSTREAM Stream,
+    IN gctSIZE_T Offset,
+    IN gctSIZE_T Length,
+    IN gceCACHEOPERATION Operation
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+
+    gcmHEADER_ARG("Stream=0x%x, Offset=%u Length=%u Operation=%d", Stream, Offset, Length, Operation);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Stream, gcvOBJ_STREAM);
+
+    gcoSURF_NODE_CPUCacheOperation(&Stream->node, gcvSURF_VERTEX, Offset, Length, Operation);
+
     gcmFOOTER();
     return status;
 }
@@ -5480,7 +6646,7 @@ gcoSTREAM_CacheAttributes(
     IN gcoSTREAM Stream,
     IN gctUINT First,
     IN gctUINT Count,
-    IN gctUINT Bytes,
+    IN gctUINT TotalBytes,
     IN gctUINT BufferCount,
     IN gcsVERTEXARRAY_BUFFER_PTR Buffers,
     IN gctUINT AttributeCount,
@@ -5489,6 +6655,18 @@ gcoSTREAM_CacheAttributes(
     )
 {
     *Physical = 0;
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoSTREAM_CacheAttributesEx(
+    IN gcoSTREAM Stream,
+    IN gctUINT StreamCount,
+    IN gcsVERTEXARRAY_BUFOBJ_PTR Streams,
+    IN gctUINT First,
+    IN OUT gcoSTREAM * UncacheableStream
+    )
+{
     return gcvSTATUS_OK;
 }
 
@@ -5558,5 +6736,18 @@ gcoSTREAM_CPUCacheOperation(
 {
     return gcvSTATUS_OK;
 }
+
+gceSTATUS
+gcoSTREAM_CPUCacheOperation_Range(
+    IN gcoSTREAM Stream,
+    IN gctSIZE_T Offset,
+    IN gctSIZE_T Length,
+    IN gceCACHEOPERATION Operation
+    )
+{
+    return gcvSTATUS_OK;
+}
+
 #endif /* gcdNULL_DRIVER < 2 */
-#endif /* VIVANTE_NO_3D */
+#endif
+

@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -9,8 +9,6 @@
 *    without the express written permission of Vivante Corporation.
 *
 *****************************************************************************/
-
-
 
 
 #include "gc_hal_user_hardware_precomp_vg.h"
@@ -281,7 +279,8 @@ _SetSampler(
     IN gctUINT32 OriginX,
     IN gctUINT32 OriginY,
     IN gctUINT32 SizeX,
-    IN gctUINT32 SizeY
+    IN gctUINT32 SizeY,
+    IN gctBOOL isDrawImage
     )
 {
     gceSTATUS status;
@@ -337,14 +336,26 @@ _SetSampler(
         /* Determine the filter value. */
         filter = _filter[BilinearFilter];
 
-        /* Never premultiply input paint/image. */
-        preMultipliedIn = 0x1;
+        if (isDrawImage)
+        {
+            /* Never premultiply input paint/image. */
+            preMultipliedIn = (Image->colorType & gcvSURF_COLOR_ALPHA_PRE)
+                ? 0x1
+                : 0x0;
 
-        /* Demultiply if input is premultiplied. */
-        preMultipliedOut = (Image->colorType & gcvSURF_COLOR_ALPHA_PRE)
-            ? 0x0
-            : 0x1;
+            /* Demultiply if input is premultiplied. */
+            preMultipliedOut = 0x0;
+        }
+        else
+        {
+            /* Never premultiply input paint/image. */
+            preMultipliedIn = 0x1;
 
+            /* Demultiply if input is premultiplied. */
+            preMultipliedOut = (Image->colorType & gcvSURF_COLOR_ALPHA_PRE)
+                ? 0x0
+                : 0x1;
+        }
         /* Determine the type of coordinates. */
         coordType = ImageFilter
             ? 0x1
@@ -375,13 +386,15 @@ _SetSampler(
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x0287C >> 2,
-            ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 0:0) - (0 ? 0:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 0:0) - (0 ? 0:0) + 1))))))) << (0 ? 0:0))) | (((gctUINT32) (0x1 & ((gctUINT32) ((((1 ? 0:0) - (0 ? 0:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 0:0) - (0 ? 0:0) + 1))))))) << (0 ? 0:0)))
+            ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 0:0) - (0 ? 0:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 0:0) - (0 ? 0:0) + 1))))))) << (0 ? 0:0))) | (((gctUINT32) (0x1 & ((gctUINT32) ((((1 ? 0:0) - (0 ? 0:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 0:0) - (0 ? 0:0) + 1))))))) << (0 ? 0:0))),
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             (0x02890 >> 2) + Sampler,
-            control
+            control,
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SplitAddress(
@@ -393,25 +406,29 @@ _SetSampler(
             Hardware,
             (0x028A0 >> 2) + Sampler,
             (pool == gcvPOOL_VIRTUAL) ?
-            Image->node.physical : gcmFIXADDRESS(Image->node.physical)
+            Image->node.physical : gcmFIXADDRESS(Image->node.physical),
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             (0x028A8 >> 2) + Sampler,
-            stride
+            stride,
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             (0x028B0 >> 2) + Sampler,
-            origin
+            origin,
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             (0x028B8 >> 2) + Sampler,
-            size
+            size,
+            gcvFALSE
             ));
     }
     while (gcvFALSE);
@@ -424,7 +441,7 @@ static gceSTATUS
 _SendSemaphore(
     IN gcoVGHARDWARE Hardware,
     IN gctPOINTER Logical,
-    OUT gctSIZE_T * Bytes
+    OUT gctUINT32 * Bytes
     )
 {
     gceSTATUS status;
@@ -436,6 +453,17 @@ _SendSemaphore(
 
     do
     {
+#if gcdMOVG
+        gcmERR_BREAK(gcoVGHARDWARE_Semaphore(
+                Hardware,
+                Logical,
+                gcvBLOCK_TESSELLATOR2,
+                gcvBLOCK_VG2,
+                gcvHOW_SEMAPHORE_STALL,
+                Bytes,
+                gcvFALSE
+                ));
+#else
 #if gcdENABLE_TS_DOUBLE_BUFFER
         if (Hardware->vgDoubleBuffer)
         {
@@ -446,7 +474,8 @@ _SendSemaphore(
                 gcvBLOCK_TESSELLATOR2,
                 gcvBLOCK_VG2,
                 gcvHOW_SEMAPHORE,
-                Bytes
+                Bytes,
+                gcvFALSE
                 ));
         }
         else
@@ -461,6 +490,7 @@ _SendSemaphore(
             /* Success. */
             status = gcvSTATUS_OK;
         }
+#endif
     }
     while (gcvFALSE);
 
@@ -472,10 +502,10 @@ static gceSTATUS
 _SendStall(
     IN gcoVGHARDWARE Hardware,
     IN gctPOINTER Logical,
-    OUT gctSIZE_T * Bytes
+    OUT gctUINT32 * Bytes
     )
 {
-    gceSTATUS status;
+    gceSTATUS status = gcvSTATUS_OK;
 
     gcmHEADER_ARG("Hardware=0x%x Logical=0x%x Bytes=0x%x",
                   Hardware, Logical, Bytes);
@@ -484,6 +514,18 @@ _SendStall(
 
     do
     {
+#if gcdMOVG
+        /* Send 0/1 switching state. */
+        gcmERR_BREAK(gcoVGHARDWARE_Semaphore(
+            Hardware,
+            Logical,
+            gcvBLOCK_TESSELLATOR2,
+            gcvBLOCK_VG2,
+            gcvHOW_STALL,
+            Bytes,
+            gcvFALSE
+            ));
+#else
 #if gcdENABLE_TS_DOUBLE_BUFFER
         if (Hardware->vgDoubleBuffer)
         {
@@ -513,13 +555,15 @@ _SendStall(
                     gcvBLOCK_TESSELLATOR2,
                     gcvBLOCK_VG2,
                     gcvHOW_STALL,
-                    Bytes
+                    Bytes,
+                    gcvFALSE
                     ));
             }
         }
         else
+#endif
         {
-            /* No STALL needed. */
+            /* No STALL needed for Single_Buffer mode. */
             if (Bytes != gcvNULL)
             {
                 * Bytes = 0;
@@ -534,15 +578,6 @@ _SendStall(
                the contents of TS buffer prematurely. */
             status = gcvSTATUS_OK;
         }
-#else
-        gcmERR_BREAK(gcoVGHARDWARE_Semaphore(
-            Hardware,
-            Logical,
-            gcvBLOCK_TESSELLATOR,
-            gcvBLOCK_VG,
-            gcvHOW_SEMAPHORE_STALL,
-            Bytes
-            ));
 #endif
     }
     while (gcvFALSE);
@@ -1283,6 +1318,9 @@ gcoVGHARDWARE_SetVgTarget(
 {
     gceSTATUS status;
 
+    gcmHEADER_ARG("Hardware=0x%x Target=0x%x",
+                  Hardware, Target);
+
     do
     {
         gctUINT32 format;
@@ -1358,14 +1396,16 @@ gcoVGHARDWARE_SetVgTarget(
             Hardware,
             0x02844 >> 2,
             (pool == gcvPOOL_VIRTUAL) ?
-            Target->node.physical : gcmFIXADDRESS(Target->node.physical)
+            Target->node.physical : gcmFIXADDRESS(Target->node.physical),
+            gcvFALSE
             ));
 
         /* Load the target stride. */
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x02848 >> 2,
-            Target->stride
+            Target->stride,
+            gcvFALSE
             ));
 
         /* Load the target bounding box. */
@@ -1373,7 +1413,8 @@ gcoVGHARDWARE_SetVgTarget(
             Hardware,
             0x0284C >> 2,
               ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 12:0) - (0 ? 12:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 12:0) - (0 ? 12:0) + 1))))))) << (0 ? 12:0))) | (((gctUINT32) ((gctUINT32) (Target->rect.right) & ((gctUINT32) ((((1 ? 12:0) - (0 ? 12:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 12:0) - (0 ? 12:0) + 1))))))) << (0 ? 12:0)))
-            | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 28:16) - (0 ? 28:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 28:16) - (0 ? 28:16) + 1))))))) << (0 ? 28:16))) | (((gctUINT32) ((gctUINT32) (Target->rect.bottom) & ((gctUINT32) ((((1 ? 28:16) - (0 ? 28:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 28:16) - (0 ? 28:16) + 1))))))) << (0 ? 28:16)))
+            | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 28:16) - (0 ? 28:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 28:16) - (0 ? 28:16) + 1))))))) << (0 ? 28:16))) | (((gctUINT32) ((gctUINT32) (Target->rect.bottom) & ((gctUINT32) ((((1 ? 28:16) - (0 ? 28:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 28:16) - (0 ? 28:16) + 1))))))) << (0 ? 28:16))),
+            gcvFALSE
             ));
 
         /* Set the format and swizzle. */
@@ -1405,10 +1446,14 @@ gcoVGHARDWARE_SetVgTarget(
             );
 #endif
 
+        gcmFOOTER_NO();
+
         /* Success. */
         return gcvSTATUS_OK;
     }
     while (gcvFALSE);
+
+    gcmFOOTER();
 
     /* Return status. */
     return status;
@@ -1467,7 +1512,8 @@ gcoVGHARDWARE_DrawVgRect(
             Hardware->buffer,
             sizeof(gctUINT32) * 2 + sizeof(gcsVG_HWRECT),
             gcvTRUE,
-            (gctPOINTER *) &memory
+            (gctPOINTER *) &memory,
+            gcvFALSE
             ));
 
         /* Add a data command. */
@@ -1555,7 +1601,8 @@ gcoVGHARDWARE_DrawImage(
     IN gcsVG_RECT_PTR SrcRect,
     IN gcsVG_RECT_PTR TrgRect,
     IN gceIMAGE_FILTER Filter,
-    IN gctBOOL Mask
+    IN gctBOOL Mask,
+    IN gctBOOL isDrawImage
     )
 {
     gceSTATUS status;
@@ -1658,7 +1705,8 @@ gcoVGHARDWARE_DrawImage(
             SrcRect->x,
             srcY,
             SrcRect->width,
-            SrcRect->height
+            SrcRect->height,
+            isDrawImage
             ));
 
         /* Enable paint/image transform premultiplication if... */
@@ -1736,6 +1784,9 @@ gcoVGHARDWARE_TesselateImage(
     )
 {
     gceSTATUS status;
+#if gcdMOVG
+    gctBOOL     needTS = gcvTRUE;
+#endif
 
     gcmHEADER_ARG("Hardware=0x%x",
                   Hardware);
@@ -1801,19 +1852,19 @@ gcoVGHARDWARE_TesselateImage(
         )
 
         gctUINT8_PTR path;
-        gctSIZE_T dataCommandSize;
+        gctUINT32 dataCommandSize;
 
-        float widthProduct[3];
-        float heightProduct[3];
+        gctFLOAT widthProduct[3];
+        gctFLOAT heightProduct[3];
 
-        float point0[3];
-        float point1[3];
-        float point2[3];
-        float point3[3];
+        gctFLOAT point0[3];
+        gctFLOAT point1[3];
+        gctFLOAT point2[3];
+        gctFLOAT point3[3];
 
-        float imageStepX[3];
-        float imageStepY[3];
-        float imageConst[3];
+        gctFLOAT imageStepX[3];
+        gctFLOAT imageStepY[3];
+        gctFLOAT imageConst[3];
 
         gctUINT8 pathDataBuffer[gcvPATH_DATA_BUFFER_SIZE];
         gcsPATH_DATA_PTR pathData = (gcsPATH_DATA_PTR) pathDataBuffer;
@@ -1879,22 +1930,38 @@ gcoVGHARDWARE_TesselateImage(
         point3[1] /= point3[2];
         point3[2]  = 1.0f;
 
-#define NEG_MOST    (float)(-(2^19))
-#define POS_MOST    (float)((2^19) - 1)
+#define NEG_MOST    -524288.0f
+
+#define POS_MOST    524287.0f
+
         if ((point0[0] > POS_MOST) || (point0[0] < NEG_MOST) ||
+
             (point0[1] > POS_MOST) || (point0[1] < NEG_MOST) ||
+
             (point1[0] > POS_MOST) || (point1[0] < NEG_MOST) ||
+
             (point1[1] > POS_MOST) || (point1[1] < NEG_MOST) ||
+
             (point2[0] > POS_MOST) || (point2[0] < NEG_MOST) ||
+
             (point2[1] > POS_MOST) || (point2[1] < NEG_MOST) ||
+
             (point3[0] > POS_MOST) || (point3[0] < NEG_MOST) ||
+
             (point3[1] > POS_MOST) || (point3[1] < NEG_MOST))
+
         {
+
             status = gcvSTATUS_DATA_TOO_LARGE;
+
             break;
+
         }
+
 #undef NEG_MOST
+
 #undef POS_MOST
+
 
         /***********************************************************************
         ** Transform image parameters.
@@ -1939,11 +2006,28 @@ gcoVGHARDWARE_TesselateImage(
         Hardware->vg.imageLinear
             = (Image->colorType & gcvSURF_COLOR_LINEAR) != 0;
 
+#if gcdMOVG
+        /* Check whether we need a TS to do the image drawing. */
+        if ((Hardware->vg.blendMode != gcvVG_BLEND_SRC_OVER)
+            || Hardware->vg.scissorEnable
+            || SoftwareTesselation)
+        {
+            needTS = gcvTRUE;
+        }
+        else
+        {
+            needTS = gcvFALSE;
+        }
+#endif
 
         /***********************************************************************
         ** Set image parameters.
         */
 
+#if gcdMOVG
+        if (needTS)
+        {
+#endif
         gcmERR_BREAK(gcoVGHARDWARE_SetStates(
             Hardware,
             0x02870 >> 2,
@@ -1978,7 +2062,8 @@ gcoVGHARDWARE_TesselateImage(
             Rectangle->x,
             Rectangle->y,
             Rectangle->width,
-            Rectangle->height
+            Rectangle->height,
+            gcvTRUE
             ));
 
         /* Premultiply transformed color if not in image filter mode. */
@@ -2094,6 +2179,261 @@ gcoVGHARDWARE_TesselateImage(
                 boundingBox.bottom
                 ));
         }
+
+#if gcdMOVG
+        }
+
+        else        /* Go without TS. */
+        {
+            gctUINT16 rect[4];
+            gctFLOAT minx, miny, maxx, maxy;
+
+            if (Hardware->vg.peFlushNeeded)
+            {
+                gcmERR_BREAK(gcoVGHARDWARE_FlushPipe(
+                    Hardware
+                    ));
+
+                Hardware->vg.peFlushNeeded = gcvFALSE;
+            }
+            gcmERR_BREAK(gcoVGHARDWARE_EnableTessellation(
+                Hardware, gcvFALSE
+                ));     /* Don't use tessellation. */
+
+            /* Set target control. */
+            gcmERR_BREAK(gcoVGHARDWARE_ProgramControl(
+                Hardware, gcvNULL, gcvNULL
+                ));
+            gcmERR_BREAK(gcoVGHARDWARE_SetState(
+                Hardware,
+                0x0A00,
+                  0x00000001 /* Rasterize rectangle */
+                | 0x00001000 /*imageMode*/
+                | 0x00000100/*blend_mode*/
+                | 0x8000/*rotation*/,
+                gcvFALSE
+                ));
+
+            gcmERR_BREAK(gcoVGHARDWARE_SetStates(
+                Hardware,
+                0x0A18,
+                gcmCOUNTOF(imageConst), imageConst
+                ));
+
+            gcmERR_BREAK(gcoVGHARDWARE_SetStates(
+                Hardware,
+                0x0A1C,
+                gcmCOUNTOF(imageStepX), imageStepX
+                ));
+
+            gcmERR_BREAK(gcoVGHARDWARE_SetStates(
+                Hardware,
+                0x0A20,
+                gcmCOUNTOF(imageStepY),
+                imageStepY
+                ));
+            /* Set states for sampler 1, so you see here the address are odd numbers. */
+            gcmERR_BREAK(gcoVGHARDWARE_SetState(
+                Hardware,
+                0x0A27,
+                0, gcvFALSE));    /* Set border color to (0, 0, 0, 0) for killing. */
+           gcmERR_BREAK(_SetSampler(
+                Hardware,
+                1, /* Use the second sampler for images. */
+                Image,
+                gcvTILE_FILL, /* Tile mode: Clamp to border            */
+                gcvFALSE, /* Mask vs. image selection.          */
+                Filter, /* Image quailty filter mode.         */
+                gcvFALSE, /* Not in image filter mode.          */
+                Rectangle->x,
+                Rectangle->y,
+                Rectangle->width,
+                Rectangle->height,
+                gcvTRUE
+                ));
+            minx = miny = maxx = maxy = 0.0f;
+            minx = gcmMIN(point0[0], gcmMIN(point1[0], gcmMIN(point2[0], point3[0])));
+            miny = gcmMIN(point0[1], gcmMIN(point1[1], gcmMIN(point2[1], point3[1])));
+            maxx = gcmMAX(point0[0], gcmMAX(point1[0], gcmMAX(point2[0], point3[0])));
+            maxy = gcmMAX(point0[1], gcmMAX(point1[1], gcmMAX(point2[1], point3[1])));
+            minx = gcmMAX(0.0f, minx);
+            miny = gcmMAX(0.0f, miny);
+            maxx = gcmMIN(Hardware->vg.targetWidth, maxx);
+            maxy = gcmMIN(Hardware->vg.targetHeight, maxy);
+            rect[0] = (gctUINT16)minx;
+            rect[1] = (gctUINT16)miny;
+            rect[2] = (gctUINT16)(maxx - minx);
+            rect[3] = (gctUINT16)(maxy - miny);
+            gcmERR_BREAK(gcoVGHARDWARE_SetData(
+                Hardware,
+                8,
+                (gctPOINTER)rect
+                ));
+
+            gcoVGHARDWARE_FlushPipe(Hardware);
+        }
+#endif
+    }
+    while (gcvFALSE);
+
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gcoVGHARDWARE_DrawSurfaceToImage(
+    IN gcoVGHARDWARE Hardware,
+    IN const gcsSURF_INFO_PTR Image,
+    IN const gcsVG_RECT_PTR SrcRectangle,
+    IN const gcsVG_RECT_PTR DstRectangle,
+    IN gceIMAGE_FILTER Filter,
+    IN gctBOOL Mask,
+    IN const gctFLOAT SurfaceToImage[9],
+    IN gctBOOL FirstTime
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Hardware=0x%x", Hardware);
+
+    gcmGETVGHARDWARE(Hardware);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Hardware, gcvOBJ_HARDWARE);
+
+    do
+    {
+        gctFLOAT imageStepX[3];
+        gctFLOAT imageStepY[3];
+        gctFLOAT imageConst[3];
+        gcsVG_HWRECT rect;
+
+        /***********************************************************************
+        ** Transform image parameters.
+        */
+
+        imageStepX[0] = SurfaceToImage[0] / SrcRectangle->width;
+        imageStepX[1] = SurfaceToImage[1] / SrcRectangle->height;
+        imageStepX[2] = SurfaceToImage[2];
+
+        imageStepY[0] = SurfaceToImage[3] / SrcRectangle->width;
+        imageStepY[1] = SurfaceToImage[4] / SrcRectangle->height;
+        imageStepY[2] = SurfaceToImage[5];
+
+        imageConst[0] = ((0.5f * SurfaceToImage[0] + SurfaceToImage[3]) + SurfaceToImage[6]) / SrcRectangle->width;
+        imageConst[1] = ((0.5f * SurfaceToImage[1] + SurfaceToImage[4]) + SurfaceToImage[7]) / SrcRectangle->height;
+        imageConst[2] = (0.5f * SurfaceToImage[2] + SurfaceToImage[5]) + SurfaceToImage[8];
+
+        /***********************************************************************
+        ** Set image parameters.
+        */
+
+		if (FirstTime)
+		{
+			Hardware->vg.imageLinear = ((Image->colorType & gcvSURF_COLOR_LINEAR) != 0);
+
+	        if (Hardware->vg.peFlushNeeded)
+    	    {
+				gcmERR_BREAK(gcoVGHARDWARE_FlushPipe(
+					Hardware
+					));
+
+				Hardware->vg.peFlushNeeded = gcvFALSE;
+			}
+
+			gcmERR_BREAK(gcoVGHARDWARE_EnableTessellation(
+				Hardware, gcvFALSE
+				));
+
+			gcmERR_BREAK(gcoVGHARDWARE_ProgramControl(
+				Hardware, gcvNULL, gcvNULL
+				));
+
+			gcmERR_BREAK(gcoVGHARDWARE_SetState(
+				Hardware,
+				0x0A00,
+				  0x00000001 /* Rasterize rectangle */
+				| 0x00001000 /* imageMode */
+				| 0x00000100 /* blend_mode */
+				| 0x8000 /* rotation */,
+				gcvFALSE
+				));
+
+			/* Set states for sampler 1, so you see here the address are odd numbers. */
+			gcmERR_BREAK(gcoVGHARDWARE_SetState(
+				Hardware,
+				0x0A27,
+				0, /* Set border color to (0, 0, 0, 0) for killing. */
+				gcvFALSE
+				));
+
+		   gcmERR_BREAK(_SetSampler(
+				Hardware,
+				1, /* Use the second sampler for images. */
+				Image,
+				gcvTILE_FILL, /* Tile mode: Clamp to border */
+				Mask, /* Mask vs. image selection. */
+				Filter, /* Image quailty filter mode. */
+				gcvFALSE, /* Not in image filter mode. */
+				SrcRectangle->x, /* Image origin. */
+				SrcRectangle->y,
+				SrcRectangle->width,/* Image size. */
+				SrcRectangle->height,
+				gcvTRUE
+				));
+		}
+		else
+		{
+			gctUINT origin
+				= ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 12:0) - (0 ? 12:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 12:0) - (0 ? 12:0) + 1))))))) << (0 ? 12:0))) | (((gctUINT32) ((gctUINT32) (SrcRectangle->x) & ((gctUINT32) ((((1 ? 12:0) - (0 ? 12:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 12:0) - (0 ? 12:0) + 1))))))) << (0 ? 12:0)))
+				| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 28:16) - (0 ? 28:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 28:16) - (0 ? 28:16) + 1))))))) << (0 ? 28:16))) | (((gctUINT32) ((gctUINT32) (SrcRectangle->y) & ((gctUINT32) ((((1 ? 28:16) - (0 ? 28:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 28:16) - (0 ? 28:16) + 1))))))) << (0 ? 28:16)));
+
+			gctUINT size
+				= ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 13:0) - (0 ? 13:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 13:0) - (0 ? 13:0) + 1))))))) << (0 ? 13:0))) | (((gctUINT32) ((gctUINT32) (SrcRectangle->width) & ((gctUINT32) ((((1 ? 13:0) - (0 ? 13:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 13:0) - (0 ? 13:0) + 1))))))) << (0 ? 13:0)))
+				| ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 29:16) - (0 ? 29:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:16) - (0 ? 29:16) + 1))))))) << (0 ? 29:16))) | (((gctUINT32) ((gctUINT32) (SrcRectangle->height) & ((gctUINT32) ((((1 ? 29:16) - (0 ? 29:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:16) - (0 ? 29:16) + 1))))))) << (0 ? 29:16)));
+
+			gcmERR_BREAK(gcoVGHARDWARE_SetState(
+				Hardware,
+				0x0A2C + 1,
+				origin,
+				gcvFALSE
+				));
+
+			gcmERR_BREAK(gcoVGHARDWARE_SetState(
+				Hardware,
+				0x0A2E + 1,
+				size,
+				gcvFALSE
+				));
+		}
+
+		gcmERR_BREAK(gcoVGHARDWARE_SetStates(
+			Hardware,
+			0x0A18,
+			gcmCOUNTOF(imageConst), imageConst
+			));
+
+		gcmERR_BREAK(gcoVGHARDWARE_SetStates(
+			Hardware,
+			0x0A1C,
+			gcmCOUNTOF(imageStepX), imageStepX
+			));
+
+		gcmERR_BREAK(gcoVGHARDWARE_SetStates(
+			Hardware,
+			0x0A20,
+			gcmCOUNTOF(imageStepY), imageStepY
+			));
+
+		rect.x = DstRectangle->x;
+		rect.y = DstRectangle->y;
+		rect.width = DstRectangle->width;
+		rect.height = DstRectangle->height;
+
+		gcmERR_BREAK(gcoVGHARDWARE_SetData(
+			Hardware,
+			8, &rect
+			));
     }
     while (gcvFALSE);
 
@@ -2229,6 +2569,7 @@ gcoVGHARDWARE_VgBlit(
                 SrcRect,
                 &tempRect,
                 gcvFILTER_POINT,
+                gcvFALSE,
                 gcvFALSE
                 ));
 
@@ -2265,6 +2606,7 @@ gcoVGHARDWARE_VgBlit(
             SrcRect,
             TrgRect,
             Filter,
+            gcvFALSE,
             gcvFALSE
             ));
 
@@ -2354,13 +2696,13 @@ gcoVGHARDWARE_DrawPath(
         {
             if (Hardware->vg21 && Hardware->vgRestart)
             {
-                gctSIZE_T stallSize;
-                gctSIZE_T beginSize;
-                gctSIZE_T controlSize;
-                gctSIZE_T appendSize;
-                gctSIZE_T endSize;
-                gctSIZE_T semaphoreSize;
-                gctSIZE_T totalSize = 0;
+                gctUINT32 stallSize;
+                gctUINT32 beginSize;
+                gctUINT32 controlSize;
+                gctUINT32 appendSize;
+                gctUINT32 endSize;
+                gctUINT32 semaphoreSize;
+                gctUINT32 totalSize = 0;
                 gctUINT32 currCmdAddress;
                 gctUINT32 prevCmdAddress;
                 gctUINT32 restartAddress;
@@ -2434,7 +2776,8 @@ gcoVGHARDWARE_DrawPath(
 
                     /* Make sure there is enough space in the current buffer. */
                     gcmERR_BREAK(gcoVGBUFFER_EnsureSpace(
-                        Hardware->buffer, totalSize, gcvTRUE
+                        Hardware->buffer, totalSize, gcvTRUE,
+                        gcvFALSE
                         ));
 
                     /* Get the current address inside the command buffer. */
@@ -2461,7 +2804,8 @@ gcoVGHARDWARE_DrawPath(
                     Hardware->buffer,
                     totalSize,
                     gcvTRUE,
-                    (gctPOINTER *) &memory
+                    (gctPOINTER *) &memory,
+                    gcvFALSE
                     ));
 
                 /* Schedule a stall. */
@@ -2580,7 +2924,8 @@ gcoVGHARDWARE_DrawPath(
                 gcmERR_BREAK(gcoVGHARDWARE_SetState(
                     Hardware,
                     0x028F4 >> 2,
-                    TessellationBuffer->clearSize >> 6
+                    TessellationBuffer->clearSize >> 6,
+                    gcvFALSE
                     ));
 
                 /* Path gets directly set into the command buffer? */
@@ -2598,7 +2943,8 @@ gcoVGHARDWARE_DrawPath(
                             Hardware->buffer,
                             PathData->data.size,
                             gcvTRUE,
-                            Path
+                            Path,
+                            gcvFALSE
                             ));
                     }
                 }
@@ -2985,7 +3331,8 @@ gcoVGHARDWARE_FlushVgMask(
     status = gcoVGHARDWARE_SetState(
         Hardware,
         0x0286C >> 2,
-        ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 4:4) - (0 ? 4:4) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 4:4) - (0 ? 4:4) + 1))))))) << (0 ? 4:4))) | (((gctUINT32) (0x1 & ((gctUINT32) ((((1 ? 4:4) - (0 ? 4:4) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 4:4) - (0 ? 4:4) + 1))))))) << (0 ? 4:4)))
+        ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 4:4) - (0 ? 4:4) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 4:4) - (0 ? 4:4) + 1))))))) << (0 ? 4:4))) | (((gctUINT32) (0x1 & ((gctUINT32) ((((1 ? 4:4) - (0 ? 4:4) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 4:4) - (0 ? 4:4) + 1))))))) << (0 ? 4:4))),
+        gcvFALSE
         );
 
     gcmFOOTER();
@@ -3019,21 +3366,24 @@ gcoVGHARDWARE_SetScissor(
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x02858 >> 2,
-            gcmFIXADDRESS(Address)
+            gcmFIXADDRESS(Address),
+            gcvFALSE
             ));
 
         /* Program scissor stride. */
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x0285C >> 2,
-            Stride
+            Stride,
+            gcvFALSE
             ));
 
         /* Flush scissor cache. */
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x0286C >> 2,
-            ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 8:8) - (0 ? 8:8) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 8:8) - (0 ? 8:8) + 1))))))) << (0 ? 8:8))) | (((gctUINT32) (0x1 & ((gctUINT32) ((((1 ? 8:8) - (0 ? 8:8) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 8:8) - (0 ? 8:8) + 1))))))) << (0 ? 8:8)))
+            ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 8:8) - (0 ? 8:8) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 8:8) - (0 ? 8:8) + 1))))))) << (0 ? 8:8))) | (((gctUINT32) (0x1 & ((gctUINT32) ((((1 ? 8:8) - (0 ? 8:8) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 8:8) - (0 ? 8:8) + 1))))))) << (0 ? 8:8))),
+            gcvFALSE
             ));
 
         /* Success. */
@@ -3117,11 +3467,21 @@ gcoVGHARDWARE_SetPaintSolid(
             | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 23:16) - (0 ? 23:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 23:16) - (0 ? 23:16) + 1))))))) << (0 ? 23:16))) | (((gctUINT32) ((gctUINT32) (Blue) & ((gctUINT32) ((((1 ? 23:16) - (0 ? 23:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 23:16) - (0 ? 23:16) + 1))))))) << (0 ? 23:16)))
             | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 31:24) - (0 ? 31:24) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:24) - (0 ? 31:24) + 1))))))) << (0 ? 31:24))) | (((gctUINT32) ((gctUINT32) (Alpha) & ((gctUINT32) ((((1 ? 31:24) - (0 ? 31:24) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:24) - (0 ? 31:24) + 1))))))) << (0 ? 31:24)));
 
+        if (!Hardware->vg.targetPremultiplied)
+        {
+            /* Premultiply transformed color in color paint. */
+            Hardware->vg.colorPremultiply = 0x0;
+
+            /* Demultiply the color in color paint. */
+            Hardware->vg.targetPremultiply = 0x0;
+        }
+
         /* Program paint color. */
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x02808 >> 2,
-            color
+            color,
+            gcvFALSE
             ));
 
         /* Set VG Control paint mode. */
@@ -3162,19 +3522,22 @@ gcoVGHARDWARE_SetPaintLinear(
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x02810 >> 2,
-            *(gctUINT32*) &Constant
+            *(gctUINT32*) &Constant,
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x02818 >> 2,
-            *(gctUINT32*) &StepX
+            *(gctUINT32*) &StepX,
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x02820 >> 2,
-            *(gctUINT32*) &StepY
+            *(gctUINT32*) &StepY,
+            gcvFALSE
             ));
 
         /* Set VG Control paint mode. */
@@ -3222,55 +3585,64 @@ gcoVGHARDWARE_SetPaintRadial(
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x02810 >> 2,
-            *(gctUINT32*) &LinConstant
+            *(gctUINT32*) &LinConstant,
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x02818 >> 2,
-            *(gctUINT32*) &LinStepX
+            *(gctUINT32*) &LinStepX,
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x02820 >> 2,
-            *(gctUINT32*) &LinStepY
+            *(gctUINT32*) &LinStepY,
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             (0x02810 >> 2) + 1,
-            *(gctUINT32*) &RadConstant
+            *(gctUINT32*) &RadConstant,
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             (0x02818 >> 2) + 1,
-            *(gctUINT32*) &RadStepX
+            *(gctUINT32*) &RadStepX,
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             (0x02820 >> 2) + 1,
-            *(gctUINT32*) &RadStepY
+            *(gctUINT32*) &RadStepY,
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x0280C >> 2,
-            *(gctUINT32*) &RadStepXX
+            *(gctUINT32*) &RadStepXX,
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x02828 >> 2,
-            *(gctUINT32*) &RadStepYY
+            *(gctUINT32*) &RadStepYY,
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x0282C >> 2,
-            *(gctUINT32*) &RadStepXY
+            *(gctUINT32*) &RadStepXY,
+            gcvFALSE
             ));
 
         /* Set VG Control paint mode. */
@@ -3328,37 +3700,43 @@ gcoVGHARDWARE_SetPaintPattern(
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
                 Hardware,
                 0x02810 >> 2,
-                *(gctUINT32*) &paintOrigin[0]
+                *(gctUINT32*) &paintOrigin[0],
+                gcvFALSE
                 ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
                 Hardware,
                 (0x02810 >> 2) + 1,
-                 *(gctUINT32*) &paintOrigin[1]
+                 *(gctUINT32*) &paintOrigin[1],
+                 gcvFALSE
                 ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
                 Hardware,
                 0x02818 >> 2,
-                *(gctUINT32*) &paintStepX[0]
+                *(gctUINT32*) &paintStepX[0],
+                gcvFALSE
                 ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
                 Hardware,
                 (0x02818 >> 2) + 1,
-                *(gctUINT32*) &paintStepX[1]
+                *(gctUINT32*) &paintStepX[1],
+                gcvFALSE
                 ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
                 Hardware,
                 0x02820 >> 2,
-                *(gctUINT32*) &paintStepY[0]
+                *(gctUINT32*) &paintStepY[0],
+                gcvFALSE
                 ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
                 Hardware,
                 (0x02820 >> 2) + 1,
-                *(gctUINT32*) &paintStepY[1]
+                *(gctUINT32*) &paintStepY[1],
+                gcvFALSE
                 ));
 
         /* Set VG Control paint mode. */
@@ -3402,7 +3780,8 @@ gcoVGHARDWARE_SetPaintImage(
             gcvFALSE, /* Not in image filter mode.          */
             0, 0,
             Image->rect.right,
-            Image->rect.bottom
+            Image->rect.bottom,
+            gcvTRUE
             ));
 
         /* Enable paint/image transform premultiplication if... */
@@ -3445,7 +3824,8 @@ gcoVGHARDWARE_SetPaintImage(
             gcmERR_BREAK(gcoVGHARDWARE_SetState(
                 Hardware,
                 0x02898 >> 2,
-                FillColor
+                FillColor,
+                gcvFALSE
                 ));
         }
     }
@@ -3476,13 +3856,15 @@ gcoVGHARDWARE_SetVgMask(
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x02850 >> 2,
-            gcmFIXADDRESS(Mask->node.physical)
+            gcmFIXADDRESS(Mask->node.physical),
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x02854 >> 2,
-            Mask->stride
+            Mask->stride,
+            gcvFALSE
             ));
 
         /* Success. */
@@ -3505,6 +3887,12 @@ gceSTATUS
 gcoVGHARDWARE_SetTessellation(
     IN gcoVGHARDWARE Hardware,
     IN gctBOOL SoftwareTesselation,
+#if gcdMOVG
+    IN gctINT  PathX,
+    IN gctINT  PathY,
+    IN gctINT  TsX,
+    IN gctINT  TsY,
+#endif
     IN gctUINT16 TargetWidth,
     IN gctUINT16 TargetHeight,
     IN gctFLOAT Bias,
@@ -3530,41 +3918,56 @@ gcoVGHARDWARE_SetTessellation(
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x0286C >> 2,
-            ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 16:16) - (0 ? 16:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 16:16) - (0 ? 16:16) + 1))))))) << (0 ? 16:16))) | (((gctUINT32) (0x1 & ((gctUINT32) ((((1 ? 16:16) - (0 ? 16:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 16:16) - (0 ? 16:16) + 1))))))) << (0 ? 16:16)))
+            ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 16:16) - (0 ? 16:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 16:16) - (0 ? 16:16) + 1))))))) << (0 ? 16:16))) | (((gctUINT32) (0x1 & ((gctUINT32) ((((1 ? 16:16) - (0 ? 16:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 16:16) - (0 ? 16:16) + 1))))))) << (0 ? 16:16))),
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x028C0 >> 2,
-            gcmFIXADDRESS(TessellationBuffer->tsBufferPhysical)
+            gcmFIXADDRESS(TessellationBuffer->tsBufferPhysical),
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x028C4 >> 2,
-            gcmFIXADDRESS(TessellationBuffer->L1BufferPhysical)
+            gcmFIXADDRESS(TessellationBuffer->L1BufferPhysical),
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x028C8 >> 2,
-            gcmFIXADDRESS(TessellationBuffer->L2BufferPhysical)
+            gcmFIXADDRESS(TessellationBuffer->L2BufferPhysical),
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x028CC >> 2,
               ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0))) | (((gctUINT32) ((gctUINT32) (TessellationBuffer->stride) & ((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0)))
-            | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 18:16) - (0 ? 18:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 18:16) - (0 ? 18:16) + 1))))))) << (0 ? 18:16))) | (((gctUINT32) ((gctUINT32) (TessellationBuffer->shift) & ((gctUINT32) ((((1 ? 18:16) - (0 ? 18:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 18:16) - (0 ? 18:16) + 1))))))) << (0 ? 18:16)))
+            | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 18:16) - (0 ? 18:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 18:16) - (0 ? 18:16) + 1))))))) << (0 ? 18:16))) | (((gctUINT32) ((gctUINT32) (TessellationBuffer->shift) & ((gctUINT32) ((((1 ? 18:16) - (0 ? 18:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 18:16) - (0 ? 18:16) + 1))))))) << (0 ? 18:16))),
+            gcvFALSE
             ));
 
+#if gcdMOVG
+        gcmERR_BREAK(gcoVGHARDWARE_SetState(
+            Hardware,
+            0x02804 >> 2,
+              ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0))) | (((gctUINT32) ((gctUINT32) (PathX) & ((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0)))
+            | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 31:16) - (0 ? 31:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:16) - (0 ? 31:16) + 1))))))) << (0 ? 31:16))) | (((gctUINT32) ((gctUINT32) (PathY) & ((gctUINT32) ((((1 ? 31:16) - (0 ? 31:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:16) - (0 ? 31:16) + 1))))))) << (0 ? 31:16))),
+            gcvFALSE
+            ));
+#else
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x02804 >> 2,
               ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0)))
-            | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 31:16) - (0 ? 31:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:16) - (0 ? 31:16) + 1))))))) << (0 ? 31:16))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 31:16) - (0 ? 31:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:16) - (0 ? 31:16) + 1))))))) << (0 ? 31:16)))
+            | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 31:16) - (0 ? 31:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:16) - (0 ? 31:16) + 1))))))) << (0 ? 31:16))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 31:16) - (0 ? 31:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:16) - (0 ? 31:16) + 1))))))) << (0 ? 31:16))),
+            gcvFALSE
             ));
-
+#endif
 
         /*
             Tessellator states.
@@ -3592,52 +3995,70 @@ gcoVGHARDWARE_SetTessellation(
             gcmERR_BREAK(gcoVGHARDWARE_SetState(
                 Hardware,
                 0x028D4 >> 2,
-                gcmFIXADDRESS(TessellationBuffer->tsBufferPhysical)
+                gcmFIXADDRESS(TessellationBuffer->tsBufferPhysical),
+                gcvFALSE
                 ));
 
             gcmERR_BREAK(gcoVGHARDWARE_SetState(
                 Hardware,
                 0x028D8 >> 2,
-                gcmFIXADDRESS(TessellationBuffer->L1BufferPhysical)
+                gcmFIXADDRESS(TessellationBuffer->L1BufferPhysical),
+                gcvFALSE
                 ));
 
             gcmERR_BREAK(gcoVGHARDWARE_SetState(
                 Hardware,
                 0x028DC >> 2,
-                gcmFIXADDRESS(TessellationBuffer->L2BufferPhysical)
+                gcmFIXADDRESS(TessellationBuffer->L2BufferPhysical),
+                gcvFALSE
                 ));
 
             gcmERR_BREAK(gcoVGHARDWARE_SetState(
                 Hardware,
                 0x028E0 >> 2,
                   ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0))) | (((gctUINT32) ((gctUINT32) (TessellationBuffer->stride) & ((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0)))
-                | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 18:16) - (0 ? 18:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 18:16) - (0 ? 18:16) + 1))))))) << (0 ? 18:16))) | (((gctUINT32) ((gctUINT32) (TessellationBuffer->shift) & ((gctUINT32) ((((1 ? 18:16) - (0 ? 18:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 18:16) - (0 ? 18:16) + 1))))))) << (0 ? 18:16)))
+                | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 18:16) - (0 ? 18:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 18:16) - (0 ? 18:16) + 1))))))) << (0 ? 18:16))) | (((gctUINT32) ((gctUINT32) (TessellationBuffer->shift) & ((gctUINT32) ((((1 ? 18:16) - (0 ? 18:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 18:16) - (0 ? 18:16) + 1))))))) << (0 ? 18:16))),
+                gcvFALSE
                 ));
 
+#if gcdMOVG
+            gcmERR_BREAK(gcoVGHARDWARE_SetState(
+                Hardware,
+                0x028E4 >> 2,
+                  ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 11:0) - (0 ? 11:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 11:0) - (0 ? 11:0) + 1))))))) << (0 ? 11:0))) | (((gctUINT32) ((gctUINT32) (TsX) & ((gctUINT32) ((((1 ? 11:0) - (0 ? 11:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 11:0) - (0 ? 11:0) + 1))))))) << (0 ? 11:0)))
+                | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 27:16) - (0 ? 27:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 27:16) - (0 ? 27:16) + 1))))))) << (0 ? 27:16))) | (((gctUINT32) ((gctUINT32) (TsY) & ((gctUINT32) ((((1 ? 27:16) - (0 ? 27:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 27:16) - (0 ? 27:16) + 1))))))) << (0 ? 27:16))),
+                gcvFALSE
+                ));
+#else
             gcmERR_BREAK(gcoVGHARDWARE_SetState(
                 Hardware,
                 0x028E4 >> 2,
                   ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 11:0) - (0 ? 11:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 11:0) - (0 ? 11:0) + 1))))))) << (0 ? 11:0))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 11:0) - (0 ? 11:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 11:0) - (0 ? 11:0) + 1))))))) << (0 ? 11:0)))
-                | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 27:16) - (0 ? 27:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 27:16) - (0 ? 27:16) + 1))))))) << (0 ? 27:16))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 27:16) - (0 ? 27:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 27:16) - (0 ? 27:16) + 1))))))) << (0 ? 27:16)))
+                | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 27:16) - (0 ? 27:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 27:16) - (0 ? 27:16) + 1))))))) << (0 ? 27:16))) | (((gctUINT32) ((gctUINT32) (0) & ((gctUINT32) ((((1 ? 27:16) - (0 ? 27:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 27:16) - (0 ? 27:16) + 1))))))) << (0 ? 27:16))),
+                gcvFALSE
                 ));
+#endif
 
             gcmERR_BREAK(gcoVGHARDWARE_SetState(
                 Hardware,
                 0x028E8 >> 2,
                   ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 12:0) - (0 ? 12:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 12:0) - (0 ? 12:0) + 1))))))) << (0 ? 12:0))) | (((gctUINT32) ((gctUINT32) (TargetWidth) & ((gctUINT32) ((((1 ? 12:0) - (0 ? 12:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 12:0) - (0 ? 12:0) + 1))))))) << (0 ? 12:0)))
-                | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 28:16) - (0 ? 28:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 28:16) - (0 ? 28:16) + 1))))))) << (0 ? 28:16))) | (((gctUINT32) ((gctUINT32) (TargetHeight) & ((gctUINT32) ((((1 ? 28:16) - (0 ? 28:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 28:16) - (0 ? 28:16) + 1))))))) << (0 ? 28:16)))
+                | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 28:16) - (0 ? 28:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 28:16) - (0 ? 28:16) + 1))))))) << (0 ? 28:16))) | (((gctUINT32) ((gctUINT32) (TargetHeight) & ((gctUINT32) ((((1 ? 28:16) - (0 ? 28:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 28:16) - (0 ? 28:16) + 1))))))) << (0 ? 28:16))),
+                gcvFALSE
                 ));
 
             gcmERR_BREAK(gcoVGHARDWARE_SetState(
                 Hardware,
                 0x028EC >> 2,
-                * (gctUINT32_PTR) &Scale
+                * (gctUINT32_PTR) &Scale,
+                gcvFALSE
                 ));
 
             gcmERR_BREAK(gcoVGHARDWARE_SetState(
                 Hardware,
                 0x028F0 >> 2,
-                * (gctUINT32_PTR) &Bias
+                * (gctUINT32_PTR) &Bias,
+                gcvFALSE
                 ));
 
             gcmERR_BREAK(gcoVGHARDWARE_SetStates(
@@ -3662,7 +4083,7 @@ gceSTATUS
 gcoVGHARDWARE_ProgramControl(
     gcoVGHARDWARE Hardware,
     gctPOINTER Logical,
-    gctSIZE_T * Bytes
+    gctUINT32 * Bytes
     )
 {
     gceSTATUS status;
@@ -3751,12 +4172,12 @@ gcoVGHARDWARE_ProgramControl(
                 )
                 & (((((gctUINT32) (~0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 21:20) - (0 ? 21:20) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 21:20) - (0 ? 21:20) + 1))))))) << (0 ? 21:20))) | (((gctUINT32) ((gctUINT32) (Hardware->vg.tsDataType) & ((gctUINT32) ((((1 ? 21:20) - (0 ? 21:20) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 21:20) - (0 ? 21:20) + 1))))))) << (0 ? 21:20))) &((((gctUINT32) (~0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 23:23) - (0 ? 23:23) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 23:23) - (0 ? 23:23) + 1))))))) << (0 ? 23:23))) | (((gctUINT32) (0x0 & ((gctUINT32) ((((1 ? 23:23) - (0 ? 23:23) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 23:23) - (0 ? 23:23) + 1))))))) << (0 ? 23:23))))
                 & (((((gctUINT32) (~0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 24:24) - (0 ? 24:24) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:24) - (0 ? 24:24) + 1))))))) << (0 ? 24:24))) | (((gctUINT32) ((gctUINT32) (Hardware->vg.tsMode) & ((gctUINT32) ((((1 ? 24:24) - (0 ? 24:24) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 24:24) - (0 ? 24:24) + 1))))))) << (0 ? 24:24))) &((((gctUINT32) (~0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 27:27) - (0 ? 27:27) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 27:27) - (0 ? 27:27) + 1))))))) << (0 ? 27:27))) | (((gctUINT32) (0x0 & ((gctUINT32) ((((1 ? 27:27) - (0 ? 27:27) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 27:27) - (0 ? 27:27) + 1))))))) << (0 ? 27:27))))
-                & (((((gctUINT32) (~0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 28:28) - (0 ? 28:28) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 28:28) - (0 ? 28:28) + 1))))))) << (0 ? 28:28))) | (((gctUINT32) (0x1 & ((gctUINT32) ((((1 ? 28:28) - (0 ? 28:28) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 28:28) - (0 ? 28:28) + 1))))))) << (0 ? 28:28))) &  ((((gctUINT32) (~0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 29:29) - (0 ? 29:29) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:29) - (0 ? 29:29) + 1))))))) << (0 ? 29:29))) | (((gctUINT32) (0x0 & ((gctUINT32) ((((1 ? 29:29) - (0 ? 29:29) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:29) - (0 ? 29:29) + 1))))))) << (0 ? 29:29))) );
+                & (((((gctUINT32) (~0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 28:28) - (0 ? 28:28) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 28:28) - (0 ? 28:28) + 1))))))) << (0 ? 28:28))) | (((gctUINT32) (0x1 & ((gctUINT32) ((((1 ? 28:28) - (0 ? 28:28) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 28:28) - (0 ? 28:28) + 1))))))) << (0 ? 28:28))) &  ((((gctUINT32) (~0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 29:29) - (0 ? 29:29) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:29) - (0 ? 29:29) + 1))))))) << (0 ? 29:29))) | (((gctUINT32) (0x0 & ((gctUINT32) ((((1 ? 29:29) - (0 ? 29:29) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 29:29) - (0 ? 29:29) + 1))))))) << (0 ? 29:29))));
 
             /* Enable auto-restart. */
             if (Hardware->vgRestart)
             {
-                tsControl &= (((((gctUINT32) (~0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 30:30) - (0 ? 30:30) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:30) - (0 ? 30:30) + 1))))))) << (0 ? 30:30))) | (((gctUINT32) (0x1 & ((gctUINT32) ((((1 ? 30:30) - (0 ? 30:30) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:30) - (0 ? 30:30) + 1))))))) << (0 ? 30:30))) &  ((((gctUINT32) (~0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 31:31) - (0 ? 31:31) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:31) - (0 ? 31:31) + 1))))))) << (0 ? 31:31))) | (((gctUINT32) (0x0 & ((gctUINT32) ((((1 ? 31:31) - (0 ? 31:31) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:31) - (0 ? 31:31) + 1))))))) << (0 ? 31:31))) );
+                tsControl &= (((((gctUINT32) (~0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 30:30) - (0 ? 30:30) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:30) - (0 ? 30:30) + 1))))))) << (0 ? 30:30))) | (((gctUINT32) (0x1 & ((gctUINT32) ((((1 ? 30:30) - (0 ? 30:30) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 30:30) - (0 ? 30:30) + 1))))))) << (0 ? 30:30))) &  ((((gctUINT32) (~0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 31:31) - (0 ? 31:31) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:31) - (0 ? 31:31) + 1))))))) << (0 ? 31:31))) | (((gctUINT32) (0x0 & ((gctUINT32) ((((1 ? 31:31) - (0 ? 31:31) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:31) - (0 ? 31:31) + 1))))))) << (0 ? 31:31))));
             }
         }
         else
@@ -3794,7 +4215,8 @@ gcoVGHARDWARE_ProgramControl(
                 Hardware->buffer,
                 stateBytes * 4,
                 gcvTRUE,
-                (gctPOINTER *) &memory
+                (gctPOINTER *) &memory,
+                gcvFALSE
                 ));
         }
 
@@ -3976,7 +4398,8 @@ _SetWeightArray(
             Hardware->buffer,
             4 + count * 4,
             gcvTRUE,
-            (gctPOINTER *) &memory
+            (gctPOINTER *) &memory,
+            gcvFALSE
             ));
 
         /* Assemble load state command. */
@@ -4004,9 +4427,9 @@ _SetWeightArray(
         else
         {
             /* Copy the state buffer. */
-            gcmVERIFY_OK(gcoOS_MemCopy(
+            gcoOS_MemCopy(
                 &memory[1], WeightArray, WeightCount * gcmSIZEOF(gctINT16)
-                ));
+                );
         }
     }
     while (gcvFALSE);
@@ -4161,7 +4584,8 @@ gcoVGHARDWARE_ColorMatrixSinglePass(
             gcvTRUE, /* Image filter mode.                 */
             SourceOrigin->x,
             SourceOrigin->y,
-            Width, Height
+            Width, Height,
+            gcvFALSE
             ));
 
         /* Demultiply the color if the filter is premultiplied and the target is not. */
@@ -4333,7 +4757,8 @@ gcoVGHARDWARE_ColorMatrixMultiPass(
             gcvTRUE, /* Image filter mode.                 */
             SourceOrigin->x,
             SourceOrigin->y,
-            Width, Height
+            Width, Height,
+            gcvFALSE
             ));
 
         Hardware->vg.colorPremultiply = 0x1;
@@ -4382,7 +4807,8 @@ gcoVGHARDWARE_ColorMatrixMultiPass(
             gcvBLOCK_VG,
             gcvBLOCK_PIXEL,
             gcvHOW_SEMAPHORE_STALL,
-            gcvNULL
+            gcvNULL,
+            gcvFALSE
             ));
 
 
@@ -4444,7 +4870,8 @@ gcoVGHARDWARE_ColorMatrixMultiPass(
             0x0,
             gcvTRUE, /* Image filter mode.                 */
             0, 0,
-            Width, Height
+            Width, Height,
+            gcvFALSE
             ));
 
         if (Hardware->vg.targetPremultiplied)
@@ -4502,7 +4929,8 @@ gcoVGHARDWARE_ColorMatrixMultiPass(
             gcvBLOCK_VG,
             gcvBLOCK_PIXEL,
             gcvHOW_SEMAPHORE_STALL,
-            gcvNULL
+            gcvNULL,
+            gcvFALSE
             ));
     }
     while (gcvFALSE);
@@ -4780,14 +5208,16 @@ _SeparableConvolve(
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             (0x02898 >> 2) + 1,
-            fillColor
+            fillColor,
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x02954 >> 2,
               ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0))) | (((gctUINT32) ((gctUINT32) (Info->shiftX) & ((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0)))
-            | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 31:16) - (0 ? 31:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:16) - (0 ? 31:16) + 1))))))) << (0 ? 31:16))) | (((gctUINT32) ((gctUINT32) (Info->shiftY) & ((gctUINT32) ((((1 ? 31:16) - (0 ? 31:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:16) - (0 ? 31:16) + 1))))))) << (0 ? 31:16)))
+            | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 31:16) - (0 ? 31:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:16) - (0 ? 31:16) + 1))))))) << (0 ? 31:16))) | (((gctUINT32) ((gctUINT32) (Info->shiftY) & ((gctUINT32) ((((1 ? 31:16) - (0 ? 31:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:16) - (0 ? 31:16) + 1))))))) << (0 ? 31:16))),
+            gcvFALSE
             ));
 
 
@@ -4852,7 +5282,8 @@ _SeparableConvolve(
             SourceOrigin->x,
             SourceOrigin->y,
             SourceSize->width,
-            SourceSize->height
+            SourceSize->height,
+            gcvFALSE
             ));
 
         Hardware->vg.colorPremultiply = 0x1;
@@ -4908,7 +5339,8 @@ _SeparableConvolve(
             gcvBLOCK_VG,
             gcvBLOCK_PIXEL,
             gcvHOW_SEMAPHORE_STALL,
-            gcvNULL
+            gcvNULL,
+            gcvFALSE
             ));
 
 /*----------------------------------------------------------------------------*/
@@ -4987,7 +5419,8 @@ _SeparableConvolve(
             0x0,
             gcvTRUE, /* Image filter mode.                 */
             0, 0,
-            Width, Height
+            Width, Height,
+            gcvFALSE
             ));
 
         if (Hardware->vg.targetPremultiplied)
@@ -5052,7 +5485,8 @@ _SeparableConvolve(
             gcvBLOCK_VG,
             gcvBLOCK_PIXEL,
             gcvHOW_SEMAPHORE_STALL,
-            gcvNULL
+            gcvNULL,
+            gcvFALSE
             ));
     }
     while (gcvFALSE);
@@ -5371,13 +5805,15 @@ gcoVGHARDWARE_EnableDither(
                 gcmERR_BREAK(gcoVGHARDWARE_SetState(
                     Hardware,
                     0x02968 >> 2,
-                    0x6E4CA280
+                    0x6E4CA280,
+                    gcvFALSE
                     ));
 
                 gcmERR_BREAK(gcoVGHARDWARE_SetState(
                     Hardware,
                     0x0296C >> 2,
-                    0x5D7F91B3
+                    0x5D7F91B3,
+                    gcvFALSE
                     ));
             }
             else if (!Enable && Hardware->vg.ditherEnable)
@@ -5385,13 +5821,15 @@ gcoVGHARDWARE_EnableDither(
                 gcmERR_BREAK(gcoVGHARDWARE_SetState(
                     Hardware,
                     0x02968 >> 2,
-                    (gctUINT32)~0
+                    (gctUINT32)~0,
+                    gcvFALSE
                     ));
 
                 gcmERR_BREAK(gcoVGHARDWARE_SetState(
                     Hardware,
                     0x0296C >> 2,
-                    (gctUINT32)~0
+                    (gctUINT32)~0,
+                    gcvFALSE
                     ));
             }
 
@@ -5462,9 +5900,9 @@ gcoVGHARDWARE_Construct(
             ));
 
         /* Reset the object. */
-        gcmVERIFY_OK(gcoOS_ZeroMemory(
+        gcoOS_ZeroMemory(
             hardware, gcmSIZEOF(struct _gcoVGHARDWARE)
-            ));
+            );
 
         /* Initialize the gcoVGHARDWARE object. */
         hardware->object.type = gcvOBJ_HARDWARE;
@@ -5502,11 +5940,11 @@ gcoVGHARDWARE_Construct(
         gcmERR_BREAK(halInterface.status);
 
         /* Copy the command buffer information. */
-        gcmVERIFY_OK(gcoOS_MemCopy(
+        gcoOS_MemCopy(
             &hardware->bufferInfo,
             &halInterface.u.QueryCommandBuffer.information,
             gcmSIZEOF(hardware->bufferInfo)
-            ));
+            );
 
         /* Set default API. */
         hardware->api = gcvAPI_OPENGL;
@@ -5580,16 +6018,17 @@ gcoVGHARDWARE_Construct(
         /* Return pointer to the gcoVGHARDWARE object. */
         *Hardware = hardware;
 
+        /* Allocate the gcsVGCONTEXT object. */
+        gcmERR_BREAK(gcoOS_AllocateSharedMemory(
+            os,
+            gcmSIZEOF(*hardware->pContext),
+            (gctPOINTER *) &hardware->pContext
+            ));
 
-#ifdef __QNXNTO__
-        {
-            gctSIZE_T objSize = gcmSIZEOF(*hardware->pContext);
-            gctPHYS_ADDR physical;
-
-            gcmERR_BREAK(gcoOS_AllocateNonPagedMemory(
-                gcvNULL, gcvTRUE, &objSize, &physical, (gctPOINTER *) &hardware->pContext));
-        }
-#endif
+        /* Reset the object. */
+        gcoOS_ZeroMemory(
+            hardware->pContext, gcmSIZEOF(*hardware->pContext)
+            );
 
         /* Initilize the context management. */
         gcmERR_BREAK(gcoVGHARDWARE_OpenContext(
@@ -5597,17 +6036,6 @@ gcoVGHARDWARE_Construct(
             ));
 
         /* Construct the command buffer. */
-#ifndef __QNXNTO__
-        gcmERR_BREAK(gcoVGBUFFER_Construct(
-            hal,
-            hardware,
-            &hardware->context,
-            gcmKB2BYTES(32), /* Command buffer ring buffer size. */
-            gcmKB2BYTES(8), /* Granularity of the task buffer. */
-            1000, /* The length of the command queue. */
-            &hardware->buffer
-            ));
-#else
         gcmERR_BREAK(gcoVGBUFFER_Construct(
             hal,
             hardware,
@@ -5617,24 +6045,23 @@ gcoVGHARDWARE_Construct(
             1000, /* The length of the command queue. */
             &hardware->buffer
             ));
-#endif
 
         /* Sync filter variables. */
-        gcmVERIFY_OK(gcoOS_ZeroMemory(&hardware->horSyncFilterKernel,
-                                      gcmSIZEOF(hardware->horSyncFilterKernel)));
+        gcoOS_ZeroMemory(&hardware->horSyncFilterKernel,
+                                      gcmSIZEOF(hardware->horSyncFilterKernel));
 
-        gcmVERIFY_OK(gcoOS_ZeroMemory(&hardware->verSyncFilterKernel,
-                                      gcmSIZEOF(hardware->verSyncFilterKernel)));
+        gcoOS_ZeroMemory(&hardware->verSyncFilterKernel,
+                                      gcmSIZEOF(hardware->verSyncFilterKernel));
 
         hardware->horSyncFilterKernel.filterType = gcvFILTER_SYNC;
         hardware->verSyncFilterKernel.filterType = gcvFILTER_SYNC;
 
         /* Blur filter variables. */
-        gcmVERIFY_OK(gcoOS_ZeroMemory(&hardware->horBlurFilterKernel,
-                                      gcmSIZEOF(hardware->horBlurFilterKernel)));
+        gcoOS_ZeroMemory(&hardware->horBlurFilterKernel,
+                                      gcmSIZEOF(hardware->horBlurFilterKernel));
 
-        gcmVERIFY_OK(gcoOS_ZeroMemory(&hardware->verBlurFilterKernel,
-                                      gcmSIZEOF(hardware->verBlurFilterKernel)));
+        gcoOS_ZeroMemory(&hardware->verBlurFilterKernel,
+                                      gcmSIZEOF(hardware->verBlurFilterKernel));
 
         hardware->horBlurFilterKernel.filterType = gcvFILTER_BLUR;
         hardware->verBlurFilterKernel.filterType = gcvFILTER_BLUR;
@@ -5649,47 +6076,54 @@ gcoVGHARDWARE_Construct(
         hardware->newVerKernelSize  = 9;
 
         /* Reset the temporary surface. */
-        gcmVERIFY_OK(gcoOS_ZeroMemory(
+        gcoOS_ZeroMemory(
             &hardware->tempBuffer, sizeof(hardware->tempBuffer)
-            ));
+            );
 
         hardware->tempBuffer.node.pool = gcvPOOL_UNKNOWN;
 
+#if gcdENABLE_3D
         hardware->stencilMode    = 0x0;
         hardware->stencilEnabled = gcvFALSE;
 
         /* Reset stencil array. */
-        gcmVERIFY_OK(gcoOS_ZeroMemory(
+        gcoOS_ZeroMemory(
             hardware->stencilKeepFront,
             gcmSIZEOF(hardware->stencilKeepFront)
-            ));
+            );
 
-        gcmVERIFY_OK(gcoOS_ZeroMemory(
+        gcoOS_ZeroMemory(
             hardware->stencilKeepBack,
             gcmSIZEOF(hardware->stencilKeepBack)
-            ));
+            );
 
         /* Reset sampler modes. */
-        gcmVERIFY_OK(gcoOS_ZeroMemory(
+        gcoOS_ZeroMemory(
             hardware->samplerMode,
             gcmSIZEOF(hardware->samplerMode)
-            ));
+            );
 
-        gcmVERIFY_OK(gcoOS_ZeroMemory(
+        gcoOS_ZeroMemory(
             hardware->samplerLOD,
             gcmSIZEOF(hardware->samplerLOD)
-            ));
+            );
+#endif
 
         /* Don't stall before primitive. */
         hardware->stallPrimitive = gcvFALSE;
+#if gcdENABLE_3D
         hardware->earlyDepth     = gcvFALSE;
+#endif
+
         hardware->memoryConfig             = 0;
 
         /* Disable anti-alias. */
         hardware->sampleMask   = 0xF;
         hardware->sampleEnable = 0xF;
+#if gcdENABLE_3D
         hardware->samples.x    = 1;
         hardware->samples.y    = 1;
+#endif
 
         /* Disable dithering. */
         hardware->dither[0] = hardware->dither[1] = (gctUINT32)~0;
@@ -5708,7 +6142,12 @@ gcoVGHARDWARE_Construct(
             gcmCHECK_STATUS(gcoVGBUFFER_Destroy(hardware->buffer));
         }
 
-        gcmCHECK_STATUS(gcoVGHARDWARE_CloseContext(hardware));
+        if (hardware->pContext != gcvNULL)
+        {
+            gcmCHECK_STATUS(gcoVGHARDWARE_CloseContext(hardware));
+
+            gcmCHECK_STATUS(gcoOS_FreeSharedMemory(os, hardware->pContext));
+        }
 
         gcmCHECK_STATUS(gcoOS_Free(os, hardware));
     }
@@ -5748,17 +6187,13 @@ gceSTATUS gcoVGHARDWARE_Destroy(
         gcmVERIFY_OK(gcoVGBUFFER_Destroy(Hardware->buffer));
     }
 
-    /* Destroy the context management. */
-    gcmVERIFY_OK(gcoVGHARDWARE_CloseContext(Hardware));
-
-#ifdef __QNXNTO__
     if (Hardware->pContext != gcvNULL)
     {
-        gcoOS_FreeNonPagedMemory(
-            gcvNULL, gcmSIZEOF(*Hardware->pContext), gcvNULL, Hardware->pContext);
-        Hardware->pContext = gcvNULL;
+        /* Destroy the context management. */
+        gcmVERIFY_OK(gcoVGHARDWARE_CloseContext(Hardware));
+
+        gcmOS_SAFE_FREE_SHARED_MEMORY(gcvNULL, Hardware->pContext);
     }
-#endif
 
     /* Free temporary buffer allocated by filter blit operation. */
     gcmVERIFY_OK(gcoVGHARDWARE_FreeTemporarySurface(Hardware, gcvFALSE));
@@ -5880,7 +6315,6 @@ gcoVGHARDWARE_QueryCommandBuffer(
     OUT gcsCOMMAND_BUFFER_INFO_PTR Information
     )
 {
-    gceSTATUS status;
     gcmHEADER_ARG("Hardware = 0x%x", Hardware);
     gcmGETVGHARDWARE(Hardware);
     /* Verify the arguments. */
@@ -5888,15 +6322,15 @@ gcoVGHARDWARE_QueryCommandBuffer(
     gcmVERIFY_ARGUMENT(Information != gcvNULL);
 
     /* Copy the command buffer information. */
-    status = gcoOS_MemCopy(
+    gcoOS_MemCopy(
         Information,
         &Hardware->bufferInfo,
         gcmSIZEOF(Hardware->bufferInfo)
         );
 
-    gcmFOOTER();
+    gcmFOOTER_NO();
     /* Return status. */
-    return status;
+    return gcvSTATUS_OK;
 }
 
 /*******************************************************************************
@@ -6511,7 +6945,7 @@ gceSTATUS gcoVGHARDWARE_GetStretchFactors(
 {
     if (HorFactor != gcvNULL)
     {
-        gctINT32 src, dest;
+        gctINT32 src = 0, dest = 0;
 
         /* Compute width of rectangles. */
         gcmVERIFY_OK(gcsRECT_Width(SrcRect, &src));
@@ -6523,7 +6957,7 @@ gceSTATUS gcoVGHARDWARE_GetStretchFactors(
 
     if (VerFactor != gcvNULL)
     {
-        gctINT32 src, dest;
+        gctINT32 src = 0, dest = 0;
 
         /* Compute height of rectangles. */
         gcmVERIFY_OK(gcsRECT_Height(SrcRect, &src));
@@ -6855,7 +7289,7 @@ gcoVGHARDWARE_Lock(
 
             /* Store pointers. */
             Node->physical = halInterface.u.LockVideoMemory.address;
-            Node->logical  = halInterface.u.LockVideoMemory.memory;
+            Node->logical  = gcmUINT64_TO_PTR(halInterface.u.LockVideoMemory.memory);
 
             /* Set locked in the kernel flag. */
             Node->lockedInKernel = gcvTRUE;
@@ -7024,6 +7458,25 @@ gcoVGHARDWARE_Unlock(
             /* Verify result. */
             gcmERR_BREAK(halInterface.status);
 
+            /* Do we need to schedule an event for the unlock? */
+            if (halInterface.u.UnlockVideoMemory.asynchroneous)
+            {
+                gcsTASK_UNLOCK_VIDEO_MEMORY_PTR unlockMemory;
+
+                /* Allocate a cluster event. */
+                gcmERR_BREAK(gcoVGHARDWARE_ReserveTask(
+                            Hardware,
+                            gcvBLOCK_PIXEL,
+                            1,
+                            gcmSIZEOF(gcsTASK_UNLOCK_VIDEO_MEMORY),
+                            (gctPOINTER *) &unlockMemory
+                            ));
+
+                /* Fill in event info. */
+                unlockMemory->id   = gcvTASK_UNLOCK_VIDEO_MEMORY;
+                unlockMemory->node = Node->u.normal.node;
+            }
+
             /* Reset locked in the kernel flag. */
             Node->lockedInKernel = gcvFALSE;
         }
@@ -7034,10 +7487,7 @@ gcoVGHARDWARE_Unlock(
         }
 
         /* Reset the valid flag. */
-        if (Node->pool == gcvPOOL_VIRTUAL)
-        {
-            Node->valid = gcvFALSE;
-        }
+        Node->valid = gcvFALSE;
 
         /* Reset the lock count. */
         Node->lockCount = 0;
@@ -7080,7 +7530,7 @@ gcoVGHARDWARE_ReserveTask(
     IN gcoVGHARDWARE Hardware,
     IN gceBLOCK Block,
     IN gctUINT TaskCount,
-    IN gctSIZE_T Bytes,
+    IN gctUINT32 Bytes,
     OUT gctPOINTER * Memory
     )
 {
@@ -7133,7 +7583,7 @@ gcoVGHARDWARE_ReserveTask(
 **
 **  OUTPUT:
 **
-**      gcuVIDMEM_NODE_PTR * Node
+**      gctUINT32 * Node
 **          Pointer to the variable to receive the node of the allocated area.
 **
 **      gctUINT32 * Address
@@ -7157,7 +7607,7 @@ gcoVGHARDWARE_AllocateVideoMemory(
     IN gceSURF_TYPE Type,
     IN gceSURF_FORMAT Format,
     IN gcePOOL Pool,
-    OUT gcuVIDMEM_NODE_PTR * Node,
+    OUT gctUINT32 * Node,
     OUT gctUINT32 * Address,
     OUT gctPOINTER * Memory,
     OUT gcePOOL * ActualPool
@@ -7165,7 +7615,7 @@ gcoVGHARDWARE_AllocateVideoMemory(
 {
     gceSTATUS status, last;
     gcsHAL_INTERFACE halInterface;
-    gcuVIDMEM_NODE_PTR node = gcvNULL;
+    gctUINT32 node = 0;
     gcmHEADER_ARG("Hardware = 0x%x", Hardware);
 
     gcmGETVGHARDWARE(Hardware);
@@ -7226,7 +7676,7 @@ gcoVGHARDWARE_AllocateVideoMemory(
 
             if (Memory != gcvNULL)
             {
-                * Memory = halInterface.u.LockVideoMemory.memory;
+                * Memory = gcmUINT64_TO_PTR(halInterface.u.LockVideoMemory.memory);
             }
         }
 
@@ -7246,10 +7696,10 @@ gcoVGHARDWARE_AllocateVideoMemory(
     while (gcvFALSE);
 
     /* Roll back. */
-    if (node != gcvNULL)
+    if (node != 0)
     {
-        halInterface.command = gcvHAL_FREE_VIDEO_MEMORY;
-        halInterface.u.FreeVideoMemory.node = node;
+        halInterface.command = gcvHAL_RELEASE_VIDEO_MEMORY;
+        halInterface.u.ReleaseVideoMemory.node = node;
 
         /* Call kernel service. */
         gcmCHECK_STATUS(gcoOS_DeviceControl(
@@ -7290,7 +7740,7 @@ gcoVGHARDWARE_AllocateVideoMemory(
 **
 **  OUTPUT:
 **
-**      gcuVIDMEM_NODE_PTR * Node
+**      gctUINT32 * Node
 **          Pointer to the variable to receive the node of the allocated area.
 **
 **      gctUINT32 * Address
@@ -7307,14 +7757,15 @@ gcoVGHARDWARE_AllocateLinearVideoMemory(
     IN gctUINT Size,
     IN gctUINT Alignment,
     IN gcePOOL Pool,
-    OUT gcuVIDMEM_NODE_PTR * Node,
+    IN gctUINT32 Flag,
+    OUT gctUINT32 * Node,
     OUT gctUINT32 * Address,
     OUT gctPOINTER * Memory
     )
 {
     gceSTATUS status, last;
     gcsHAL_INTERFACE halInterface;
-    gcuVIDMEM_NODE_PTR node = gcvNULL;
+    gctUINT32 node = 0;
     gcmHEADER_ARG("Hardware = 0x%x", Hardware);
     gcmGETVGHARDWARE(Hardware);
     /* Verify the arguments. */
@@ -7329,6 +7780,7 @@ gcoVGHARDWARE_AllocateLinearVideoMemory(
         halInterface.u.AllocateLinearVideoMemory.alignment = Alignment;
         halInterface.u.AllocateLinearVideoMemory.type      = gcvSURF_TYPE_UNKNOWN;
         halInterface.u.AllocateLinearVideoMemory.pool      = Pool;
+        halInterface.u.AllocateLinearVideoMemory.flag      = Flag;
 
         /* Call kernel service. */
         gcmERR_BREAK(gcoOS_DeviceControl(
@@ -7369,7 +7821,7 @@ gcoVGHARDWARE_AllocateLinearVideoMemory(
 
             if (Memory != gcvNULL)
             {
-                * Memory = halInterface.u.LockVideoMemory.memory;
+                * Memory = gcmUINT64_TO_PTR(halInterface.u.LockVideoMemory.memory);
             }
         }
 
@@ -7382,10 +7834,10 @@ gcoVGHARDWARE_AllocateLinearVideoMemory(
     while (gcvFALSE);
 
     /* Roll back. */
-    if (node != gcvNULL)
+    if (node != 0)
     {
-        halInterface.command = gcvHAL_FREE_VIDEO_MEMORY;
-        halInterface.u.FreeVideoMemory.node = node;
+        halInterface.command = gcvHAL_RELEASE_VIDEO_MEMORY;
+        halInterface.u.ReleaseVideoMemory.node = node;
 
         /* Call kernel service. */
         gcmCHECK_STATUS(gcoOS_DeviceControl(
@@ -7415,7 +7867,7 @@ gcoVGHARDWARE_AllocateLinearVideoMemory(
 **      gcoVGHARDWARE Hardware
 **          Pointer to the gcoVGHARDWARE object.
 **
-**      gcuVIDMEM_NODE_PTR Node
+**      gctUINT32 Node
 **          Node of the allocated memory to free.
 **
 **  OUTPUT:
@@ -7425,7 +7877,7 @@ gcoVGHARDWARE_AllocateLinearVideoMemory(
 gceSTATUS
 gcoVGHARDWARE_FreeVideoMemory(
     IN gcoVGHARDWARE Hardware,
-    IN gcuVIDMEM_NODE_PTR Node
+    IN gctUINT32 Node
     )
 {
     gceSTATUS status;
@@ -7435,7 +7887,7 @@ gcoVGHARDWARE_FreeVideoMemory(
     gcmGETVGHARDWARE(Hardware);
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Hardware, gcvOBJ_HARDWARE);
-    gcmVERIFY_ARGUMENT(Node != gcvNULL);
+    gcmVERIFY_ARGUMENT(Node != 0);
 
     do
     {
@@ -7454,9 +7906,9 @@ gcoVGHARDWARE_FreeVideoMemory(
         /* Validate the return value. */
         gcmERR_BREAK(halInterface.status);
 
-        /* Free the buffer. */
-        halInterface.command = gcvHAL_FREE_VIDEO_MEMORY;
-        halInterface.u.FreeVideoMemory.node = Node;
+        /* Release the buffer. */
+        halInterface.command = gcvHAL_RELEASE_VIDEO_MEMORY;
+        halInterface.u.ReleaseVideoMemory.node = Node;
 
         /* Call kernel service. */
         gcmERR_BREAK(gcoOS_DeviceControl(
@@ -7487,7 +7939,7 @@ gcoVGHARDWARE_FreeVideoMemory(
 **      gcoVGHARDWARE Hardware
 **          Pointer to the gcoVGHARDWARE object.
 **
-**      gcuVIDMEM_NODE_PTR Node
+**      gctUINT32 Node
 **          Node of the allocated memory to free.
 **
 **      gctBOOL Unlock
@@ -7500,7 +7952,7 @@ gcoVGHARDWARE_FreeVideoMemory(
 gceSTATUS
 gcoVGHARDWARE_ScheduleVideoMemory(
     IN gcoVGHARDWARE Hardware,
-    IN gcuVIDMEM_NODE_PTR Node,
+    IN gctUINT32 Node,
     IN gctBOOL Unlock
     )
 {
@@ -7510,7 +7962,7 @@ gcoVGHARDWARE_ScheduleVideoMemory(
     gcmGETVGHARDWARE(Hardware);
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Hardware, gcvOBJ_HARDWARE);
-    gcmVERIFY_ARGUMENT(Node != gcvNULL);
+    gcmVERIFY_ARGUMENT(Node != 0);
 
     do
     {
@@ -7551,6 +8003,63 @@ gcoVGHARDWARE_ScheduleVideoMemory(
         /* Fill in event info. */
         freeMemory->id   = gcvTASK_FREE_VIDEO_MEMORY;
         freeMemory->node = Node;
+    }
+    while (gcvFALSE);
+
+    gcmFOOTER();
+    /* Return the status. */
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoVGHARDWARE_ScheduleUnmapUserMemory
+**
+**
+**  INPUT:
+**
+**      gcoVGHARDWARE Hardware
+**          Pointer to the gcoVGHARDWARE object.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoVGHARDWARE_ScheduleUnmapUserMemory(
+    IN gcoVGHARDWARE Hardware,
+    IN gctPOINTER Info,
+    IN gctSIZE_T Size,
+    IN gctUINT32 Address,
+    IN gctPOINTER Memory
+    )
+{
+    gceSTATUS status;
+    gcmHEADER_ARG("Hardware = 0x%x", Hardware);
+
+    gcmGETVGHARDWARE(Hardware);
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Hardware, gcvOBJ_HARDWARE);
+
+    do
+    {
+        gcsTASK_UNMAP_USER_MEMORY_PTR unmapUserMemory;
+
+        /* Allocate a cluster event. */
+        gcmERR_BREAK(gcoVGHARDWARE_ReserveTask(
+            Hardware,
+            gcvBLOCK_PIXEL,
+            1,
+            gcmSIZEOF(gcsTASK_UNMAP_USER_MEMORY),
+            (gctPOINTER *) &unmapUserMemory
+            ));
+
+        /* Fill in event info. */
+        unmapUserMemory->id   = gcvTASK_UNMAP_USER_MEMORY;
+        unmapUserMemory->memory = Memory;
+        unmapUserMemory->size = Size;
+        unmapUserMemory->info = Info;
+        unmapUserMemory->address = Address;
     }
     while (gcvFALSE);
 
@@ -7621,8 +8130,6 @@ gcoVGHARDWARE_AllocateTemporarySurface(
         /* Do we already have a big enough surface? */
         if (size > Hardware->tempBufferSize)
         {
-            gcsHAL_INTERFACE halInterface;
-
             /* No. Free the currently allocated surface if any. */
             gcmERR_BREAK(gcoVGHARDWARE_FreeTemporarySurface(Hardware, gcvTRUE));
 
@@ -7630,32 +8137,14 @@ gcoVGHARDWARE_AllocateTemporarySurface(
             size = gcmALIGN(size, 4096);
 
             /* Call to allocate the buffer. */
-            halInterface.command = gcvHAL_ALLOCATE_LINEAR_VIDEO_MEMORY;
-            halInterface.u.AllocateLinearVideoMemory.bytes     = size;
-            halInterface.u.AllocateLinearVideoMemory.alignment = 64;
-            halInterface.u.AllocateLinearVideoMemory.type      = Type;
-            halInterface.u.AllocateLinearVideoMemory.pool      = gcvPOOL_DEFAULT;
-
-            /* Call kernel service. */
-            gcmERR_BREAK(gcoOS_DeviceControl(
-                Hardware->os, IOCTL_GCHAL_INTERFACE,
-                &halInterface, sizeof(gcsHAL_INTERFACE),
-                &halInterface, sizeof(gcsHAL_INTERFACE)
+            gcmERR_BREAK(gcsSURF_NODE_Construct(
+                &Hardware->tempBuffer.node,
+                size,
+                64,
+                Type,
+                gcvALLOC_FLAG_NONE,
+                gcvPOOL_DEFAULT
                 ));
-
-            /* Validate the return value. */
-            gcmERR_BREAK(halInterface.status);
-
-            /* Initialize the node. */
-            Hardware->tempBuffer.node.valid          = gcvFALSE;
-            Hardware->tempBuffer.node.lockCount      = 0;
-            Hardware->tempBuffer.node.lockedInKernel = gcvFALSE;
-            Hardware->tempBuffer.node.logical        = gcvNULL;
-            Hardware->tempBuffer.node.physical       = (gctUINT32)~0;
-            Hardware->tempBuffer.node.pool
-                = halInterface.u.AllocateLinearVideoMemory.pool;
-            Hardware->tempBuffer.node.u.normal.node
-                = halInterface.u.AllocateLinearVideoMemory.node;
 
             /* Set the buffer size. */
             Hardware->tempBufferSize = size;
@@ -7674,8 +8163,10 @@ gcoVGHARDWARE_AllocateTemporarySurface(
         Hardware->tempBuffer.format = Format->format;
         Hardware->tempBuffer.stride = stride;
 
+#if gcdENABLE_3D
         Hardware->tempBuffer.samples.x = 1;
         Hardware->tempBuffer.samples.y = 1;
+#endif
 
         Hardware->tempBuffer.rect.left   = 0;
         Hardware->tempBuffer.rect.top    = 0;
@@ -7751,9 +8242,9 @@ gcoVGHARDWARE_FreeTemporarySurface(
                  Hardware->tempBuffer.type
                 ));
 
-            /* Free the video memory. */
-            halInterface.command = gcvHAL_FREE_VIDEO_MEMORY;
-            halInterface.u.FreeVideoMemory.node
+            /* Release the video memory. */
+            halInterface.command = gcvHAL_RELEASE_VIDEO_MEMORY;
+            halInterface.u.ReleaseVideoMemory.node
                 = Hardware->tempBuffer.node.u.normal.node;
 
             /* Call kernel API. */
@@ -8010,6 +8501,8 @@ gceSTATUS gcoVGHARDWARE_ConvertPixel(
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Hardware, gcvOBJ_HARDWARE);
 
+    (void) Hardware;
+
     if (SrcFormat->fmtClass == gcvFORMAT_CLASS_RGBA)
     {
         if (TrgFormat->fmtClass == gcvFORMAT_CLASS_RGBA)
@@ -8080,8 +8573,8 @@ gceSTATUS gcoVGHARDWARE_ConvertPixel(
 
         else if (TrgFormat->fmtClass == gcvFORMAT_CLASS_YUV)
         {
-            gctUINT8 r, g, b;
-            gctUINT8 y, u, v;
+            gctUINT8 r = 0, g = 0, b = 0;
+            gctUINT8 y = 0, u = 0, v = 0;
 
             /*
                 Get RGB value.
@@ -8119,7 +8612,7 @@ gceSTATUS gcoVGHARDWARE_ConvertPixel(
             */
             if ((TrgFormat->interleaved & gcvCOMPONENT_ODD) != 0)
             {
-                gctUINT8 curU, curV;
+                gctUINT8 curU = 0, curV = 0;
 
                 _ConvertComponent(
                     TrgPixel, &curU, TrgBitOffset, 0,
@@ -8208,8 +8701,8 @@ gceSTATUS gcoVGHARDWARE_ConvertPixel(
 
         else if (TrgFormat->fmtClass == gcvFORMAT_CLASS_RGBA)
         {
-            gctUINT8 y, u, v;
-            gctUINT8 r, g, b;
+            gctUINT8 y = 0, u = 0, v = 0;
+            gctUINT8 r = 0, g = 0, b = 0;
 
             /*
                 Get YUV value.
@@ -8510,7 +9003,8 @@ _FlushVGPixelCache(
         gcmERR_BREAK(gcoVGHARDWARE_SetState(
             Hardware,
             0x0286C >> 2,
-            ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 0:0) - (0 ? 0:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 0:0) - (0 ? 0:0) + 1))))))) << (0 ? 0:0))) | (((gctUINT32) (0x1 & ((gctUINT32) ((((1 ? 0:0) - (0 ? 0:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 0:0) - (0 ? 0:0) + 1))))))) << (0 ? 0:0)))
+            ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 0:0) - (0 ? 0:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 0:0) - (0 ? 0:0) + 1))))))) << (0 ? 0:0))) | (((gctUINT32) (0x1 & ((gctUINT32) ((((1 ? 0:0) - (0 ? 0:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 0:0) - (0 ? 0:0) + 1))))))) << (0 ? 0:0))),
+            gcvFALSE
             ));
 
         gcmERR_BREAK(gcoVGHARDWARE_Semaphore(
@@ -8519,7 +9013,8 @@ _FlushVGPixelCache(
             gcvBLOCK_COMMAND,
             gcvBLOCK_PIXEL,
             gcvHOW_SEMAPHORE_STALL,
-            gcvNULL
+            gcvNULL,
+            gcvFALSE
             ));
     }
     while (gcvFALSE);
@@ -8546,13 +9041,40 @@ gcoVGHARDWARE_FlushPipe(
     gcmVERIFY_OBJECT(Hardware, gcvOBJ_HARDWARE);
 
     /* Call appropriate cache flush. */
-#ifndef __QNXNTO__
-    status =  flushPipe[Hardware->context.currentPipe] (Hardware);
-#else
-    status =  flushPipe[Hardware->pContext->currentPipe] (Hardware);
-#endif
+    status = flushPipe[Hardware->pContext->currentPipe] (Hardware);
 
     gcmFOOTER();
+
+    return status;
+}
+
+gceSTATUS
+gcoVGHARDWARE_FlushAuto(
+    IN gcoVGHARDWARE Hardware
+    )
+{
+    gceSTATUS status;
+
+    do
+    {
+        gcmERR_BREAK(gcoVGHARDWARE_SetState(
+            Hardware,
+            0x0286C >> 2,
+            ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 0:0) - (0 ? 0:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 0:0) - (0 ? 0:0) + 1))))))) << (0 ? 0:0))) | (((gctUINT32) (0x1 & ((gctUINT32) ((((1 ? 0:0) - (0 ? 0:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 0:0) - (0 ? 0:0) + 1))))))) << (0 ? 0:0))),
+            gcvTRUE
+            ));
+
+        gcmERR_BREAK(gcoVGHARDWARE_Semaphore(
+            Hardware,
+            gcvNULL,
+            gcvBLOCK_COMMAND,
+            gcvBLOCK_PIXEL,
+            gcvHOW_SEMAPHORE_STALL,
+            gcvNULL,
+            gcvTRUE
+            ));
+    }
+    while (gcvFALSE);
 
     return status;
 }
@@ -8598,10 +9120,11 @@ gcoVGHARDWARE_Semaphore(
     IN gceBLOCK From,
     IN gceBLOCK To,
     IN gceHOW How,
-    OUT gctSIZE_T * Bytes
+    OUT gctUINT32 * Bytes,
+    IN gctBOOL FromBuffer
     )
 {
-    static gctSIZE_T _reserveSize[] =
+    static gctUINT32 _reserveSize[] =
     {
         0, /* Invalid                */
         sizeof(gctUINT64), /* gcvHOW_SEMAPHORE       */
@@ -8661,7 +9184,8 @@ gcoVGHARDWARE_Semaphore(
                 Hardware->buffer,
                 _reserveSize[How],
                 gcvTRUE,
-                (gctPOINTER *) &memory
+                (gctPOINTER *) &memory,
+                FromBuffer
                 ));
         }
 
@@ -8673,7 +9197,7 @@ gcoVGHARDWARE_Semaphore(
                 gctUINT32 dst;
 
                 /* Determine the pipe switch value. */
-                gcmASSERT((To >= 0) && (To < gcmCOUNTOF(_target)));
+                gcmASSERT(To < gcmCOUNTOF(_target));
 
                 dst = _target[To];
 
@@ -8705,8 +9229,8 @@ gcoVGHARDWARE_Semaphore(
                 gctUINT32 route;
 
                 /* Determine the semaphore/stall route. */
-                gcmASSERT((From >= 0) && (From < gcmCOUNTOF(_target)));
-                gcmASSERT((To   >= 0) && (To   < gcmCOUNTOF(_target)));
+                gcmASSERT(From < gcmCOUNTOF(_target));
+                gcmASSERT(To   < gcmCOUNTOF(_target));
 
                 src = _target[From];
                 dst = _target[To];
@@ -8747,8 +9271,8 @@ gcoVGHARDWARE_Semaphore(
             gctUINT32 route;
 
             /* Determine the semaphore/stall route. */
-            gcmASSERT((From >= 0) && (From < gcmCOUNTOF(_target)));
-            gcmASSERT((To   >= 0) && (To   < gcmCOUNTOF(_target)));
+            gcmASSERT(From < gcmCOUNTOF(_target));
+            gcmASSERT(To   < gcmCOUNTOF(_target));
 
             src = _target[From];
             dst = _target[To];
@@ -8935,6 +9459,8 @@ gcoVGHARDWARE_AlignToTile(
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Hardware, gcvOBJ_HARDWARE);
 
+    (void) Hardware;
+
     if (Width != gcvNULL)
     {
         /* Align the width. */
@@ -8951,7 +9477,10 @@ gcoVGHARDWARE_AlignToTile(
         else
         {
                 /* Align the height. */
-            *Height = gcmALIGN(*Height, 4);
+            if (Type == gcvSURF_TEXTURE)
+            {
+                *Height = gcmALIGN(*Height, 4);
+            }
         }
     }
 
@@ -9028,6 +9557,8 @@ gcoVGHARDWARE_SplitAddress(
     gcmVERIFY_ARGUMENT(Pool != gcvNULL);
     gcmVERIFY_ARGUMENT(Offset != gcvNULL);
 
+    (void) Hardware;
+
     /* Dispatch on memory type. */
     switch ((((((gctUINT32) (Address)) >> (0 ? 1:0)) & ((gctUINT32) ((((1 ? 1:0) - (0 ? 1:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 1:0) - (0 ? 1:0) + 1)))))) ))
     {
@@ -9092,6 +9623,8 @@ gcoVGHARDWARE_CombineAddress(
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Hardware, gcvOBJ_HARDWARE);
     gcmVERIFY_ARGUMENT(Address != gcvNULL);
+
+    (void) Hardware;
 
     /* Dispatch on memory type. */
     switch (Pool)
@@ -9226,7 +9759,7 @@ gcoVGHARDWARE_IsFeatureAvailable(
         available = ((((gctUINT32) (Hardware->chipFeatures)) >> (0 ? 16:16) & ((gctUINT32) ((((1 ? 16:16) - (0 ? 16:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 16:16) - (0 ? 16:16) + 1)))))) == (0x0  & ((gctUINT32) ((((1 ? 16:16) - (0 ? 16:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 16:16) - (0 ? 16:16) + 1)))))));
         break;
 
-    case gcvFEATURE_Z_COMPRESSION:
+    case gcvFEATURE_COMPRESSION:
         available = ((((gctUINT32) (Hardware->chipFeatures)) >> (0 ? 5:5) & ((gctUINT32) ((((1 ? 5:5) - (0 ? 5:5) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:5) - (0 ? 5:5) + 1)))))) == (0x1  & ((gctUINT32) ((((1 ? 5:5) - (0 ? 5:5) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 5:5) - (0 ? 5:5) + 1)))))));
         break;
 
@@ -9327,7 +9860,7 @@ gceSTATUS
 gcoVGHARDWARE_WriteBuffer(
     IN gcoVGHARDWARE Hardware,
     IN gctCONST_POINTER Data,
-    IN gctSIZE_T Bytes,
+    IN gctUINT32 Bytes,
     IN gctBOOL Aligned
     )
 {
@@ -9464,7 +9997,7 @@ gcoVGHARDWARE_DataCommand(
     IN gcoVGHARDWARE Hardware,
     IN gctPOINTER Logical,
     IN gctSIZE_T Count,
-    IN OUT gctSIZE_T * Bytes
+    IN OUT gctUINT32 * Bytes
     )
 {
     gcmHEADER_ARG("Hardware = 0x%x", Hardware);
@@ -10068,7 +10601,7 @@ gcoVGHARDWARE_EventCommand(
     IN gcoVGHARDWARE Hardware,
     IN gctPOINTER Logical,
     IN gceBLOCK Block,
-    IN gctINT32 InterruptId,
+    IN gctUINT InterruptId,
     IN OUT gctSIZE_T * Bytes
     )
 {
@@ -10138,7 +10671,6 @@ gcoVGHARDWARE_EventCommand(
             gctUINT32_PTR buffer;
 
             /* Verify the event ID. */
-            gcmVERIFY_ARGUMENT(InterruptId >= 0);
             gcmVERIFY_ARGUMENT(InterruptId <= ((gctUINT32) ((((1 ? 4:0) - (0 ? 4:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 4:0) - (0 ? 4:0) + 1))))));
 
             /* Cast the buffer pointer. */
@@ -10158,7 +10690,7 @@ gcoVGHARDWARE_EventCommand(
                 gctUINT eventSource = states[Block].eventSource;
 
                 /* Supported? */
-                if (eventSource == ~0)
+                if (eventSource == ~0U)
                 {
                     gcmFOOTER_NO();
                     return gcvSTATUS_NOT_SUPPORTED;
@@ -10175,7 +10707,7 @@ gcoVGHARDWARE_EventCommand(
                 gctUINT eventFromPE = states[Block].eventFromPE;
 
                 /* Supported? */
-                if (eventFromFE == ~0)
+                if (eventFromFE == ~0U)
                 {
                     gcmFOOTER_NO();
                     return gcvSTATUS_NOT_SUPPORTED;
@@ -10191,7 +10723,7 @@ gcoVGHARDWARE_EventCommand(
         if (Bytes != gcvNULL)
         {
             /* Make sure the events are directly supported for the block. */
-            if (states[Block].eventSource == ~0)
+            if (states[Block].eventSource == ~0U)
             {
                 gcmFOOTER_NO();
                 return gcvSTATUS_NOT_SUPPORTED;
@@ -10208,7 +10740,6 @@ gcoVGHARDWARE_EventCommand(
             gctUINT32_PTR buffer;
 
             /* Verify the event ID. */
-            gcmVERIFY_ARGUMENT(InterruptId >= 0);
             gcmVERIFY_ARGUMENT(InterruptId <= ((gctUINT32) ((((1 ? 4:0) - (0 ? 4:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 4:0) - (0 ? 4:0) + 1))))));
 
             /* Cast the buffer pointer. */
@@ -10281,7 +10812,7 @@ gceSTATUS
 gcoVGHARDWARE_EndCommand(
     IN gcoVGHARDWARE Hardware,
     IN gctPOINTER Logical,
-    IN gctINT32 InterruptId,
+    IN gctUINT InterruptId,
     IN OUT gctSIZE_T * Bytes
     )
 {
@@ -10298,7 +10829,6 @@ gcoVGHARDWARE_EndCommand(
             gctUINT32_PTR buffer;
 
             /* Verify the event ID. */
-            gcmVERIFY_ARGUMENT(InterruptId >= 0);
             gcmVERIFY_ARGUMENT(InterruptId <= ((gctUINT32) ((((1 ? 4:0) - (0 ? 4:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 4:0) - (0 ? 4:0) + 1))))));
 
             /* Cast the buffer pointer. */
@@ -10323,7 +10853,6 @@ gcoVGHARDWARE_EndCommand(
             gctUINT32_PTR buffer;
 
             /* Verify the event ID. */
-            gcmVERIFY_ARGUMENT(InterruptId >= 0);
             gcmVERIFY_ARGUMENT(InterruptId <= ((gctUINT32) ((((1 ? 4:0) - (0 ? 4:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 4:0) - (0 ? 4:0) + 1))))));
 
             /* Cast the buffer pointer. */
@@ -10359,86 +10888,86 @@ gcoVGHARDWARE_EndCommand(
 
 /*******************************************************************************
 **
-**	gcoHARDWARE_QueryTargetCaps
+**  gcoHARDWARE_QueryTargetCaps
 **
-**	Query the render target capabilities.
+**  Query the render target capabilities.
 **
-**	INPUT:
+**  INPUT:
 **
-**		gcoHARDWARE Hardware
-**			Pointer to gcoHARDWARE object.
+**      gcoHARDWARE Hardware
+**          Pointer to gcoHARDWARE object.
 **
-**	OUTPUT:
+**  OUTPUT:
 **
-**		gctUINT * MaxWidth
-**			Pointer to a variable receiving the maximum width of a render
-**			target.
+**      gctUINT * MaxWidth
+**          Pointer to a variable receiving the maximum width of a render
+**          target.
 **
-**		gctUINT * MaxHeight
-**			Pointer to a variable receiving the maximum height of a render
-**			target.
+**      gctUINT * MaxHeight
+**          Pointer to a variable receiving the maximum height of a render
+**          target.
 **
-**		gctUINT * MultiTargetCount
-**			Pointer to a variable receiving the number of render targets.
+**      gctUINT * MultiTargetCount
+**          Pointer to a variable receiving the number of render targets.
 **
-**		gctUINT * MaxSamples
-**			Pointer to a variable receiving the maximum number of samples per
-**			pixel for MSAA.
+**      gctUINT * MaxSamples
+**          Pointer to a variable receiving the maximum number of samples per
+**          pixel for MSAA.
 */
 gceSTATUS
 gcoVGHARDWARE_QueryTargetCaps(
-	IN gcoVGHARDWARE Hardware,
-	OUT gctUINT * MaxWidth,
-	OUT gctUINT * MaxHeight,
-	OUT gctUINT * MultiTargetCount,
-	OUT gctUINT * MaxSamples
-	)
+    IN gcoVGHARDWARE Hardware,
+    OUT gctUINT * MaxWidth,
+    OUT gctUINT * MaxHeight,
+    OUT gctUINT * MultiTargetCount,
+    OUT gctUINT * MaxSamples
+    )
 {
     gceSTATUS status = gcvSTATUS_OK;
 
-	gcmHEADER_ARG("Hardware=0x%x MaxWidth=0x%x MaxHeight=0x%x "
-					"MultiTargetCount=0x%x MaxSamples=0x%x",
-					Hardware, MaxWidth, MaxHeight,
-					MultiTargetCount, MaxSamples);
+    gcmHEADER_ARG("Hardware=0x%x MaxWidth=0x%x MaxHeight=0x%x "
+                    "MultiTargetCount=0x%x MaxSamples=0x%x",
+                    Hardware, MaxWidth, MaxHeight,
+                    MultiTargetCount, MaxSamples);
 
     gcmGETVGHARDWARE(Hardware);
 
-	if (MaxWidth != gcvNULL)
-	{
-		/* Return maximum width of render target for XAQ2. */
-		*MaxWidth = 2048;
-	}
+    if (MaxWidth != gcvNULL)
+    {
+        /* Return maximum width of render target for XAQ2. */
+        *MaxWidth = 2048;
+    }
 
-	if (MaxHeight != gcvNULL)
-	{
-		/* Return maximum height of render target for XAQ2. */
-		*MaxHeight = 2048;
-	}
+    if (MaxHeight != gcvNULL)
+    {
+        /* Return maximum height of render target for XAQ2. */
+        *MaxHeight = 2048;
+    }
 
-	if (MultiTargetCount != gcvNULL)
-	{
-		/* Return number of render targets for XAQ2. */
-		*MultiTargetCount = 1;
-	}
+    if (MultiTargetCount != gcvNULL)
+    {
+        /* Return number of render targets for XAQ2. */
+        *MultiTargetCount = 1;
+    }
 
-	if (MaxSamples != gcvNULL)
-	{
-		/* Return number of samples per pixel for XAQ2. */
-		if (((((gctUINT32) (Hardware->chipFeatures)) >> (0 ? 7:7) & ((gctUINT32) ((((1 ? 7:7) - (0 ? 7:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 7:7) - (0 ? 7:7) + 1)))))) == (0x1 & ((gctUINT32) ((((1 ? 7:7) - (0 ? 7:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 7:7) - (0 ? 7:7) + 1))))))))
-		{
-			*MaxSamples = 4;
-		}
-		else
-		{
-			*MaxSamples = 0;
-		}
+    if (MaxSamples != gcvNULL)
+    {
+        /* Return number of samples per pixel for XAQ2. */
+        if (((((gctUINT32) (Hardware->chipFeatures)) >> (0 ? 7:7) & ((gctUINT32) ((((1 ? 7:7) - (0 ? 7:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 7:7) - (0 ? 7:7) + 1)))))) == (0x1 & ((gctUINT32) ((((1 ? 7:7) - (0 ? 7:7) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 7:7) - (0 ? 7:7) + 1))))))))
+        {
+            *MaxSamples = 4;
+        }
+        else
+        {
+            *MaxSamples = 0;
+        }
 #if USE_SUPER_SAMPLING
-		if (*MaxSamples == 0)
-		{
-			*MaxSamples = 4;
-		}
+        if (*MaxSamples == 0)
+        {
+            *MaxSamples = 4;
+        }
 #endif
-	}
+    }
 
     /* Return the status. */
     gcmFOOTER();
@@ -10447,32 +10976,32 @@ gcoVGHARDWARE_QueryTargetCaps(
 
 /*******************************************************************************
 **
-**	gcoHARDWARE_ConvertFormat
+**  gcoHARDWARE_ConvertFormat
 **
-**	Convert an API format to hardware parameters.
+**  Convert an API format to hardware parameters.
 **
-**	INPUT:
+**  INPUT:
 **
-**		gcoHARDWARE Hardware
-**			Pointer to the gcoHARDWARE object.
+**      gcoHARDWARE Hardware
+**          Pointer to the gcoHARDWARE object.
 **
-**		gceSURF_FORMAT Format
-**			API format to convert.
+**      gceSURF_FORMAT Format
+**          API format to convert.
 **
-**	OUTPUT:
+**  OUTPUT:
 **
-**		gctUINT32_PTR BitsPerPixel
-**			Pointer to a variable that will hold the number of bits per pixel.
+**      gctUINT32_PTR BitsPerPixel
+**          Pointer to a variable that will hold the number of bits per pixel.
 **
-**		gctUINT32_PTR BytesPerTile
-**			Pointer to a variable that will hold the number of bytes per tile.
+**      gctUINT32_PTR BytesPerTile
+**          Pointer to a variable that will hold the number of bytes per tile.
 */
 gceSTATUS gcoVGHARDWARE_ConvertFormat(
-	IN gcoVGHARDWARE Hardware,
-	IN gceSURF_FORMAT Format,
-	OUT gctUINT32_PTR BitsPerPixel,
-	OUT gctUINT32_PTR BytesPerTile
-	)
+    IN gcoVGHARDWARE Hardware,
+    IN gceSURF_FORMAT Format,
+    OUT gctUINT32_PTR BitsPerPixel,
+    OUT gctUINT32_PTR BytesPerTile
+    )
 {
     gctUINT32 bitsPerPixel = 0;
     gctUINT32 bytesPerTile = 0;
@@ -10481,6 +11010,8 @@ gceSTATUS gcoVGHARDWARE_ConvertFormat(
                     Hardware, Format, BitsPerPixel, BytesPerTile);
 
     gcmGETVGHARDWARE(Hardware);
+
+    (void) Hardware;
 
     /* Dispatch on format. */
     /* Dispatch on format. */
@@ -10600,79 +11131,79 @@ gceSTATUS gcoVGHARDWARE_ConvertFormat(
 
 /*******************************************************************************
 **
-**	gcoHARDWARE_QueryTileSize
+**  gcoHARDWARE_QueryTileSize
 **
-**	Query the tile sizes.
+**  Query the tile sizes.
 **
-**	INPUT:
+**  INPUT:
 **
-**		Nothing.
+**      Nothing.
 **
-**	OUTPUT:
+**  OUTPUT:
 **
-**		gctINT32 * TileWidth2D
-**			Pointer to a variable receiving the width in pixels per 2D tile.  If
-**			the 2D is working in linear space, the width will be 1.  If there is
-**			no 2D, the width will be 0.
+**      gctINT32 * TileWidth2D
+**          Pointer to a variable receiving the width in pixels per 2D tile.  If
+**          the 2D is working in linear space, the width will be 1.  If there is
+**          no 2D, the width will be 0.
 **
-**		gctINT32 * TileHeight2D
-**			Pointer to a variable receiving the height in pixels per 2D tile.
-**			If the 2D is working in linear space, the height will be 1.  If
-**			there is no 2D, the height will be 0.
+**      gctINT32 * TileHeight2D
+**          Pointer to a variable receiving the height in pixels per 2D tile.
+**          If the 2D is working in linear space, the height will be 1.  If
+**          there is no 2D, the height will be 0.
 **
-**		gctINT32 * TileWidth3D
-**			Pointer to a variable receiving the width in pixels per 3D tile.  If
-**			the 3D is working in linear space, the width will be 1.  If there is
-**			no 3D, the width will be 0.
+**      gctINT32 * TileWidth3D
+**          Pointer to a variable receiving the width in pixels per 3D tile.  If
+**          the 3D is working in linear space, the width will be 1.  If there is
+**          no 3D, the width will be 0.
 **
-**		gctINT32 * TileHeight3D
-**			Pointer to a variable receiving the height in pixels per 3D tile.
-**			If the 3D is working in linear space, the height will be 1.  If
-**			there is no 3D, the height will be 0.
+**      gctINT32 * TileHeight3D
+**          Pointer to a variable receiving the height in pixels per 3D tile.
+**          If the 3D is working in linear space, the height will be 1.  If
+**          there is no 3D, the height will be 0.
 **
-**		gctUINT32 * Stride
-**			Pointer to  variable receiving the stride requirement for all modes.
+**      gctUINT32 * Stride
+**          Pointer to  variable receiving the stride requirement for all modes.
 */
 gceSTATUS gcoVGHARDWARE_QueryTileSize(
-	OUT gctINT32 * TileWidth2D,
-	OUT gctINT32 * TileHeight2D,
-	OUT gctINT32 * TileWidth3D,
-	OUT gctINT32 * TileHeight3D,
-	OUT gctUINT32 * Stride
-	)
+    OUT gctINT32 * TileWidth2D,
+    OUT gctINT32 * TileHeight2D,
+    OUT gctINT32 * TileWidth3D,
+    OUT gctINT32 * TileHeight3D,
+    OUT gctUINT32 * Stride
+    )
 {
-	if (TileWidth2D != gcvNULL)
-	{
-		/* 1 pixel per 2D tile (linear). */
-		*TileWidth2D = 1;
-	}
+    if (TileWidth2D != gcvNULL)
+    {
+        /* 1 pixel per 2D tile (linear). */
+        *TileWidth2D = 1;
+    }
 
-	if (TileHeight2D != gcvNULL)
-	{
-		/* 1 pixel per 2D tile (linear). */
-		*TileHeight2D = 1;
-	}
+    if (TileHeight2D != gcvNULL)
+    {
+        /* 1 pixel per 2D tile (linear). */
+        *TileHeight2D = 1;
+    }
 
-	if (TileWidth3D != gcvNULL)
-	{
-		/* 4 pixels per 3D tile for now. */
-		*TileWidth3D = 4;
-	}
+    if (TileWidth3D != gcvNULL)
+    {
+        /* 4 pixels per 3D tile for now. */
+        *TileWidth3D = 4;
+    }
 
-	if (TileHeight3D != gcvNULL)
-	{
-		/* 4 lines per 3D tile. */
-		*TileHeight3D = 4;
-	}
+    if (TileHeight3D != gcvNULL)
+    {
+        /* 4 lines per 3D tile. */
+        *TileHeight3D = 4;
+    }
 
-	if (Stride != gcvNULL)
-	{
-		/* 64-byte stride requirement. */
-		*Stride = 64;
-	}
+    if (Stride != gcvNULL)
+    {
+        /* 64-byte stride requirement. */
+        *Stride = 64;
+    }
 
-	/* Success. */
-	return gcvSTATUS_OK;
+    /* Success. */
+    return gcvSTATUS_OK;
 }
 #endif /* gcdENABLE_VG */
 

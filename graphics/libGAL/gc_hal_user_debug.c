@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -11,8 +11,6 @@
 *****************************************************************************/
 
 
-
-
 /**
 **  @file
 **  Debug code for hal user layers.
@@ -21,13 +19,24 @@
 
 #include "gc_hal_user_linux.h"
 #include <stdlib.h>
+#include <unistd.h>
 #include <pthread.h>
 #include <sys/syscall.h>
-
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <errno.h>
 #ifdef ANDROID
 #include <unistd.h>
 #include <android/log.h>
+
+#if (ANDROID_SDK_VERSION >= 18)
+#define ATRACE_TAG ATRACE_TAG_GRAPHICS
+#include <cutils/trace.h>
 #endif
+
+#endif
+
 
 /*
     gcdDEBUG_IN_KERNEL
@@ -61,7 +70,12 @@
     When greater then one, will accumulate messages from the specified number
     of threads in separate output buffers.
 */
+#if defined(ANDROID)
+#define gcdTHREAD_BUFFERS   4
+#else
 #define gcdTHREAD_BUFFERS   1
+#endif
+
 
 /*
     gcdENABLE_OVERFLOW
@@ -78,7 +92,11 @@
     When enabledm each print statement will be preceeded with the current
     line number.
 */
+#if defined(ANDROID)
+#define gcdSHOW_LINE_NUMBER 0
+#else
 #define gcdSHOW_LINE_NUMBER 1
+#endif
 
 /*
     gcdSHOW_PROCESS_ID
@@ -124,7 +142,11 @@
     operation. This should be turned on to capture applications that hang
     the GPU. As otherwise the file contents are not fully synced.
 */
+#if gcdDUMP || gcdDUMP_API
+#define gcdFLUSH_FILE       1
+#else
 #define gcdFLUSH_FILE       0
+#endif
 
 
 /******************************************************************************\
@@ -145,7 +167,7 @@ static gctUINT32 _debugZones[16] =
     /* DFB  */  gcvZONE_NONE,
     /* GDI  */  gcvZONE_NONE,
     /* D3D  */  gcvZONE_NONE,
-    /* ---- */  gcvZONE_NONE,
+    /* ES30 value scope 0x2FFF*/        gcvZONE_NONE,
     /* ---- */  gcvZONE_NONE,
     /* ---- */  gcvZONE_NONE,
     /* ---- */  gcvZONE_NONE,
@@ -165,14 +187,29 @@ static gctBOOL _dumpAPIZones[16] =
     /* DFB  */  gcvFALSE,
     /* GDI  */  gcvFALSE,
     /* D3D  */  gcvFALSE,
-    /* ---- */  gcvFALSE,
+    /* ES30 */  gcvFALSE,
     /* ---- */  gcvFALSE,
     /* ---- */  gcvFALSE,
     /* ---- */  gcvFALSE,
     /* ---- */  gcvFALSE,
     /* ---- */  gcvFALSE
 };
-static FILE *    _debugFile;
+
+/*************************************************************/
+#define STACK_THREAD_NUMBER     16
+
+typedef struct _gcsDUMP_FILE_INFO
+{
+    gctFILE     _debugFile;
+    gctUINT32   _threadID;
+}
+gcsDUMP_FILE_INFO;
+
+static gcsDUMP_FILE_INFO    _FileArray[STACK_THREAD_NUMBER];
+static gctUINT32            _usedFileSlot = 0;
+static gctUINT32            _currentPos = 0;
+/*************************************************************/
+
 static FILE *    _debugFileVS;
 static FILE *    _debugFileFS;
 static gctUINT32 _shaderFileType;
@@ -231,7 +268,7 @@ static gctUINT32 _shaderFileType;
         } \
         while (0)
 #else
-    int syscall(int number, ...);
+    extern long int syscall (long int __sysno, ...);
 #   define gcmGETTHREADID() \
         syscall(SYS_gettid)
 
@@ -430,6 +467,7 @@ _Print(
     iface.command        = gcvHAL_DEBUG;
     iface.u.Debug.set    = gcvTRUE;
     iface.u.Debug.level  = _debugLevel;
+    iface.u.Debug.type   = gcvMESSAGE_TEXT;
     iface.u.Debug.zones  = _debugZones[gcmZONE_GET_API(gcvZONE_API_HAL)];
     iface.u.Debug.enable = gcvTRUE;
 
@@ -447,7 +485,7 @@ _Print(
         );
 #else
     int i, j, n, indent;
-    char buffer[768];
+    char buffer[4096];
     gcsBUFFERED_OUTPUT_PTR outputBuffer = gcvNULL;
 #if gcdSEPARATE_THREADS
     static gctUINT32 prevThreadID;
@@ -458,6 +496,7 @@ _Print(
 #endif
 
     gcmLOCKSECTION();
+
 
 #if gcdTHREAD_BUFFERS > 1
     /* Get the current thread ID. */
@@ -521,10 +560,14 @@ _Print(
 
         /* Reset the buffer. */
         outputBuffer->threadID   = threadID;
+#if gcdBUFFERED_OUTPUT
         outputBuffer->start      = 0;
         outputBuffer->index      = 0;
         outputBuffer->count      = 0;
+#endif
+#if gcdSHOW_LINE_NUMBER
         outputBuffer->lineNumber = 0;
+#endif
     }
 #else
     outputBuffer = _outputBufferHead;
@@ -559,7 +602,7 @@ _Print(
         gctUINT64 time;
         gcoOS_GetProfileTick(&time);
         i += gcmSPRINTF(
-            buffer + i, sizeof(buffer) - i, "0x%016llX", time
+            buffer + i, sizeof(buffer) - i, "%12llu", time
             );
         buffer[sizeof(buffer) - 1] = '\0';
     }
@@ -588,7 +631,7 @@ _Print(
     {
         gctUINT32 processID = gcmGETPROCESSID();
         i += gcmSPRINTF(
-            buffer + i, sizeof(buffer) - i, "pid=0x%04X", processID
+            buffer + i, sizeof(buffer) - i, "pid=%5u", processID
             );
         buffer[sizeof(buffer) - 1] = '\0';
     }
@@ -603,7 +646,7 @@ _Print(
 
     {
         i += gcmSPRINTF(
-            buffer + i, sizeof(buffer) - i, "tid=%d", threadID
+            buffer + i, sizeof(buffer) - i, "tid=%5u", threadID
             );
         buffer[sizeof(buffer) - 1] = '\0';
     }
@@ -661,6 +704,96 @@ _Print(
 #endif
 }
 
+static gctFILE
+_SetDumpFile(
+    IN gctFILE File,
+    IN gctBOOL CloseOldFile
+    )
+{
+    gctFILE oldFile = gcvNULL;
+    gctUINT32 selfThreadID = gcmGETTHREADID();
+    gctUINT32 pos;
+    gctUINT32 tmpCurPos;
+
+    gcmLOCKSECTION();
+    tmpCurPos = _currentPos;
+
+    /* Find if this thread has already been recorded */
+    for (pos = 0; pos < _usedFileSlot; pos++)
+    {
+        if (selfThreadID == _FileArray[pos]._threadID)
+        {
+            _Flush(_FileArray[pos]._debugFile);
+            if (_FileArray[pos]._debugFile != gcvNULL &&
+                _FileArray[pos]._debugFile != File    &&
+                CloseOldFile)
+            {
+                /* Close the earliest existing file handle. */
+                fclose(_FileArray[pos]._debugFile);
+                _FileArray[pos]._debugFile =  gcvNULL;
+            }
+
+            oldFile = _FileArray[pos]._debugFile;
+            /* Replace old file by new file */
+            _FileArray[pos]._debugFile = File;
+            goto exit;
+        }
+    }
+
+    /* Test if we have exhausted our thread buffers. One thread one buffer. */
+    if (tmpCurPos == STACK_THREAD_NUMBER)
+    {
+        goto error;
+    }
+
+    /* Record this new thread */
+    _FileArray[tmpCurPos]._debugFile = File;
+    _FileArray[tmpCurPos]._threadID = selfThreadID;
+    _currentPos = ++tmpCurPos;
+
+    if (_usedFileSlot < STACK_THREAD_NUMBER)
+    {
+        _usedFileSlot++;
+    }
+
+exit:
+    gcmUNLOCKSECTION();
+    return oldFile;
+
+error:
+    gcmUNLOCKSECTION();
+    gcmPRINT("ERROR: Not enough dump file buffers. Buffer num = %d", STACK_THREAD_NUMBER);
+    return oldFile;
+}
+
+static gctFILE
+_GetDumpFile()
+{
+    gctUINT32 selfThreadID;
+    gctUINT32 pos = 0;
+    gctFILE retFile = gcvNULL;
+
+    gcmLOCKSECTION();
+
+    if (_usedFileSlot == 0)
+    {
+        goto exit;
+    }
+
+    selfThreadID = gcmGETTHREADID();
+    for (; pos < _usedFileSlot; pos++)
+    {
+        if (selfThreadID == _FileArray[pos]._threadID)
+        {
+            retFile = _FileArray[pos]._debugFile;
+            goto exit;
+        }
+    }
+
+exit:
+    gcmUNLOCKSECTION();
+    return retFile;
+}
 
 /******************************************************************************\
 ********************************* Debug Macros *********************************
@@ -706,7 +839,7 @@ gcoOS_Print(
     ...
     )
 {
-    gcmDEBUGPRINT(_debugFile, Message);
+    gcmDEBUGPRINT(_GetDumpFile(), Message);
 }
 
 /*******************************************************************************
@@ -743,7 +876,7 @@ gcoOS_DebugTrace(
         return;
     }
 
-    gcmDEBUGPRINT(_debugFile, Message);
+    gcmDEBUGPRINT(_GetDumpFile(), Message);
 }
 
 /*******************************************************************************
@@ -782,7 +915,7 @@ gcoOS_DebugTraceZone(
     ...
     )
 {
-    _DumpAPI(Level,Zone);
+    if(Message != gcvNULL && Message[0] == '+') _DumpAPI(Level,Zone);
     /* Verify that the debug level and zone are valid. */
     if ((Level > _debugLevel)
     ||  !(_debugZones[gcmZONE_GET_API(Zone)] & Zone & gcdZONE_MASK)
@@ -791,7 +924,10 @@ gcoOS_DebugTraceZone(
         return;
     }
 
-    gcmDEBUGPRINT(_debugFile, Message);
+    if (Message != gcvNULL)
+    {
+        gcmDEBUGPRINT(_GetDumpFile(), Message);
+    }
 }
 
 /*******************************************************************************
@@ -842,7 +978,7 @@ gcoOS_DebugFatal(
     )
 {
     gcmPRINT_VERSION();
-    gcmDEBUGPRINT(_debugFile, Message);
+    gcmDEBUGPRINT(_GetDumpFile(), Message);
 
     /* Break into the debugger. */
     gcoOS_DebugBreak();
@@ -1029,10 +1165,10 @@ gcoOS_SetDebugZones(
 
 void
 gcoOS_Verify(
-    IN gceSTATUS Status
+    IN gceSTATUS status
     )
 {
-    _lastError = Status;
+    _lastError = status;
 }
 
 /*******************************************************************************
@@ -1060,18 +1196,13 @@ gcoOS_SetDebugFile(
     IN gctCONST_STRING FileName
     )
 {
-    _Flush(_debugFile);
-
-    /* Close any existing file handle. */
-    if (_debugFile != gcvNULL)
-    {
-        fclose(_debugFile);
-        _debugFile = gcvNULL;
-    }
+    gctFILE debugFile;
 
     if (FileName != gcvNULL)
     {
-        _debugFile = fopen(FileName, "w");
+        /* Don't change it to 'w' !!!*/
+        debugFile = fopen(FileName, "a");
+        _SetDumpFile(debugFile, gcvTRUE);
     }
 }
 
@@ -1094,16 +1225,11 @@ gcoOS_SetDebugFile(
 gctFILE
 gcoOS_ReplaceDebugFile(
     IN gctFILE fp
-	)
+    )
 {
-	gctFILE old_fp = (gctFILE)_debugFile;
-        /* fp is not changed, do nothing */
-	if (old_fp == fp)
-		return fp;
+    gctFILE old_fp = _SetDumpFile(fp, gcvFALSE);
 
-	_Flush(_debugFile);
-	_debugFile = (FILE*)fp;
-	return old_fp;
+    return old_fp;
 }
 
 /*******************************************************************************
@@ -1267,121 +1393,166 @@ gcoOS_EnableDebugBuffer(
 
 gctCONST_STRING
 gcoOS_DebugStatus2Name(
-	gceSTATUS status
-	)
+    gceSTATUS status
+    )
 {
-	switch (status)
-	{
-	case gcvSTATUS_OK:
-		return "gcvSTATUS_OK";
-	case gcvSTATUS_TRUE:
-		return "gcvSTATUS_TRUE";
-	case gcvSTATUS_NO_MORE_DATA:
-		return "gcvSTATUS_NO_MORE_DATA";
-	case gcvSTATUS_CACHED:
-		return "gcvSTATUS_CACHED";
-	case gcvSTATUS_MIPMAP_TOO_LARGE:
-		return "gcvSTATUS_MIPMAP_TOO_LARGE";
-	case gcvSTATUS_NAME_NOT_FOUND:
-		return "gcvSTATUS_NAME_NOT_FOUND";
-	case gcvSTATUS_NOT_OUR_INTERRUPT:
-		return "gcvSTATUS_NOT_OUR_INTERRUPT";
-	case gcvSTATUS_MISMATCH:
-		return "gcvSTATUS_MISMATCH";
-	case gcvSTATUS_MIPMAP_TOO_SMALL:
-		return "gcvSTATUS_MIPMAP_TOO_SMALL";
-	case gcvSTATUS_LARGER:
-		return "gcvSTATUS_LARGER";
-	case gcvSTATUS_SMALLER:
-		return "gcvSTATUS_SMALLER";
-	case gcvSTATUS_CHIP_NOT_READY:
-		return "gcvSTATUS_CHIP_NOT_READY";
-	case gcvSTATUS_NEED_CONVERSION:
-		return "gcvSTATUS_NEED_CONVERSION";
-	case gcvSTATUS_SKIP:
-		return "gcvSTATUS_SKIP";
-	case gcvSTATUS_DATA_TOO_LARGE:
-		return "gcvSTATUS_DATA_TOO_LARGE";
-	case gcvSTATUS_INVALID_CONFIG:
-		return "gcvSTATUS_INVALID_CONFIG";
-	case gcvSTATUS_CHANGED:
-		return "gcvSTATUS_CHANGED";
-	case gcvSTATUS_NOT_SUPPORT_DITHER:
-		return "gcvSTATUS_NOT_SUPPORT_DITHER";
+    switch (status)
+    {
+    case gcvSTATUS_OK:
+        return "gcvSTATUS_OK";
+    case gcvSTATUS_TRUE:
+        return "gcvSTATUS_TRUE";
+    case gcvSTATUS_NO_MORE_DATA:
+        return "gcvSTATUS_NO_MORE_DATA";
+    case gcvSTATUS_CACHED:
+        return "gcvSTATUS_CACHED";
+    case gcvSTATUS_MIPMAP_TOO_LARGE:
+        return "gcvSTATUS_MIPMAP_TOO_LARGE";
+    case gcvSTATUS_NAME_NOT_FOUND:
+        return "gcvSTATUS_NAME_NOT_FOUND";
+    case gcvSTATUS_NOT_OUR_INTERRUPT:
+        return "gcvSTATUS_NOT_OUR_INTERRUPT";
+    case gcvSTATUS_MISMATCH:
+        return "gcvSTATUS_MISMATCH";
+    case gcvSTATUS_MIPMAP_TOO_SMALL:
+        return "gcvSTATUS_MIPMAP_TOO_SMALL";
+    case gcvSTATUS_LARGER:
+        return "gcvSTATUS_LARGER";
+    case gcvSTATUS_SMALLER:
+        return "gcvSTATUS_SMALLER";
+    case gcvSTATUS_CHIP_NOT_READY:
+        return "gcvSTATUS_CHIP_NOT_READY";
+    case gcvSTATUS_NEED_CONVERSION:
+        return "gcvSTATUS_NEED_CONVERSION";
+    case gcvSTATUS_SKIP:
+        return "gcvSTATUS_SKIP";
+    case gcvSTATUS_DATA_TOO_LARGE:
+        return "gcvSTATUS_DATA_TOO_LARGE";
+    case gcvSTATUS_INVALID_CONFIG:
+        return "gcvSTATUS_INVALID_CONFIG";
+    case gcvSTATUS_CHANGED:
+        return "gcvSTATUS_CHANGED";
+    case gcvSTATUS_NOT_SUPPORT_DITHER:
+        return "gcvSTATUS_NOT_SUPPORT_DITHER";
+    case gcvSTATUS_EXECUTED:
+        return "gcvSTATUS_EXECUTED";
+    case gcvSTATUS_TERMINATE:
+        return "gcvSTATUS_TERMINATE";
 
-	case gcvSTATUS_INVALID_ARGUMENT:
-		return "gcvSTATUS_INVALID_ARGUMENT";
-	case gcvSTATUS_INVALID_OBJECT:
-		return "gcvSTATUS_INVALID_OBJECT";
-	case gcvSTATUS_OUT_OF_MEMORY:
-		return "gcvSTATUS_OUT_OF_MEMORY";
-	case gcvSTATUS_MEMORY_LOCKED:
-		return "gcvSTATUS_MEMORY_LOCKED";
-	case gcvSTATUS_MEMORY_UNLOCKED:
-		return "gcvSTATUS_MEMORY_UNLOCKED";
-	case gcvSTATUS_HEAP_CORRUPTED:
-		return "gcvSTATUS_HEAP_CORRUPTED";
-	case gcvSTATUS_GENERIC_IO:
-		return "gcvSTATUS_GENERIC_IO";
-	case gcvSTATUS_INVALID_ADDRESS:
-		return "gcvSTATUS_INVALID_ADDRESS";
-	case gcvSTATUS_CONTEXT_LOSSED:
-		return "gcvSTATUS_CONTEXT_LOSSED";
-	case gcvSTATUS_TOO_COMPLEX:
-		return "gcvSTATUS_TOO_COMPLEX";
-	case gcvSTATUS_BUFFER_TOO_SMALL:
-		return "gcvSTATUS_BUFFER_TOO_SMALL";
-	case gcvSTATUS_INTERFACE_ERROR:
-		return "gcvSTATUS_INTERFACE_ERROR";
-	case gcvSTATUS_NOT_SUPPORTED:
-		return "gcvSTATUS_NOT_SUPPORTED";
-	case gcvSTATUS_MORE_DATA:
-		return "gcvSTATUS_MORE_DATA";
-	case gcvSTATUS_TIMEOUT:
-		return "gcvSTATUS_TIMEOUT";
-	case gcvSTATUS_OUT_OF_RESOURCES:
-		return "gcvSTATUS_OUT_OF_RESOURCES";
-	case gcvSTATUS_INVALID_DATA:
-		return "gcvSTATUS_INVALID_DATA";
-	case gcvSTATUS_INVALID_MIPMAP:
-		return "gcvSTATUS_INVALID_MIPMAP";
-	case gcvSTATUS_NOT_FOUND:
-		return "gcvSTATUS_NOT_FOUND";
-	case gcvSTATUS_NOT_ALIGNED:
-		return "gcvSTATUS_NOT_ALIGNED";
-	case gcvSTATUS_INVALID_REQUEST:
-		return "gcvSTATUS_INVALID_REQUEST";
-	case gcvSTATUS_GPU_NOT_RESPONDING:
-		return "gcvSTATUS_GPU_NOT_RESPONDING";
-	case gcvSTATUS_TIMER_OVERFLOW:
-		return "gcvSTATUS_TIMER_OVERFLOW";
-	case gcvSTATUS_VERSION_MISMATCH:
-		return "gcvSTATUS_VERSION_MISMATCH";
-	case gcvSTATUS_LOCKED:
-		return "gcvSTATUS_LOCKED";
+    case gcvSTATUS_INVALID_ARGUMENT:
+        return "gcvSTATUS_INVALID_ARGUMENT";
+    case gcvSTATUS_INVALID_OBJECT:
+        return "gcvSTATUS_INVALID_OBJECT";
+    case gcvSTATUS_OUT_OF_MEMORY:
+        return "gcvSTATUS_OUT_OF_MEMORY";
+    case gcvSTATUS_MEMORY_LOCKED:
+        return "gcvSTATUS_MEMORY_LOCKED";
+    case gcvSTATUS_MEMORY_UNLOCKED:
+        return "gcvSTATUS_MEMORY_UNLOCKED";
+    case gcvSTATUS_HEAP_CORRUPTED:
+        return "gcvSTATUS_HEAP_CORRUPTED";
+    case gcvSTATUS_GENERIC_IO:
+        return "gcvSTATUS_GENERIC_IO";
+    case gcvSTATUS_INVALID_ADDRESS:
+        return "gcvSTATUS_INVALID_ADDRESS";
+    case gcvSTATUS_CONTEXT_LOSSED:
+        return "gcvSTATUS_CONTEXT_LOSSED";
+    case gcvSTATUS_TOO_COMPLEX:
+        return "gcvSTATUS_TOO_COMPLEX";
+    case gcvSTATUS_BUFFER_TOO_SMALL:
+        return "gcvSTATUS_BUFFER_TOO_SMALL";
+    case gcvSTATUS_INTERFACE_ERROR:
+        return "gcvSTATUS_INTERFACE_ERROR";
+    case gcvSTATUS_NOT_SUPPORTED:
+        return "gcvSTATUS_NOT_SUPPORTED";
+    case gcvSTATUS_MORE_DATA:
+        return "gcvSTATUS_MORE_DATA";
+    case gcvSTATUS_TIMEOUT:
+        return "gcvSTATUS_TIMEOUT";
+    case gcvSTATUS_OUT_OF_RESOURCES:
+        return "gcvSTATUS_OUT_OF_RESOURCES";
+    case gcvSTATUS_INVALID_DATA:
+        return "gcvSTATUS_INVALID_DATA";
+    case gcvSTATUS_INVALID_MIPMAP:
+        return "gcvSTATUS_INVALID_MIPMAP";
+    case gcvSTATUS_NOT_FOUND:
+        return "gcvSTATUS_NOT_FOUND";
+    case gcvSTATUS_NOT_ALIGNED:
+        return "gcvSTATUS_NOT_ALIGNED";
+    case gcvSTATUS_INVALID_REQUEST:
+        return "gcvSTATUS_INVALID_REQUEST";
+    case gcvSTATUS_GPU_NOT_RESPONDING:
+        return "gcvSTATUS_GPU_NOT_RESPONDING";
+    case gcvSTATUS_TIMER_OVERFLOW:
+        return "gcvSTATUS_TIMER_OVERFLOW";
+    case gcvSTATUS_VERSION_MISMATCH:
+        return "gcvSTATUS_VERSION_MISMATCH";
+    case gcvSTATUS_LOCKED:
+        return "gcvSTATUS_LOCKED";
+    case gcvSTATUS_INTERRUPTED:
+        return "gcvSTATUS_INTERRUPTED";
+    case gcvSTATUS_DEVICE:
+        return "gcvSTATUS_DEVICE";
+    case gcvSTATUS_NOT_MULTI_PIPE_ALIGNED:
+        return "gcvSTATUS_NOT_MULTI_PIPE_ALIGNED";
 
     /* Linker errors. */
-	case gcvSTATUS_GLOBAL_TYPE_MISMATCH:
-		return "gcvSTATUS_GLOBAL_TYPE_MISMATCH";
-	case gcvSTATUS_TOO_MANY_ATTRIBUTES:
-		return "gcvSTATUS_TOO_MANY_ATTRIBUTES";
-	case gcvSTATUS_TOO_MANY_UNIFORMS:
-		return "gcvSTATUS_TOO_MANY_UNIFORMS";
-	case gcvSTATUS_TOO_MANY_VARYINGS:
-		return "gcvSTATUS_TOO_MANY_VARYINGS";
-	case gcvSTATUS_UNDECLARED_VARYING:
-		return "gcvSTATUS_UNDECLARED_VARYING";
-	case gcvSTATUS_VARYING_TYPE_MISMATCH:
-		return "gcvSTATUS_VARYING_TYPE_MISMATCH";
-	case gcvSTATUS_MISSING_MAIN:
-		return "gcvSTATUS_MISSING_MAIN";
-	case gcvSTATUS_NAME_MISMATCH:
-		return "gcvSTATUS_NAME_MISMATCH";
-	case gcvSTATUS_INVALID_INDEX:
-		return "gcvSTATUS_INVALID_INDEX";
-	default:
-		return "nil";
-	}
+    case gcvSTATUS_GLOBAL_TYPE_MISMATCH:
+        return "gcvSTATUS_GLOBAL_TYPE_MISMATCH";
+    case gcvSTATUS_TOO_MANY_ATTRIBUTES:
+        return "gcvSTATUS_TOO_MANY_ATTRIBUTES";
+    case gcvSTATUS_TOO_MANY_UNIFORMS:
+        return "gcvSTATUS_TOO_MANY_UNIFORMS";
+    case gcvSTATUS_TOO_MANY_SAMPLER:
+        return "gcvSTATUS_TOO_MANY_SAMPLER";
+    case gcvSTATUS_TOO_MANY_VARYINGS:
+        return "gcvSTATUS_TOO_MANY_VARYINGS";
+    case gcvSTATUS_UNDECLARED_VARYING:
+        return "gcvSTATUS_UNDECLARED_VARYING";
+    case gcvSTATUS_VARYING_TYPE_MISMATCH:
+        return "gcvSTATUS_VARYING_TYPE_MISMATCH";
+    case gcvSTATUS_MISSING_MAIN:
+        return "gcvSTATUS_MISSING_MAIN";
+    case gcvSTATUS_NAME_MISMATCH:
+        return "gcvSTATUS_NAME_MISMATCH";
+    case gcvSTATUS_INVALID_INDEX:
+        return "gcvSTATUS_INVALID_INDEX";
+    case gcvSTATUS_UNIFORM_MISMATCH:
+        return "gcvSTATUS_UNIFORM_MISMATCH";
+    case gcvSTATUS_UNSAT_LIB_SYMBOL:
+        return "gcvSTATUS_UNSAT_LIB_SYMBOL";
+    case gcvSTATUS_TOO_MANY_SHADERS:
+        return "gcvSTATUS_TOO_MANY_SHADERS";
+    case gcvSTATUS_LINK_INVALID_SHADERS:
+        return "gcvSTATUS_LINK_INVALID_SHADERS";
+    case gcvSTATUS_CS_NO_WORKGROUP_SIZE:
+        return "gcvSTATUS_CS_NO_WORKGROUP_SIZE";
+    case gcvSTATUS_LINK_LIB_ERROR:
+        return "gcvSTATUS_LINK_LIB_ERROR";
+    case gcvSTATUS_SHADER_VERSION_MISMATCH:
+        return "gcvSTATUS_SHADER_VERSION_MISMATCH";
+    case gcvSTATUS_TOO_MANY_INSTRUCTION:
+        return "gcvSTATUS_TOO_MANY_INSTRUCTION";
+    case gcvSTATUS_SSBO_MISMATCH:
+        return "gcvSTATUS_SSBO_MISMATCH";
+    case gcvSTATUS_TOO_MANY_OUTPUT:
+        return "gcvSTATUS_TOO_MANY_OUTPUT";
+    case gcvSTATUS_TOO_MANY_INPUT:
+        return "gcvSTATUS_TOO_MANY_INPUT";
+    case gcvSTATUS_NOT_SUPPORT_CL:
+        return "gcvSTATUS_NOT_SUPPORT_CL";
+    case gcvSTATUS_NOT_SUPPORT_INTEGER:
+        return "gcvSTATUS_NOT_SUPPORT_INTEGER";
+
+    /* Compiler errors. */
+    case gcvSTATUS_COMPILER_FE_PREPROCESSOR_ERROR:
+        return "gcvSTATUS_COMPILER_FE_PREPROCESSOR_ERROR";
+    case gcvSTATUS_COMPILER_FE_PARSER_ERROR:
+        return "gcvSTATUS_COMPILER_FE_PARSER_ERROR";
+
+    default:
+        return "nil";
+    }
 }
 
 /*******************************************************************************
@@ -1390,6 +1561,7 @@ gcoOS_DebugStatus2Name(
 
 typedef struct _gcsSTACK
 {
+    gctINT8_PTR         identity;
     gctCONST_STRING     function;
     gctINT              line;
     gctCONST_STRING     text;
@@ -1401,13 +1573,13 @@ typedef struct _gcsTRACE_STACK
 {
     gctBOOL             initialized;
     gctHANDLE           thread;
-    gcsSTACK            stack[64];
+    gcsSTACK            stack[128];
     gctINT              level;
 }
 gcsTRACE_STACK;
 
-/* Allocate enough for 4 threads. */
-static gcsTRACE_STACK stacks[4];
+/* Allocate enough for STACK_THREAD_NUMBER threads. */
+static gcsTRACE_STACK stacks[STACK_THREAD_NUMBER];
 static pthread_mutex_t stacksMutex = PTHREAD_MUTEX_INITIALIZER;
 
 /*******************************************************************************
@@ -1512,6 +1684,7 @@ static gcsTRACE_STACK * _FindStack(void)
 */
 void
 gcoOS_StackPush(
+    IN gctINT8_PTR Identity,
     IN gctCONST_STRING Function,
     IN gctINT Line,
     IN gctCONST_STRING Text OPTIONAL,
@@ -1534,6 +1707,7 @@ gcoOS_StackPush(
     {
         /* Push arguments onto the stack. */
         gcsSTACK* stack = &traceStack->stack[traceStack->level++];
+        stack->identity = Identity;
         stack->function = Function;
         stack->line     = Line;
         stack->text     = Text;
@@ -1563,6 +1737,7 @@ gcoOS_StackPush(
 */
 void
 gcoOS_StackPop(
+    IN gctINT8_PTR Identity,
     IN gctCONST_STRING Function
     )
 {
@@ -1579,11 +1754,28 @@ gcoOS_StackPop(
         gcsSTACK* stack = &traceStack->stack[--traceStack->level];
 
         /* Check for function mismatch. */
-        if (stack->function != Function)
+        if (stack->identity != Identity)
         {
-            gcmPRINT("ERROR(%s): Trace stack mismatch (%s:%d).",
-                     Function, stack->function, stack->line);
+            gctINT32 levelCheck;
+            gcsSTACK* stackTmp;
+
+            for (levelCheck = traceStack->level; levelCheck >= 0; levelCheck--)
+            {
+                stackTmp = &traceStack->stack[levelCheck];
+                if (stackTmp->identity == Identity)
+                {
+                     /* Skip all miss-footer funcions in stack */
+                    traceStack->level = levelCheck;
+                    break;
+                }
+                else
+                {
+                    gcmPRINT("ERROR(%s): Trace stack mismatch (%s:%d).",
+                             Function, stackTmp->function, stackTmp->line);
+                }
+            }
         }
+
         /*Stack is NULL, release this buffer*/
         if (traceStack->level == 0)
         {
@@ -1686,13 +1878,13 @@ _DumpAPI(
         return;
     }
 
-    if (traceStack->level >= gcvDUMP_API_DEPTH)
+    if (traceStack->level > gcvDUMP_API_DEPTH || traceStack->level<=0)
     {
         return;
     }
     else
     {
-        gcsSTACK* stack = &traceStack->stack[traceStack->level];
+        gcsSTACK* stack = &traceStack->stack[traceStack->level-1];
 
         gcmPRINT("  [%d] %s(%d)", traceStack->level, stack->function, stack->line);
         if (stack->text != gcvNULL)
@@ -1707,3 +1899,288 @@ _DumpAPI(
         }
     }
 }
+
+/*******************************************************************************
+***** Binary Trace *************************************************************
+*******************************************************************************/
+
+/*******************************************************************************
+**  _VerifyMessage
+**
+**  Verify a binary trace message, decode it to human readable string and print
+**  it.
+**
+**  ARGUMENTS:
+**
+**      gctCONST_STRING Buffer
+**          Pointer to buffer to store.
+**
+**      gctSIZE_T Bytes
+**          Buffer length.
+*/
+void
+_VerifyMessage(
+    IN gctCONST_STRING Buffer,
+    IN gctSIZE_T Bytes
+    )
+{
+    char arguments[150] = {0};
+    char format[100] = {0};
+
+    gctSTRING function;
+    gctPOINTER args;
+    gctUINT32 numArguments;
+    int i = 0;
+    gctUINT32 functionBytes;
+
+    gcsBINARY_TRACE_MESSAGE_PTR message = (gcsBINARY_TRACE_MESSAGE_PTR)Buffer;
+
+    /* Check signature. */
+    if (message->signature != 0x7FFFFFFF)
+    {
+        gcmPRINT("Signature error");
+        return;
+    }
+
+    /* Get function name. */
+    function = (gctSTRING)&message->payload;
+    functionBytes = strlen(function) + 1;
+
+    /* Get arguments number. */
+    numArguments = message->numArguments;
+
+    /* Get arguments . */
+    args = function + functionBytes;
+
+    /* Prepare format string. */
+    while (numArguments--)
+    {
+        format[i++] = '%';
+        format[i++] = 'x';
+        format[i++] = ' ';
+    }
+
+    format[i] = '\0';
+
+    if (numArguments)
+    {
+        vsnprintf(arguments, 150, format, *(gctARGUMENTS *) &args);
+    }
+
+    gcmPRINT("[%d](%d): %s(%d) %s",
+             message->pid,
+             message->tid,
+             function,
+             message->line,
+             arguments);
+}
+
+#if gcdBINARY_TRACE_FILE_SIZE
+static FILE *  _binaryTraceFile;
+#endif
+/*******************************************************************************
+**  gcoOS_WriteToStorage
+**
+**  Store a buffer, as a example, raw buffer is written to a file.
+**
+**  ARGUMENTS:
+**
+**      gctCONST_STRING Buffer
+**          Pointer to buffer to store.
+**
+**      gctSIZE_T Bytes
+**          Buffer length.
+*/
+void
+gcoOS_WriteToStorage(
+    IN gctCONST_STRING Buffer,
+    IN gctSIZE_T Bytes
+    )
+{
+    /* Implement a buffer storage mechanisam to record binary trace buffer. */
+#if gcdBINARY_TRACE_FILE_SIZE
+    char binaryTraceFileName[64];
+    static gctUINT32 fileBytes = 0;
+
+    if (_binaryTraceFile == gcvNULL)
+    {
+        sprintf(binaryTraceFileName, "%x.trace", getpid());
+        _binaryTraceFile = fopen(binaryTraceFileName, "w");
+    }
+
+    fwrite(Buffer, 1, Bytes, _binaryTraceFile);
+
+    fileBytes += Bytes;
+
+    if (fileBytes >= gcdBINARY_TRACE_FILE_SIZE)
+    {
+        rewind(_binaryTraceFile);
+        fileBytes = 0;
+    }
+#endif
+}
+
+/*******************************************************************************
+**  gcoOS_BinaryTrace
+**
+**  Output a binary trace message.
+**
+**  ARGUMENTS:
+**
+**      gctCONST_STRING Function
+**          Pointer to function name.
+**
+**      gctINT Line
+**          Line number.
+**
+**      gctCONST_STRING Text OPTIONAL
+**          Optional pointer to a descriptive text.
+**
+**      ...
+**          Optional arguments to the descriptive text.
+*/
+void
+gcoOS_BinaryTrace(
+    IN gctCONST_STRING Function,
+    IN gctINT Line,
+    IN gctCONST_STRING Text OPTIONAL,
+    ...
+    )
+{
+    static gctUINT32 messageSignature = 0x7FFFFFFF;
+    char buffer[gcdBINARY_TRACE_MESSAGE_SIZE];
+    gctUINT32 numArguments = 0;
+    gctUINT32 functionBytes;
+    gctUINT32 i = 0;
+    gctSTRING payload;
+    gcsBINARY_TRACE_MESSAGE_PTR message = (gcsBINARY_TRACE_MESSAGE_PTR)buffer;
+
+    /* Calculate arguments number. */
+    if (Text)
+    {
+        while (Text[i] != '\0')
+        {
+            if (Text[i] == '%')
+            {
+                numArguments++;
+            }
+            i++;
+        }
+    }
+
+    message->signature    = messageSignature;
+    message->pid          = gcmGETPROCESSID();
+    message->tid          = gcmGETTHREADID();
+    message->line         = Line;
+    message->numArguments = numArguments;
+
+    payload = (gctSTRING)&message->payload;
+
+    /* Function name. */
+    functionBytes = strlen(Function) + 1;
+    memcpy(payload, Function, functionBytes);
+
+    /* Advance to next payload. */
+    payload += functionBytes;
+
+    /* Arguments value. */
+    if (numArguments)
+    {
+        va_list p;
+        va_start(p, Text);
+
+        for (i = 0; i < numArguments; ++i)
+        {
+            gctPOINTER value = va_arg(p, gctPOINTER);
+            memcpy(payload, &value, gcmSIZEOF(gctPOINTER));
+            payload += gcmSIZEOF(gctPOINTER);
+        }
+
+        va_end(p);
+    }
+
+    gcmASSERT(payload - buffer <= gcdBINARY_TRACE_MESSAGE_SIZE);
+
+
+    /* Send buffer to ring buffer. */
+    gcoOS_WriteToStorage(buffer, payload - buffer);
+}
+
+#if !defined(ANDROID) || (ANDROID_SDK_VERSION < 18)
+static pthread_mutex_t ATraceMutex = PTHREAD_MUTEX_INITIALIZER;
+static int ATraceFD = -1;
+
+static gctBOOL _ATraceInit()
+{
+    static gctBOOL once = gcvFALSE;
+
+    pthread_mutex_lock(&ATraceMutex);
+
+    if ((ATraceFD == -1) && (!once))
+    {
+        const char* const traceFileName =
+              "/sys/kernel/debug/tracing/trace_marker";
+
+        ATraceFD = open(traceFileName, O_WRONLY);
+
+        if (ATraceFD == -1)
+        {
+            gcmPRINT("error opening trace file: %s (%d)", strerror(errno), errno);
+        }
+        once = gcvTRUE;
+    }
+
+    pthread_mutex_unlock(&ATraceMutex);
+
+    return (ATraceFD != -1);
+}
+
+static void _ATraceBegin(const char* name)
+{
+    if (_ATraceInit()) {
+        char buf[1024];
+        size_t len = snprintf(buf, 1024, "B|%d|%s", getpid(), name);
+
+        if (len > 0)
+        {
+            if (write(ATraceFD, buf, len)) {};
+        }
+    }
+}
+
+static void _ATraceEnd()
+{
+    if (_ATraceInit()) {
+        char buf = 'E';
+        if (write(ATraceFD, &buf, 1)) {};
+    }
+}
+#endif
+
+void
+gcoOS_SysTraceBegin(
+    IN gctCONST_STRING FuncName
+    )
+{
+#if defined(ANDROID) && (ANDROID_SDK_VERSION >= 18)
+    ATRACE_BEGIN(FuncName);
+#else
+    _ATraceBegin(FuncName);
+#endif
+
+}
+
+void
+gcoOS_SysTraceEnd(
+    IN void
+    )
+{
+#if defined(ANDROID) && (ANDROID_SDK_VERSION >= 18)
+    ATRACE_END();
+#else
+    _ATraceEnd();
+#endif
+
+}
+
+

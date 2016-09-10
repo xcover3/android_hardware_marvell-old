@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -11,11 +11,14 @@
 *****************************************************************************/
 
 
-
 #ifndef __gc_hal_user_math_h_
 #define __gc_hal_user_math_h_
 
 #define _ISOC99_SOURCE
+#if (defined _ISOC99_SOURCE || defined _ISOC9X_SOURCE\
+|| (defined __STDC_VERSION__&&__STDC_VERSION__ >= 199901L))
+#define __USE_ISOC99 1
+#endif
 
 #include <math.h>
 
@@ -29,12 +32,14 @@
 #define gcoMATH_Floor(X)      (gctFLOAT)(floorf((X)))
 #define gcoMATH_Ceiling(X)    (gctFLOAT)(ceilf((X)))
 #define gcoMATH_Exp(X)        (gctFLOAT)(expf((X)))
+#define gcoMATH_Exp2(X)        (gctFLOAT)(powf(2.0f, (X)))
 #define gcoMATH_Absolute(X)   (gctFLOAT)(fabsf((X)))
 #define gcoMATH_ArcCosine(X)  (gctFLOAT)(acosf((X)))
 #define gcoMATH_Tangent(X)    (gctFLOAT)(tanf((X)))
 #define gcoMATH_ArcSine(X)    (gctFLOAT)(asinf((X)))
 #define gcoMATH_ArcTangent(X) (gctFLOAT)(atanf((X)))
 
+#define gcoMATH_Log(X)        (gctFLOAT)(logf((X)))
 #define gcoMATH_Log2(X)        (gctFLOAT)(logf((X)) / logf(2.0f))
 
 #define gcoMATH_SquareRoot(X) (gctFLOAT)(sqrtf((X)))
@@ -51,11 +56,11 @@
 
 #define gcoMATH_UInt2Float(X)  (gctFLOAT)(X)
 #define gcoMATH_Int2Float(X)   (gctFLOAT)(X)
-#define gcoMATH_Float2UInt(X)  (gctUINT) (X)
-#define gcoMATH_Float2Int(X)   (gctINT)  (X)
-#define gcoMATH_Float2Int64(X) (gctINT64)  (X)
+#define gcoMATH_Float2UInt(X)  (gctUINT) (X + 0.5f)
+#define gcoMATH_Float2Int(X)   (gctINT)  ((X > 0.0f)? (X + 0.5f) : (X - 0.5f))
+#define gcoMATH_Float2Int64(X) (gctINT64) ((X > 0.0f)? (X + 0.5f) : (X - 0.5f))
 #define gcoMATH_Fixed2Float(X) (gctFLOAT)((X) / 65536.0f)
-#define gcoMATH_Float2NormalizedUInt8(X) (gctUINT8)((X) * 255.0f)
+#define gcoMATH_Float2NormalizedUInt8(X) (gctUINT8)((X) * 255.0f + 0.5f)
 
 #define gcoMATH_MultiplyFixed(X, Y) \
     (gctFIXED_POINT)( ((gctINT64) (X) * (Y)) >> 16 )
@@ -65,6 +70,10 @@
 
 #define gcoMATH_MultiplyDivideFixed(X, Y, Z) \
     (gctFIXED_POINT)( (gctINT64) (X) * (Y) / (Z) )
+
+#define gcoMATH_MIN(X, Y) (((X) < (Y))?(X):(Y))
+#define gcoMATH_MAX(X, Y) (((X) > (Y))?(X):(Y))
+
 
 #endif
 

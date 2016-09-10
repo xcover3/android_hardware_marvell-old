@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -9,8 +9,6 @@
 *    without the express written permission of Vivante Corporation.
 *
 *****************************************************************************/
-
-
 
 
 /**
@@ -37,11 +35,15 @@
 #include <stdarg.h>
 #include <string.h>
 #include <errno.h>
+#include <sys/syscall.h>
+#include <dirent.h>
 
 #include <signal.h>
 #include <asm/sigcontext.h>       /* for sigcontext */
-
-
+#ifdef ANDROID
+#include <elf.h>
+#include <cutils/properties.h>
+#endif
 
 #define _GC_OBJ_ZONE    gcvZONE_OS
 
@@ -51,13 +53,36 @@ char const * const GALDeviceName[] =
     "/dev/graphics/galcore"
 };
 
+#define MAX_RETRY_IOCTL_TIMES 10000
 
-#ifdef LINUX_OABI
-gctINT32 __sync_fetch_and_add_4(gcsATOM_PTR Atom, gctINT32 Value);
-gctINT32 __sync_fetch_and_sub_4(gcsATOM_PTR Atom, gctINT32 Value);
+/*
+** GCC supports sync_* built-in functions since 4.1.2
+** For those gcc variation whose verion is newer than 4.1.2 but
+** still doesn't support sync_*, build driver with
+** gcdBUILTIN_ATOMIC_FUNCTIONS = 0 to override version check.
+*/
+#ifndef gcdBUILTIN_ATOMIC_FUNCTIONS
+#if (__GNUC__ * 10000 + __GNUC_MINOR__ * 100 + __GNUC_PATCHLEVEL__ >= 40102)
+#define gcdBUILTIN_ATOMIC_FUNCTIONS 1
+#else
+#define gcdBUILTIN_ATOMIC_FUNCTIONS 0
+#endif
+#endif
 
-#define __sync_fetch_and_add    __sync_fetch_and_add_4
-#define __sync_fetch_and_sub    __sync_fetch_and_sub_4
+#ifndef gcdBUILT_FOR_VALGRIND
+#define gcdBUILT_FOR_VALGRIND 0
+#endif
+
+#define gcmGETPROCESSID() \
+    getpid()
+
+#ifdef ANDROID
+#define gcmGETTHREADID() \
+    (gctUINT32) gettid()
+#else
+long int syscall(long int number, ...);
+#   define gcmGETTHREADID() \
+        syscall(SYS_gettid)
 #endif
 
 /*******************************************************************************
@@ -75,10 +100,10 @@ const char * _GAL_PLATFORM = "\n\0$PLATFORM$Linux$\n";
 
 typedef struct _gcsDRIVER_ARGS
 {
-    gctPOINTER InputBuffer;
-    gctUINT32  InputBufferSize;
-    gctPOINTER OutputBuffer;
-    gctUINT32  OutputBufferSize;
+    gctUINT64   InputBuffer;
+    gctUINT64   InputBufferSize;
+    gctUINT64   OutputBuffer;
+    gctUINT64   OutputBufferSize;
 }
 gcsDRIVER_ARGS;
 
@@ -102,7 +127,20 @@ struct _gcoOS
 
     /* Handle to the device. */
     int                     device;
-    gcsATOM_PTR             reference;
+
+#if VIVANTE_PROFILER
+    gctUINT32               allocCount;
+    gctSIZE_T               allocSize;
+    gctSIZE_T               maxAllocSize;
+    gctUINT32               freeCount;
+    gctSIZE_T               freeSize;
+
+#if gcdGC355_MEM_PRINT
+    /* For a single collection. */
+    gctINT32                oneSize;
+    gctBOOL                 oneRecording;
+#endif
+#endif
 };
 
 /******************************************************************************\
@@ -111,454 +149,12 @@ struct _gcoOS
 
 static pthread_key_t gcProcessKey;
 
-gcsPLS gcPLS =
-{
-    gcvNULL,        /* gcoOS object.      */
-    gcvNULL,        /* gcoHAL object.     */
-
-    0,              /* internalSize       */
-    gcvNULL,        /* internalPhysical   */
-    gcvNULL,        /* internalLogical    */
-
-    0,              /* externalSize       */
-    gcvNULL,        /* externalPhysical   */
-    gcvNULL,        /* externalLogical    */
-
-    0,              /* contiguousSize     */
-    gcvNULL,        /* contiguousPhysical */
-    gcvNULL,        /* contiguousLogical  */
-
-    gcvNULL,        /* eglDisplayInfo */
-    gcvNULL         /* eglSurfaceInfo */
-};
-
-/******************************************************************************\
-************************* Process/Thread Local Storage *************************
-\******************************************************************************/
-
-static void __attribute__((constructor)) _ModuleConstructor(void);
-static void _ModuleDestructor(void);
-
-static void
-_TLSDestructor(
-    gctPOINTER TLS
-    )
-{
-    gcsTLS_PTR tls;
-
-    gcmHEADER_ARG("TLS=0x%x", TLS);
-
-    tls = (gcsTLS_PTR) TLS;
-    gcmASSERT(tls != gcvNULL);
-
-    pthread_setspecific(gcProcessKey, tls);
-
-    if (tls->destructor != gcvNULL)
-    {
-        tls->destructor(tls);
-        tls->destructor = gcvNULL;
-    }
-
-    if (tls->engine3D != gcvNULL)
-    {
-        gcmVERIFY_OK(gco3D_Destroy(tls->engine3D));
-        tls->engine3D = gcvNULL;
-    }
-
-    if (tls->engine2D != gcvNULL)
-    {
-        gcmVERIFY_OK(gco2D_Destroy(tls->engine2D));
-        tls->engine2D = gcvNULL;
-    }
-
-    if (tls->hardware != gcvNULL)
-    {
-		gceHARDWARE_TYPE type = tls->currentType;
-		tls->currentType = gcvHARDWARE_3D;
-
-        gcmTRACE_ZONE(
-            gcvLEVEL_VERBOSE, gcvZONE_HARDWARE,
-            "%s(%d): destroying hardware object 0x%08X.",
-            __FUNCTION__, __LINE__, tls->hardware
-            );
-
-        gcmVERIFY_OK(gcoHARDWARE_Destroy(tls->hardware));
-        tls->hardware = gcvNULL;
-		tls->currentType = type;
-    }
-
-    if (tls->hardware2D != gcvNULL)
-    {
-		gceHARDWARE_TYPE type = tls->currentType;
-		tls->currentType = gcvHARDWARE_2D;
-
-        gcmTRACE_ZONE(
-            gcvLEVEL_VERBOSE, gcvZONE_HARDWARE,
-            "%s(%d): destroying hardware object 0x%08X.",
-            __FUNCTION__, __LINE__, tls->hardware2D
-            );
-
-        gcmVERIFY_OK(gcoHARDWARE_Destroy(tls->hardware2D));
-        tls->hardware2D = gcvNULL;
-		tls->currentType = type;
-    }
-
-#if gcdENABLE_VG
-        if (tls->engineVG != gcvNULL)
-        {
-            gcmVERIFY_OK(gcoVG_Destroy(tls->engineVG));
-            tls->engineVG = gcvNULL;
-        }
-
-        if (tls->vg != gcvNULL)
-        {
-            gceHARDWARE_TYPE type = tls->currentType;
-            tls->currentType = gcvHARDWARE_VG;
-
-            gcmTRACE_ZONE(
-                gcvLEVEL_VERBOSE, gcvZONE_HARDWARE,
-                "%s(%d): destroying hardware object 0x%08X.",
-                __FUNCTION__, __LINE__, tls->vg
-                );
-
-            gcmVERIFY_OK(gcoVGHARDWARE_Destroy(tls->vg));
-            tls->vg = gcvNULL;
-            tls->currentType = type;
-
-        }
-#endif
-
-    gcmVERIFY_OK(gcoOS_FreeMemory(gcvNULL, tls));
-
-    pthread_setspecific(gcProcessKey, gcvNULL);
-
-    gcmFOOTER_NO();
-}
-
-static gceSTATUS
-_MapMemory(
-    IN gctPHYS_ADDR Physical,
-    IN gctSIZE_T NumberOfBytes,
-    OUT gctPOINTER * Logical
-    )
-{
-    gceSTATUS status;
-    gcsHAL_INTERFACE iface;
-
-    gcmHEADER_ARG("Physical=0x%x NumberOfBytes=%lu", Physical, NumberOfBytes);
-
-    /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(NumberOfBytes > 0);
-    gcmVERIFY_ARGUMENT(Logical != gcvNULL);
-
-    /* Call kernel API to unmap the memory. */
-    iface.command              = gcvHAL_MAP_MEMORY;
-    iface.u.MapMemory.physical = Physical;
-    iface.u.MapMemory.bytes    = NumberOfBytes;
-
-    gcmONERROR(gcoOS_DeviceControl(
-        gcvNULL,
-        IOCTL_GCHAL_INTERFACE,
-        &iface, gcmSIZEOF(iface),
-        &iface, gcmSIZEOF(iface)
-        ));
-
-    /* Return logical address. */
-    *Logical = iface.u.MapMemory.logical;
-
-    /* Success. */
-    gcmFOOTER_ARG("*Logical=0x%x", *Logical);
-    return gcvSTATUS_OK;
-
-OnError:
-    /* Return the status. */
-    gcmFOOTER();
-    return status;
-}
-
-static gceSTATUS
-_UnmapMemory(
-    IN gctPHYS_ADDR Physical,
-    IN gctSIZE_T NumberOfBytes,
-    IN gctPOINTER Logical
-    )
-{
-    gceSTATUS status;
-    gcsHAL_INTERFACE iface;
-
-    gcmHEADER_ARG("Physical=0x%x NumberOfBytes=%lu Logical=0x%x",
-                  Physical, NumberOfBytes, Logical);
-
-    /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(NumberOfBytes > 0);
-    gcmVERIFY_ARGUMENT(Logical != gcvNULL);
-
-    /* Call kernel API to unmap the memory. */
-    iface.command                = gcvHAL_UNMAP_MEMORY;
-    iface.u.UnmapMemory.physical = Physical;
-    iface.u.UnmapMemory.bytes    = NumberOfBytes;
-    iface.u.UnmapMemory.logical  = Logical;
-
-    gcmONERROR(gcoOS_DeviceControl(
-        gcvNULL,
-        IOCTL_GCHAL_INTERFACE,
-        &iface, sizeof(iface),
-        &iface, sizeof(iface)
-        ));
-
-    /* Success. */
-    gcmFOOTER_NO();
-    return gcvSTATUS_OK;
-
-OnError:
-    /* Return the status. */
-    gcmFOOTER();
-    return status;
-}
-
-static void
-_InitializeProcess(
-    void
-    )
-{
-    /* Install thread destructor. */
-    pthread_key_create(&gcProcessKey, _TLSDestructor);
-}
-
-static void _ModuleConstructor(
-    void
-    )
-{
-    gceSTATUS status;
-    int result;
-    static pthread_once_t onceControl = PTHREAD_ONCE_INIT;
-
-    gcmHEADER();
-
-    /* Each process gets its own objects. */
-    gcmASSERT(gcPLS.os  == gcvNULL);
-    gcmASSERT(gcPLS.hal == gcvNULL);
-
-    gcmASSERT(gcPLS.internalLogical   == gcvNULL);
-    gcmASSERT(gcPLS.externalLogical   == gcvNULL);
-    gcmASSERT(gcPLS.contiguousLogical == gcvNULL);
-
-    /* Call _InitializeProcess function only one time for the process. */
-    result = pthread_once(&onceControl, _InitializeProcess);
-
-    if (result != 0)
-    {
-        gcmTRACE(
-            gcvLEVEL_ERROR,
-            "%s(%d): pthread_once returned %d",
-            __FUNCTION__, __LINE__, result
-            );
-
-        gcmONERROR(gcvSTATUS_OUT_OF_MEMORY);
-    }
-
-    /* The library is loaded automatically as a dependency, constructor is
-       still being called just fine (normally it is called from dlopen).
-       dlclose is never called for the library and I believe this is the
-       reason the destructor does not get called automatically, which
-       is why we have to use atexit here. */
-    atexit((void (*)(void)) _ModuleDestructor);
-
-    /* Construct OS object. */
-    gcmONERROR(gcoOS_Construct(gcvNULL, gcvNULL));
-
-    /* Construct gcoHAL object. */
-    gcmONERROR(gcoHAL_Construct(gcvNULL, gcvNULL, &gcPLS.hal));
-
-    /* Query the video memory sizes. */
-    gcmONERROR(gcoOS_QueryVideoMemory(
-        gcPLS.os,
-        &gcPLS.internalPhysical,
-        &gcPLS.internalSize,
-        &gcPLS.externalPhysical,
-        &gcPLS.externalSize,
-        &gcPLS.contiguousPhysical,
-        &gcPLS.contiguousSize
-        ));
-
-    /* Map internal video memory. */
-    if (gcPLS.internalSize != 0)
-    {
-        gcmONERROR(_MapMemory(
-             gcPLS.internalPhysical,
-             gcPLS.internalSize,
-            &gcPLS.internalLogical
-            ));
-    }
-
-    /* Map external video memory. */
-    if (gcPLS.externalSize != 0)
-    {
-        gcmONERROR(_MapMemory(
-             gcPLS.externalPhysical,
-             gcPLS.externalSize,
-            &gcPLS.externalLogical
-            ));
-    }
-
-    /* Map contiguous video memory. */
-    if (gcPLS.contiguousSize != 0)
-    {
-        gcmONERROR(_MapMemory(
-             gcPLS.contiguousPhysical,
-             gcPLS.contiguousSize,
-            &gcPLS.contiguousLogical
-            ));
-    }
-
-    gcmFOOTER_ARG(
-        "gcPLS.os=0x%08X, gcPLS.hal=0x%08X"
-        " internal=0x%08X external=0x%08X contiguous=0x%08X",
-        gcPLS.os, gcPLS.hal,
-        gcPLS.internalLogical, gcPLS.externalLogical, gcPLS.contiguousLogical
-        );
-
-    return;
-
-OnError:
-    gcmFOOTER();
-}
-
-static void
-_ModuleDestructor(
-    void
-    )
-{
-    gcsTLS_PTR tls;
-
-    gcmHEADER();
-
-    gcoOS_FreeThreadData(gcvTRUE);
-
-    tls = (gcsTLS_PTR) pthread_getspecific(gcProcessKey);
-
-    if (tls != gcvNULL)
-    {
-        if (tls->engine3D != gcvNULL)
-        {
-            gcmVERIFY_OK(gco3D_Destroy(tls->engine3D));
-            tls->engine3D = gcvNULL;
-        }
-
-        if (tls->engine2D != gcvNULL)
-        {
-            gcmVERIFY_OK(gco2D_Destroy(tls->engine2D));
-            tls->engine2D = gcvNULL;
-        }
-
-        if (tls->hardware != gcvNULL)
-        {
-			gceHARDWARE_TYPE type = tls->currentType;
-			tls->currentType = gcvHARDWARE_3D;
-
-            gcmTRACE_ZONE(
-                gcvLEVEL_VERBOSE, gcvZONE_HARDWARE,
-                "%s(%d): destroying hardware object 0x%08X.",
-                __FUNCTION__, __LINE__, tls->hardware
-                );
-
-            gcmVERIFY_OK(gcoHARDWARE_Destroy(tls->hardware));
-            tls->hardware = gcvNULL;
-			tls->currentType = type;
-        }
-
-        if (tls->hardware2D != gcvNULL)
-        {
-			gceHARDWARE_TYPE type = tls->currentType;
-			tls->currentType = gcvHARDWARE_2D;
-
-            gcmTRACE_ZONE(
-                gcvLEVEL_VERBOSE, gcvZONE_HARDWARE,
-                "%s(%d): destroying hardware object 0x%08X.",
-                __FUNCTION__, __LINE__, tls->hardware2D
-                );
-
-            gcmVERIFY_OK(gcoHARDWARE_Destroy(tls->hardware2D));
-            tls->hardware2D = gcvNULL;
-			tls->currentType = type;
-        }
-#if gcdENABLE_VG
-        if (tls->engineVG != gcvNULL)
-        {
-            gcmVERIFY_OK(gcoVG_Destroy(tls->engineVG));
-            tls->engineVG = gcvNULL;
-        }
-
-        if (tls->vg != gcvNULL)
-        {
-            gceHARDWARE_TYPE type = tls->currentType;
-            tls->currentType = gcvHARDWARE_VG;
-
-            gcmTRACE_ZONE(
-                gcvLEVEL_VERBOSE, gcvZONE_HARDWARE,
-                "%s(%d): destroying hardware object 0x%08X.",
-                __FUNCTION__, __LINE__, tls->vg
-                );
-
-            gcmVERIFY_OK(gcoVGHARDWARE_Destroy(tls->vg));
-            tls->vg = gcvNULL;
-            tls->currentType = type;
-
-        }
-#endif
-    }
-
-    if (gcPLS.contiguousLogical != gcvNULL)
-    {
-        gcmVERIFY_OK(_UnmapMemory(
-            gcPLS.contiguousPhysical,
-            gcPLS.contiguousSize,
-            gcPLS.contiguousLogical
-            ));
-
-        gcPLS.contiguousLogical = gcvNULL;
-    }
-
-    if (gcPLS.externalLogical != gcvNULL)
-    {
-        gcmVERIFY_OK(_UnmapMemory(
-            gcPLS.externalPhysical,
-            gcPLS.externalSize,
-            gcPLS.externalLogical
-            ));
-
-        gcPLS.externalLogical = gcvNULL;
-    }
-
-    if (gcPLS.internalLogical != gcvNULL)
-    {
-        gcmVERIFY_OK(_UnmapMemory(
-            gcPLS.internalPhysical,
-            gcPLS.internalSize,
-            gcPLS.internalLogical
-            ));
-
-        gcPLS.internalLogical = gcvNULL;
-    }
-
-    if (gcPLS.hal != gcvNULL)
-    {
-        gcmVERIFY_OK(gcoHAL_Destroy(gcPLS.hal));
-        gcPLS.hal = gcvNULL;
-    }
-
-    gcmVERIFY_OK(gcoOS_Destroy(gcPLS.os));
-
-    pthread_key_delete(gcProcessKey);
-
-    gcmFOOTER_NO();
-}
+gcsPLS gcPLS = gcPLS_INITIALIZER;
 
 /******************************************************************************\
 ****************************** Internal Functions ******************************
 \******************************************************************************/
-
-#if gcmIS_DEBUG(gcdDEBUG_TRACE)
+#if gcmIS_DEBUG(gcdDEBUG_TRACE) || gcdGC355_MEM_PRINT
 static void _ReportDB(
     void
     )
@@ -566,10 +162,10 @@ static void _ReportDB(
     gceSTATUS status;
     gcsHAL_INTERFACE iface;
 
-    gcmVERIFY_OK(gcoOS_ZeroMemory(&iface, sizeof(iface)));
+    gcoOS_ZeroMemory(&iface, sizeof(iface));
 
     iface.command = gcvHAL_DATABASE;
-    iface.u.Database.processID = (gctUINT32) gcoOS_GetCurrentProcessID();
+    iface.u.Database.processID = (gctUINT32)(gctUINTPTR_T)gcoOS_GetCurrentProcessID();
     iface.u.Database.validProcessID = gcvTRUE;
 
     /* Call kernel service. */
@@ -612,212 +208,134 @@ static void _ReportDB(
         gcmTRACE(gcvLEVEL_ERROR, "contiguous.totalBytes = %d\n", iface.u.Database.contiguous.counters.totalBytes);
     }
 
+    gcmPRINT("05) Video memory - current: %lld \n", iface.u.Database.vidMem.counters.bytes);
+    gcmPRINT("06) Video memory - maximum: %lld \n", iface.u.Database.vidMem.counters.maxBytes);
+    gcmPRINT("07) Video memory - total: %lld \n", iface.u.Database.vidMem.counters.totalBytes);
 OnError:;
 }
 #endif
 
+#if gcdDUMP || gcdDUMP_API || gcdDUMP_2D
+static void
+_SetDumpFileInfo(
+    )
+{
+    gceSTATUS status = gcvSTATUS_TRUE;
+
+#if gcdDUMP || gcdDUMP_2D
+    #define DUMP_FILE_PREFIX   "hal"
+#else
+    #define DUMP_FILE_PREFIX   "api"
+#endif
+
+#if defined(ANDROID)
+    /* The default key of dump key for match use. Only useful in android. Do not change it! */
+    #define DEFAULT_DUMP_KEY        "allprocesses"
+
+    if (gcmIS_SUCCESS(gcoOS_StrCmp(gcdDUMP_KEY, DEFAULT_DUMP_KEY)))
+        status = gcvSTATUS_TRUE;
+    else
+        status = gcoOS_DetectProcessByName(gcdDUMP_KEY);
+#endif
+
+    if (status == gcvSTATUS_TRUE)
+    {
+        char dump_file[128];
+        gctUINT offset = 0;
+
+        /* Customize filename as needed. */
+        gcmVERIFY_OK(gcoOS_PrintStrSafe(dump_file,
+                     gcmSIZEOF(dump_file),
+                     &offset,
+                     "%s%s_dump_pid-%d_tid-%d_%s.log",
+                     gcdDUMP_PATH,
+                     DUMP_FILE_PREFIX,
+                     gcoOS_GetCurrentProcessID(),
+                     gcmGETTHREADID(),
+                     gcdDUMP_KEY));
+
+        gcoOS_SetDebugFile(dump_file);
+        gcoDUMP_SetDumpFlag(gcvTRUE);
+    }
+}
+#endif
+
 /******************************************************************************\
-********************************* gcoOS API Code *******************************
+**************************** OS Construct/Destroy ******************************
 \******************************************************************************/
-
-/*******************************************************************************
- **
- ** gcoOS_GetPLSValue
- **
- ** Get value associated with the given key.
- **
- ** INPUT:
- **
- **     gcePLS_VALUE key
- **         key to look up.
- **
- ** OUTPUT:
- **
- **     None
- **
- ** RETURN:
- **
- **     gctPOINTER
- **         Pointer to object associated with key.
- */
-gctPOINTER
-gcoOS_GetPLSValue(
-    IN gcePLS_VALUE key
-    )
-{
-    switch (key)
-    {
-        case gcePLS_VALUE_EGL_DISPLAY_INFO :
-            return gcPLS.eglDisplayInfo;
-
-        case gcePLS_VALUE_EGL_SURFACE_INFO :
-            return gcPLS.eglSurfaceInfo;
-    }
-
-    return gcvNULL;
-}
-
-/*******************************************************************************
- **
- ** gcoOS_SetPLSValue
- **
- ** Associated object represented by 'value' with the given key.
- **
- ** INPUT:
- **
- **     gcePLS_VALUE key
- **         key to associate.
- **
- **     gctPOINTER value
- **         value to associate with key.
- **
- ** OUTPUT:
- **
- **     None
- **
- */
-void
-gcoOS_SetPLSValue(
-    IN gcePLS_VALUE key,
-    IN gctPOINTER value
-    )
-{
-    switch (key)
-    {
-        case gcePLS_VALUE_EGL_DISPLAY_INFO :
-            gcPLS.eglDisplayInfo = value;
-            return;
-
-        case gcePLS_VALUE_EGL_SURFACE_INFO :
-            gcPLS.eglSurfaceInfo = value;
-            return;
-    }
-}
-
-/*******************************************************************************
- **
- ** gcoOS_GetTLS
- **
- ** Get access to the thread local storage.
- **
- ** INPUT:
- **
- **     Nothing.
- **
- ** OUTPUT:
- **
- **     gcsTLS_PTR * TLS
- **         Pointer to a variable that will hold the pointer to the TLS.
- */
-gceSTATUS
-gcoOS_GetTLS(
-    OUT gcsTLS_PTR * TLS
+static gceSTATUS
+_DestroyOs(
+    IN gcoOS Os
     )
 {
     gceSTATUS status;
-    gcsTLS_PTR tls;
-    int res;
 
-    gcmHEADER_ARG("TLS=%p", TLS);
+    gcmPROFILE_DECLARE_ONLY(gctUINT64 ticks);
 
-    tls = (gcsTLS_PTR) pthread_getspecific(gcProcessKey);
+    gcmHEADER();
 
-    if (tls == NULL)
+    if (gcPLS.os != gcvNULL)
     {
-        gcmONERROR(gcoOS_AllocateMemory(
-            gcvNULL, gcmSIZEOF(gcsTLS), (gctPOINTER *) &tls
-            ));
 
-        gcmONERROR(gcoOS_ZeroMemory(
-            tls, gcmSIZEOF(gcsTLS)
-            ));
+        gcmPROFILE_QUERY(gcPLS.os->startTick, ticks);
+        gcmPROFILE_ONLY(gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_OS,
+                                      "Total ticks during gcoOS life: %llu",
+                                      ticks));
 
-//        /* The default hardware type is 2D */
-//        tls->currentType = gcvHARDWARE_2D;
-        /* The default hardware type is 3D */
-        tls->currentType = gcvHARDWARE_3D;
-
-        res = pthread_setspecific(gcProcessKey, tls);
-
-        if (res != 0)
+        if (gcPLS.os->heap != gcvNULL)
         {
-            gcmTRACE(
-                gcvLEVEL_ERROR,
-                "%s(%d): pthread_setspecific returned %d",
-                __FUNCTION__, __LINE__, res
-                );
+            gcoHEAP heap = gcPLS.os->heap;
 
-            gcmONERROR(gcvSTATUS_GENERIC_IO);
+#if VIVANTE_PROFILER
+            /* End profiler. */
+            gcoHEAP_ProfileEnd(heap, "gcoOS_HEAP");
+#endif
+
+            /* Mark the heap as gone. */
+            gcPLS.os->heap = gcvNULL;
+
+            /* Destroy the heap. */
+            gcmONERROR(gcoHEAP_Destroy(heap));
         }
+
+        /* Close the handle to the kernel service. */
+        if (gcPLS.os->device != -1)
+        {
+#if gcmIS_DEBUG(gcdDEBUG_TRACE) || gcdGC355_MEM_PRINT
+            _ReportDB();
+#endif
+
+            close(gcPLS.os->device);
+            gcPLS.os->device = -1;
+        }
+
+#if VIVANTE_PROFILER && gcdGC355_MEM_PRINT
+        /* End profiler. */
+        gcoOS_ProfileEnd(gcPLS.os, gcvNULL);
+#endif
+
+        /* Mark the gcoOS object as unknown. */
+        gcPLS.os->object.type = gcvOBJ_UNKNOWN;
+
+        /* Free the gcoOS structure. */
+        free(gcPLS.os);
+
+        /* Reset PLS object. */
+        gcPLS.os = gcvNULL;
     }
 
-    * TLS = tls;
-
-    gcmFOOTER_NO();
+    /* Success. */
+    gcmFOOTER_KILL();
     return gcvSTATUS_OK;
 
 OnError:
-    if (tls != gcvNULL)
-    {
-        gcmVERIFY_OK(gcoOS_FreeMemory(gcvNULL, (gctPOINTER) tls));
-    }
-
-    * TLS = gcvNULL;
-
+    /* Return the status. */
     gcmFOOTER();
     return status;
 }
 
-/*******************************************************************************
-**
-**  gcoOS_FreeThreadData
-**
-**  Destroy the objects associated with the current thread.
-**
-**  INPUT:
-**
-**       gctBOOL ProcessExiting
-**          Indicates whether process is terminating.
-**
-**  OUTPUT:
-**
-**      Nothing.
-*/
-void
-gcoOS_FreeThreadData(
-    gctBOOL ProcessExiting
-    )
-{
-    gcsTLS_PTR tls;
-
-    tls = (gcsTLS_PTR) pthread_getspecific(gcProcessKey);
-
-    if (tls != NULL)
-    {
-        tls->ProcessExiting = ProcessExiting;
-
-        _TLSDestructor((gctPOINTER) tls);
-    }
-}
-
-/*******************************************************************************
- **
- ** gcoOS_Construct
- **
- ** Construct a new gcoOS object.
- **
- ** INPUT:
- **
- **     gctPOINTER Context
- **         Pointer to an OS specific context.
- **
- ** OUTPUT:
- **
- **     gcoOS * Os
- **         Pointer to a variable that will hold the pointer to the gcoOS object.
- */
-gceSTATUS
-gcoOS_Construct(
+static gceSTATUS
+_ConstructOs(
     IN gctPOINTER Context,
     OUT gcoOS * Os
     )
@@ -846,7 +364,6 @@ gcoOS_Construct(
         os->heap        =  gcvNULL;
         os->baseAddress =  0;
         os->device      = -1;
-        os->reference   = gcvNULL;
 
         /* Set the object pointer to PLS. */
         gcmASSERT(gcPLS.os == gcvNULL);
@@ -857,7 +374,7 @@ gcoOS_Construct(
         {
             gcmTRACE_ZONE(
                 gcvLEVEL_VERBOSE, gcvZONE_OS,
-                "%s(%d): Attemptring to open device %s.",
+                "%s(%d): Attempting to open device %s.",
                 __FUNCTION__, __LINE__, GALDeviceName[i]
                 );
 
@@ -876,8 +393,8 @@ gcoOS_Construct(
 
             gcmTRACE_ZONE(
                 gcvLEVEL_VERBOSE, gcvZONE_OS,
-                "%s(%d): Failed to open device %s, errno=%d.",
-                __FUNCTION__, __LINE__, GALDeviceName[i], errno
+                "%s(%d): Failed to open device %s, errno=%s.",
+                __FUNCTION__, __LINE__, GALDeviceName[i], strerror(errno)
                 );
         }
 
@@ -885,8 +402,8 @@ gcoOS_Construct(
         {
             gcmTRACE(
                 gcvLEVEL_ERROR,
-                "%s(%d): Failed to open device.",
-                __FUNCTION__, __LINE__
+                "%s(%d): Failed to open device, errno=%s.",
+                __FUNCTION__, __LINE__, strerror(errno)
                 );
 
             gcmONERROR(gcvSTATUS_DEVICE);
@@ -943,15 +460,14 @@ gcoOS_Construct(
                 );
         }
 
-        /* Construct the reference atom. */
-        gcmONERROR(gcoOS_AtomConstruct(os, &os->reference));
-
         /* Get profiler start tick. */
         gcmPROFILE_INIT(freq, os->startTick);
     }
 
-    /* Increment the reference. */
-    gcmONERROR(gcoOS_AtomIncrement(os, os->reference, gcvNULL));
+#if VIVANTE_PROFILER
+        /* Start profiler. */
+    gcoOS_ProfileStart(os);
+#endif
 
     /* Return pointer to the gcoOS object. */
     if (Os != gcvNULL)
@@ -965,8 +481,1013 @@ gcoOS_Construct(
 
 OnError:
     /* Roll back. */
-    gcmVERIFY_OK(gcoOS_Destroy(gcvNULL));
+    gcmVERIFY_OK(_DestroyOs(gcvNULL));
     gcmFOOTER();
+    return status;
+}
+
+/******************************************************************************\
+************************* Process/Thread Local Storage *************************
+\******************************************************************************/
+
+static void __attribute__((destructor)) _ModuleDestructor(void);
+
+static gceSTATUS
+_MapMemory(
+    IN gctPHYS_ADDR Physical,
+    IN gctSIZE_T NumberOfBytes,
+    OUT gctPOINTER * Logical
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+
+    gcmHEADER_ARG("Physical=0x%x NumberOfBytes=%lu", Physical, NumberOfBytes);
+
+    /* Verify the arguments. */
+    gcmDEBUG_VERIFY_ARGUMENT(NumberOfBytes > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(Logical != gcvNULL);
+
+    /* Call kernel API to unmap the memory. */
+    iface.command              = gcvHAL_MAP_MEMORY;
+    iface.u.MapMemory.physical = gcmPTR2INT32(Physical);
+    iface.u.MapMemory.bytes    = NumberOfBytes;
+
+    gcmONERROR(gcoOS_DeviceControl(
+        gcvNULL,
+        IOCTL_GCHAL_INTERFACE,
+        &iface, gcmSIZEOF(iface),
+        &iface, gcmSIZEOF(iface)
+        ));
+
+    /* Return logical address. */
+    *Logical = gcmUINT64_TO_PTR(iface.u.MapMemory.logical);
+
+    /* Success. */
+    gcmFOOTER_ARG("*Logical=0x%x", *Logical);
+    return gcvSTATUS_OK;
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+static gceSTATUS
+_UnmapMemory(
+    IN gctPHYS_ADDR Physical,
+    IN gctSIZE_T NumberOfBytes,
+    IN gctPOINTER Logical
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+
+    gcmHEADER_ARG("Physical=0x%x NumberOfBytes=%lu Logical=0x%x",
+                  Physical, NumberOfBytes, Logical);
+
+    /* Verify the arguments. */
+    gcmDEBUG_VERIFY_ARGUMENT(NumberOfBytes > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(Logical != gcvNULL);
+
+    /* Call kernel API to unmap the memory. */
+    iface.command                = gcvHAL_UNMAP_MEMORY;
+    iface.u.UnmapMemory.physical = gcmPTR2INT32(Physical);
+    iface.u.UnmapMemory.bytes    = NumberOfBytes;
+    iface.u.UnmapMemory.logical  = gcmPTR_TO_UINT64(Logical);
+
+    gcmONERROR(gcoOS_DeviceControl(
+        gcvNULL,
+        IOCTL_GCHAL_INTERFACE,
+        &iface, sizeof(iface),
+        &iface, sizeof(iface)
+        ));
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+static void
+_OpenGalLib(
+    gcsTLS_PTR TLS
+    )
+{
+#if gcdSTATIC_LINK
+    return;
+#else
+    gcsTLS_PTR  tls;
+    gctSTRING   path;
+    gctSTRING   env_path = gcvNULL;
+    gctSTRING   one_env_path;
+    gctSTRING   full_path = gcvNULL;
+    gctINT32    len;
+    gctHANDLE   handle = gcvNULL;
+
+    gcmHEADER_ARG("TLS=0x%x", TLS);
+
+    tls = (gcsTLS_PTR) TLS;
+    gcmASSERT(tls != gcvNULL);
+
+    do {
+        gcoOS_GetEnv(gcvNULL, "LD_LIBRARY_PATH", &path);
+        if (path != gcvNULL)
+        {
+            len = strlen(path) + 1;
+            env_path = malloc(len);
+            full_path = malloc(len+10);
+            if (env_path == NULL || full_path == NULL)
+            {
+                break;
+            }
+            strncpy(env_path, path, len);
+            one_env_path = strtok(env_path, ":");
+            while (one_env_path != NULL)
+            {
+                snprintf(full_path, len+10, "%s/libGAL.so", one_env_path);
+#if defined(ANDROID)
+                handle = dlopen(full_path, RTLD_NOW);
+#else
+                handle = dlopen(full_path, RTLD_NOW | RTLD_NODELETE);
+#endif
+                if (handle != gcvNULL)
+                {
+                    break;
+                }
+                one_env_path = strtok(NULL, ":");
+            }
+        }
+        if (handle == gcvNULL)
+        {
+#if defined(ANDROID)
+            handle = dlopen("/system/lib/libGAL.so", RTLD_NOW);
+#else
+            handle = dlopen("/usr/lib/libGAL.so", RTLD_NOW | RTLD_NODELETE);
+            if (handle == gcvNULL)
+            {
+                handle = dlopen("/lib/libGAL.so", RTLD_NOW | RTLD_NODELETE);
+            }
+#endif
+        }
+
+    } while (gcvFALSE);
+
+    if (env_path != gcvNULL)
+        free(env_path);
+    if (full_path != gcvNULL)
+        free(full_path);
+
+    if (handle != gcvNULL)
+    {
+        tls->handle = handle;
+    }
+
+    gcmFOOTER_NO();
+    return;
+#endif
+}
+
+static void
+_CloseGalLib(
+    gcsTLS_PTR TLS
+    )
+{
+    gcsTLS_PTR tls;
+
+    gcmHEADER_ARG("TLS=0x%x", TLS);
+
+    tls = (gcsTLS_PTR) TLS;
+    gcmASSERT(tls != gcvNULL);
+
+    if (tls->handle != gcvNULL)
+    {
+        gcoOS_FreeLibrary(gcvNULL, tls->handle);
+        tls->handle = gcvNULL;
+    }
+
+    gcmFOOTER_NO();
+}
+
+static void
+_PLSDestructor(
+    void
+    )
+{
+    gcmHEADER();
+
+    if (gcPLS.destructor != gcvNULL)
+    {
+        gcPLS.destructor(&gcPLS);
+        gcPLS.destructor = gcvNULL;
+    }
+
+    if (gcPLS.contiguousLogical != gcvNULL)
+    {
+        gcmVERIFY_OK(_UnmapMemory(
+            gcPLS.contiguousPhysical,
+            gcPLS.contiguousSize,
+            gcPLS.contiguousLogical
+            ));
+
+        gcPLS.contiguousLogical = gcvNULL;
+    }
+
+    if (gcPLS.externalLogical != gcvNULL)
+    {
+        gcmVERIFY_OK(_UnmapMemory(
+            gcPLS.externalPhysical,
+            gcPLS.externalSize,
+            gcPLS.externalLogical
+            ));
+
+        gcPLS.externalLogical = gcvNULL;
+    }
+
+    if (gcPLS.internalLogical != gcvNULL)
+    {
+        gcmVERIFY_OK(_UnmapMemory(
+            gcPLS.internalPhysical,
+            gcPLS.internalSize,
+            gcPLS.internalLogical
+            ));
+
+        gcPLS.internalLogical = gcvNULL;
+    }
+
+    gcmVERIFY_OK(gcoOS_DeleteMutex(gcPLS.os, gcPLS.accessLock));
+    gcPLS.accessLock = gcvNULL;
+
+    gcmVERIFY_OK(gcoOS_AtomDestroy(gcPLS.os, gcPLS.reference));
+    gcPLS.reference = gcvNULL;
+
+    if (gcPLS.hal != gcvNULL)
+    {
+        gcmVERIFY_OK(gcoHAL_DestroyEx(gcPLS.hal));
+        gcPLS.hal = gcvNULL;
+    }
+
+    gcmVERIFY_OK(_DestroyOs(gcPLS.os));
+
+    pthread_key_delete(gcProcessKey);
+
+    gcmFOOTER_NO();
+}
+
+static void
+_TLSDestructor(
+    gctPOINTER TLS
+    )
+{
+    gcsTLS_PTR tls;
+    gctINT reference = 0;
+#if gcdMULTI_GPU_AFFINITY
+    gctUINT api;
+#endif
+
+    gcmHEADER_ARG("TLS=0x%x", TLS);
+
+    tls = (gcsTLS_PTR) TLS;
+    gcmASSERT(tls != gcvNULL);
+
+    pthread_setspecific(gcProcessKey, tls);
+
+    if (tls->copied)
+    {
+        /* Zero out all information if this TLS was copied. */
+        gcoOS_ZeroMemory(tls, gcmSIZEOF(gcsTLS));
+    }
+
+    if (tls->destructor != gcvNULL)
+    {
+        tls->destructor(tls);
+        tls->destructor = gcvNULL;
+    }
+
+#if gcdENABLE_3D
+    /* DON'T destroy tls->engine3D, which belongs to app context
+    */
+#endif
+
+#if gcdENABLE_2D
+    if (tls->engine2D != gcvNULL)
+    {
+        gcmVERIFY_OK(gco2D_Destroy(tls->engine2D));
+        tls->engine2D = gcvNULL;
+    }
+#endif
+
+    if (tls->defaultHardware != gcvNULL)
+    {
+        gceHARDWARE_TYPE type = tls->currentType;
+#if gcdMULTI_GPU_AFFINITY
+        gcmVERIFY_OK(gcoHARDWARE_GetCurrentAPI(&api));
+
+        if (api == gcvAPI_OPENCL)
+        {
+            tls->currentType = gcvHARDWARE_OCL;
+        }
+        else
+#else
+        {
+            tls->currentType = gcvHARDWARE_3D;
+        }
+#endif
+        gcmTRACE_ZONE(
+            gcvLEVEL_VERBOSE, gcvZONE_HARDWARE,
+            "%s(%d): destroying default hardware object 0x%08X.",
+            __FUNCTION__, __LINE__, tls->defaultHardware
+            );
+
+        gcmVERIFY_OK(gcoHARDWARE_Destroy(tls->defaultHardware, gcvTRUE));
+
+        tls->defaultHardware = gcvNULL;
+        tls->currentHardware = gcvNULL;
+        tls->currentType = type;
+    }
+
+    if (tls->hardware2D != gcvNULL)
+    {
+        gceHARDWARE_TYPE type = tls->currentType;
+        tls->currentType = gcvHARDWARE_2D;
+
+        gcmTRACE_ZONE(
+            gcvLEVEL_VERBOSE, gcvZONE_HARDWARE,
+            "%s(%d): destroying hardware object 0x%08X.",
+            __FUNCTION__, __LINE__, tls->hardware2D
+            );
+
+#if gcdENABLE_2D
+        gcmVERIFY_OK(gcoHARDWARE_Destroy(tls->hardware2D, gcvTRUE));
+#endif
+        tls->hardware2D = gcvNULL;
+        tls->currentType = type;
+    }
+
+#if gcdENABLE_VG
+        if (tls->engineVG != gcvNULL)
+        {
+#if GC355_PROFILER
+            gcmVERIFY_OK(gcoVG_Destroy(tls->engineVG,gcvNULL,0,0,0));
+#else
+            gcmVERIFY_OK(gcoVG_Destroy(tls->engineVG));
+#endif
+            tls->engineVG = gcvNULL;
+        }
+
+        if (tls->vg != gcvNULL)
+        {
+            gceHARDWARE_TYPE type = tls->currentType;
+            tls->currentType = gcvHARDWARE_VG;
+
+            gcmTRACE_ZONE(
+                gcvLEVEL_VERBOSE, gcvZONE_HARDWARE,
+                "%s(%d): destroying hardware object 0x%08X.",
+                __FUNCTION__, __LINE__, tls->vg
+                );
+
+            gcmVERIFY_OK(gcoVGHARDWARE_Destroy(tls->vg));
+            tls->vg = gcvNULL;
+            tls->currentType = type;
+
+        }
+#endif
+
+    if (gcPLS.threadID && gcPLS.threadID != gcmGETTHREADID() && !gcPLS.exiting)
+    {
+        _CloseGalLib(tls);
+    }
+
+    if (gcPLS.reference != gcvNULL)
+    {
+        /* Decrement the reference. */
+        gcmVERIFY_OK(gcoOS_AtomDecrement(gcPLS.os,
+                                         gcPLS.reference,
+                                         &reference));
+
+        /* Check if there are still more references. */
+        if (reference ==  1)
+        {
+            /* If all threads exit, destruct PLS */
+            _PLSDestructor();
+        }
+    }
+
+    gcmVERIFY_OK(gcoOS_FreeMemory(gcvNULL, tls));
+
+    pthread_setspecific(gcProcessKey, gcvNULL);
+
+    gcmFOOTER_NO();
+}
+
+static void
+_InitializeProcess(
+    void
+    )
+{
+    /* Install thread destructor. */
+    pthread_key_create(&gcProcessKey, _TLSDestructor);
+}
+
+void _ResetPLS(void)
+{
+    gcPLS.os = gcvNULL;
+    gcPLS.hal = gcvNULL;
+    gcPLS.contiguousSize = 0;
+    gcPLS.processID = 0;
+    gcPLS.reference = 0;
+#if gcdENABLE_3D
+	gcPLS.patchID   = gcvPATCH_NOTINIT;
+#endif
+}
+
+void _AtForkChild(
+    void
+    )
+{
+    _ResetPLS();
+
+    pthread_key_delete(gcProcessKey);
+    pthread_key_create(&gcProcessKey, _TLSDestructor);
+}
+
+static void _ModuleConstructor(
+    void
+    )
+{
+    gceSTATUS status;
+    int result;
+    static pthread_once_t onceControl = PTHREAD_ONCE_INIT;
+
+    gcmHEADER();
+
+    /* Each process gets its own objects. */
+    gcmASSERT(gcPLS.os  == gcvNULL);
+    gcmASSERT(gcPLS.hal == gcvNULL);
+
+    gcmASSERT(gcPLS.internalLogical   == gcvNULL);
+    gcmASSERT(gcPLS.externalLogical   == gcvNULL);
+    gcmASSERT(gcPLS.contiguousLogical == gcvNULL);
+
+#if (defined(ANDROID) && (ANDROID_SDK_VERSION > 16)) || (!defined(ANDROID) && !defined(NO_PTHREAD_AT_FORK))
+    result = pthread_atfork(gcvNULL, gcvNULL, _AtForkChild);
+
+    if (result != 0)
+    {
+        gcmTRACE(
+            gcvLEVEL_ERROR,
+            "%s(%d): pthread_atfork returned %d",
+            __FUNCTION__, __LINE__, result
+            );
+
+        gcmONERROR(gcvSTATUS_OUT_OF_RESOURCES);
+    }
+#endif
+
+
+    /* Call _InitializeProcess function only one time for the process. */
+    result = pthread_once(&onceControl, _InitializeProcess);
+
+    if (result != 0)
+    {
+        gcmTRACE(
+            gcvLEVEL_ERROR,
+            "%s(%d): pthread_once returned %d",
+            __FUNCTION__, __LINE__, result
+            );
+
+        gcmONERROR(gcvSTATUS_OUT_OF_MEMORY);
+    }
+
+    /* Construct OS object. */
+    gcmONERROR(_ConstructOs(gcvNULL, gcvNULL));
+
+    /* Construct gcoHAL object. */
+    gcmONERROR(gcoHAL_ConstructEx(gcvNULL, gcvNULL, &gcPLS.hal));
+
+    /* Construct PLS reference atom. */
+    gcmONERROR(gcoOS_AtomConstruct(gcPLS.os, &gcPLS.reference));
+
+    /* Increment PLS reference for main thread. */
+    gcmONERROR(gcoOS_AtomIncrement(gcPLS.os, gcPLS.reference, gcvNULL));
+
+    /* Query the video memory sizes. */
+    gcmONERROR(gcoOS_QueryVideoMemory(
+        gcPLS.os,
+        &gcPLS.internalPhysical,
+        &gcPLS.internalSize,
+        &gcPLS.externalPhysical,
+        &gcPLS.externalSize,
+        &gcPLS.contiguousPhysical,
+        &gcPLS.contiguousSize
+        ));
+
+    /* Map internal video memory. */
+    if (gcPLS.internalSize != 0)
+    {
+        gcmONERROR(_MapMemory(
+             gcPLS.internalPhysical,
+             gcPLS.internalSize,
+            &gcPLS.internalLogical
+            ));
+    }
+
+    /* Map external video memory. */
+    if (gcPLS.externalSize != 0)
+    {
+        gcmONERROR(_MapMemory(
+             gcPLS.externalPhysical,
+             gcPLS.externalSize,
+            &gcPLS.externalLogical
+            ));
+    }
+
+    /* Map contiguous video memory. */
+    if (gcPLS.contiguousSize != 0)
+    {
+        gcmONERROR(_MapMemory(
+             gcPLS.contiguousPhysical,
+             gcPLS.contiguousSize,
+            &gcPLS.contiguousLogical
+            ));
+    }
+
+    /* Record the process and thread that calling this constructor function */
+    gcPLS.processID = gcmGETPROCESSID();
+    gcPLS.threadID = gcmGETTHREADID();
+
+    /* Construct access lock */
+    gcmONERROR(gcoOS_CreateMutex(gcPLS.os, &gcPLS.accessLock));
+
+#if gcdDUMP_2D
+    gcmONERROR(gcoOS_CreateMutex(gcPLS.os, &dumpMemInfoListMutex));
+#endif
+
+    gcmFOOTER_ARG(
+        "gcPLS.os=0x%08X, gcPLS.hal=0x%08X"
+        " internal=0x%08X external=0x%08X contiguous=0x%08X",
+        gcPLS.os, gcPLS.hal,
+        gcPLS.internalLogical, gcPLS.externalLogical, gcPLS.contiguousLogical
+        );
+
+    return;
+
+OnError:
+
+    if (gcPLS.accessLock != gcvNULL)
+    {
+        /* Destroy access lock */
+        gcmVERIFY_OK(gcoOS_DeleteMutex(gcPLS.os, gcPLS.accessLock));
+    }
+
+    if (gcPLS.reference != gcvNULL)
+    {
+        /* Destroy the reference. */
+        gcmVERIFY_OK(gcoOS_AtomDestroy(gcPLS.os, gcPLS.reference));
+    }
+
+    gcmFOOTER();
+}
+
+static void
+_ModuleDestructor(
+    void
+    )
+{
+    gctINT reference = 0;
+    gcmHEADER();
+
+    if (gcPLS.reference != gcvNULL)
+    {
+        gcPLS.exiting = gcvTRUE;
+
+        /* Decrement the reference for main thread. */
+        gcmVERIFY_OK(gcoOS_AtomDecrement(gcPLS.os,
+                                         gcPLS.reference,
+                                         &reference));
+
+        if (reference == 1)
+        {
+            /* If all threads exit, destruct PLS. */
+            _PLSDestructor();
+        }
+        else
+        {
+            gcoOS_FreeThreadData();
+        }
+    }
+
+    gcmFOOTER_NO();
+}
+
+/******************************************************************************\
+********************************* gcoOS API Code *******************************
+\******************************************************************************/
+
+/*******************************************************************************
+ **
+ ** gcoOS_GetPLSValue
+ **
+ ** Get value associated with the given key.
+ **
+ ** INPUT:
+ **
+ **     gcePLS_VALUE key
+ **         key to look up.
+ **
+ ** OUTPUT:
+ **
+ **     None
+ **
+ ** RETURN:
+ **
+ **     gctPOINTER
+ **         Pointer to object associated with key.
+ */
+gctPOINTER
+gcoOS_GetPLSValue(
+    IN gcePLS_VALUE key
+    )
+{
+    switch (key)
+    {
+        case gcePLS_VALUE_EGL_DISPLAY_INFO :
+            return gcPLS.eglDisplayInfo;
+
+        case gcePLS_VALUE_EGL_SURFACE_INFO :
+            return gcPLS.eglSurfaceInfo;
+
+        case gcePLS_VALUE_EGL_CONFIG_FORMAT_INFO :
+            return (gctPOINTER) gcPLS.eglConfigFormat;
+
+        case gcePLS_VALUE_EGL_DESTRUCTOR_INFO :
+            return (gctPOINTER) gcPLS.destructor;
+    }
+
+    return gcvNULL;
+}
+
+/*******************************************************************************
+ **
+ ** gcoOS_SetPLSValue
+ **
+ ** Associated object represented by 'value' with the given key.
+ **
+ ** INPUT:
+ **
+ **     gcePLS_VALUE key
+ **         key to associate.
+ **
+ **     gctPOINTER value
+ **         value to associate with key.
+ **
+ ** OUTPUT:
+ **
+ **     None
+ **
+ */
+void
+gcoOS_SetPLSValue(
+    IN gcePLS_VALUE key,
+    IN gctPOINTER value
+    )
+{
+    switch (key)
+    {
+        case gcePLS_VALUE_EGL_DISPLAY_INFO :
+            gcPLS.eglDisplayInfo = value;
+            return;
+
+        case gcePLS_VALUE_EGL_SURFACE_INFO :
+            gcPLS.eglSurfaceInfo = value;
+            return;
+
+        case gcePLS_VALUE_EGL_CONFIG_FORMAT_INFO :
+            gcPLS.eglConfigFormat = (gceSURF_FORMAT)(gctUINTPTR_T)value;
+            return;
+
+        case gcePLS_VALUE_EGL_DESTRUCTOR_INFO :
+            gcPLS.destructor = (gctPLS_DESTRUCTOR) value;
+            return;
+    }
+}
+
+/*******************************************************************************
+ **
+ ** gcoOS_GetTLS
+ **
+ ** Get access to the thread local storage.
+ **
+ ** INPUT:
+ **
+ **     Nothing.
+ **
+ ** OUTPUT:
+ **
+ **     gcsTLS_PTR * TLS
+ **         Pointer to a variable that will hold the pointer to the TLS.
+ */
+static pthread_mutex_t plsMutex = PTHREAD_MUTEX_INITIALIZER;
+
+gceSTATUS
+gcoOS_GetTLS(
+    OUT gcsTLS_PTR * TLS
+    )
+{
+    gceSTATUS status;
+    gcsTLS_PTR tls;
+    int res;
+
+    gcmHEADER_ARG("TLS=%p", TLS);
+
+    tls = (gcsTLS_PTR) pthread_getspecific(gcProcessKey);
+
+    if (!gcPLS.processID)
+    {
+        pthread_mutex_lock(&plsMutex);
+
+        if (!gcPLS.processID)
+        {
+            _ModuleConstructor();
+
+            tls = NULL;
+        }
+
+        pthread_mutex_unlock(&plsMutex);
+    }
+
+    if (tls == NULL)
+    {
+        gcmONERROR(gcoOS_AllocateMemory(
+            gcvNULL, gcmSIZEOF(gcsTLS), (gctPOINTER *) &tls
+            ));
+
+        gcoOS_ZeroMemory(
+            tls, gcmSIZEOF(gcsTLS)
+            );
+
+        /* The default hardware type is 2D */
+        tls->currentType = gcvHARDWARE_2D;
+
+        res = pthread_setspecific(gcProcessKey, tls);
+
+        if (res != 0)
+        {
+            gcmTRACE(
+                gcvLEVEL_ERROR,
+                "%s(%d): pthread_setspecific returned %d",
+                __FUNCTION__, __LINE__, res
+                );
+
+            gcmONERROR(gcvSTATUS_GENERIC_IO);
+        }
+
+        if (gcPLS.threadID && gcPLS.threadID != gcmGETTHREADID())
+            _OpenGalLib(tls);
+
+        if (gcPLS.reference != gcvNULL)
+        {
+            /* Increment PLS reference. */
+            gcmONERROR(gcoOS_AtomIncrement(gcPLS.os, gcPLS.reference, gcvNULL));
+        }
+
+#if gcdDUMP || gcdDUMP_API || gcdDUMP_2D
+        _SetDumpFileInfo();
+#endif
+    }
+
+    * TLS = tls;
+
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    if (tls != gcvNULL)
+    {
+        gcmVERIFY_OK(gcoOS_FreeMemory(gcvNULL, (gctPOINTER) tls));
+    }
+
+    * TLS = gcvNULL;
+
+    gcmFOOTER();
+    return status;
+}
+
+/*
+ *  gcoOS_CopyTLS
+ *
+ *  Copy the TLS from a source thread and mark this thread as a copied thread, so the destructor won't free the resources.
+ *
+ *  NOTE: Make sure the "source thread" doesn't get kiiled while this thread is running, since the objects will be taken away. This
+ *  will be fixed in a future version of the HAL when reference counters will be used to keep track of object usage (automatic
+ *  destruction).
+ */
+gceSTATUS gcoOS_CopyTLS(IN gcsTLS_PTR Source)
+{
+    gceSTATUS   status;
+    gcsTLS_PTR  tls;
+
+    gcmHEADER();
+
+    /* Verify the arguyments. */
+    gcmDEBUG_VERIFY_ARGUMENT(Source != gcvNULL);
+
+    /* Get the thread specific data. */
+    tls = pthread_getspecific(gcProcessKey);
+
+    if (tls != gcvNULL)
+    {
+        /* We cannot copy if the TLS has already been initialized. */
+        gcmONERROR(gcvSTATUS_INVALID_REQUEST);
+    }
+
+    /* Allocate memory for the TLS. */
+    gcmONERROR(gcoOS_AllocateMemory(gcvNULL, gcmSIZEOF(gcsTLS), (gctPOINTER *) &tls));
+
+    /* Set the thread specific data. */
+    pthread_setspecific(gcProcessKey, tls);
+
+    if (gcPLS.threadID && gcPLS.threadID != gcmGETTHREADID())
+        _OpenGalLib(tls);
+
+    if (gcPLS.reference != gcvNULL)
+    {
+        /* Increment PLS reference. */
+        gcmONERROR(gcoOS_AtomIncrement(gcPLS.os, gcPLS.reference, gcvNULL));
+    }
+
+    /* Mark this TLS as copied. */
+    tls->copied = gcvTRUE;
+
+    /* Copy the TLS information. */
+    tls->currentType    = Source->currentType;
+    tls->defaultHardware = Source->defaultHardware;
+    tls->currentHardware = gcvNULL;
+    tls->hardware2D     = Source->hardware2D;
+#if gcdENABLE_VG
+    tls->vg             = Source->vg;
+    tls->engineVG       = Source->engineVG;
+#endif
+    tls->context        = Source->context;
+    tls->destructor     = gcvNULL;
+#if gcdENABLE_3D
+    tls->engine3D       = Source->engine3D;
+#endif
+#if gcdENABLE_2D
+    tls->engine2D       = Source->engine2D;
+#endif
+
+#if gcdDUMP || gcdDUMP_API || gcdDUMP_2D
+    _SetDumpFileInfo();
+#endif
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+
+/*******************************************************************************
+**
+**  gcoOS_LockPLS
+**
+**  Lock mutext before access PLS if needed
+**
+**  INPUT:
+**
+**      Nothing.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoOS_LockPLS(
+    void
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gcmHEADER();
+    if (gcPLS.accessLock)
+    {
+        status = gcoOS_AcquireMutex(gcPLS.os, gcPLS.accessLock, gcvINFINITE);
+
+    }
+    gcmFOOTER_ARG("Lock PLS ret=%d", status);
+
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoOS_UnLockPLS
+**
+**  Release mutext after access PLS if needed
+**
+**  INPUT:
+**
+**      Nothing.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoOS_UnLockPLS(
+    void
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gcmHEADER();
+    if (gcPLS.accessLock)
+    {
+        status = gcoOS_ReleaseMutex(gcPLS.os, gcPLS.accessLock);
+
+    }
+    gcmFOOTER_ARG("Release PLS ret=%d", status);
+
+    return status;
+}
+
+
+/*******************************************************************************
+**
+**  gcoOS_FreeThreadData
+**
+**  Destroy the objects associated with the current thread.
+**
+**  INPUT:
+**
+**      Nothing.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+void
+gcoOS_FreeThreadData(
+    void
+    )
+{
+    gcsTLS_PTR tls;
+
+    tls = (gcsTLS_PTR) pthread_getspecific(gcProcessKey);
+
+    if (tls != NULL)
+    {
+        if (gcPLS.processID != (gctUINT32)(gctUINTPTR_T)gcmGETPROCESSID())
+        {
+            /* This process is not the one called construct function.
+             * It maybe created by fork or clone, just return in this case . */
+            return;
+        }
+
+        _TLSDestructor((gctPOINTER) tls);
+    }
+}
+
+/*******************************************************************************
+ **
+ ** gcoOS_Construct
+ **
+ ** Construct a new gcoOS object. Empty function only for compatibility.
+ **
+ ** INPUT:
+ **
+ **     gctPOINTER Context
+ **         Pointer to an OS specific context.
+ **
+ ** OUTPUT:
+ **
+ **     Nothing.
+ **
+ */
+gceSTATUS
+gcoOS_Construct(
+    IN gctPOINTER Context,
+    OUT gcoOS * Os
+    )
+{
+    gceSTATUS status;
+    gcsTLS_PTR tls;
+
+    gcmONERROR(gcoOS_GetTLS(&tls));
+
+    /* Return gcoOS object for compatibility to prevent any failure in applications. */
+    *Os = gcPLS.os;
+
+    return gcvSTATUS_OK;
+
+OnError:
     return status;
 }
 
@@ -974,7 +1495,7 @@ OnError:
  **
  ** gcoOS_Destroy
  **
- ** Destroys an gcoOS object.
+ ** Destroys an gcoOS object. Empty function only for compatibility.
  **
  ** ARGUMENTS:
  **
@@ -991,88 +1512,7 @@ gcoOS_Destroy(
     IN gcoOS Os
     )
 {
-    gctINT reference = 0;
-    gceSTATUS status;
-
-    gcmPROFILE_DECLARE_ONLY(gctUINT64 ticks);
-
-    gcmHEADER();
-
-    if (gcPLS.os != gcvNULL)
-    {
-        if (gcPLS.os->reference != gcvNULL)
-        {
-            /* Decrement the reference. */
-            gcmONERROR(gcoOS_AtomDecrement(gcPLS.os,
-                                           gcPLS.os->reference,
-                                           &reference));
-
-            /* Check if there are still more references. */
-            if (reference > 1)
-            {
-                /* Success. */
-                gcmFOOTER_NO();
-                return gcvSTATUS_OK;
-            }
-        }
-
-        gcmPROFILE_QUERY(gcPLS.os->startTick, ticks);
-        gcmPROFILE_ONLY(gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_OS,
-                                      "Total ticks during gcoOS life: %llu",
-                                      ticks));
-
-        if (gcPLS.os->reference != gcvNULL)
-        {
-            /* Destroy the reference counter. */
-            gcmONERROR(gcoOS_AtomDestroy(gcPLS.os, gcPLS.os->reference));
-            gcPLS.os->reference = gcvNULL;
-        }
-
-        if (gcPLS.os->heap != gcvNULL)
-        {
-            gcoHEAP heap = gcPLS.os->heap;
-
-#if VIVANTE_PROFILER
-            /* End profiler. */
-            gcoHEAP_ProfileEnd(heap, "gcoOS_HEAP");
-#endif
-
-            /* Mark the heap as gone. */
-            gcPLS.os->heap = gcvNULL;
-
-            /* Destroy the heap. */
-            gcmONERROR(gcoHEAP_Destroy(heap));
-        }
-
-        /* Close the handle to the kernel service. */
-        if (gcPLS.os->device != -1)
-        {
-#if gcmIS_DEBUG(gcdDEBUG_TRACE)
-            _ReportDB();
-#endif
-
-            close(gcPLS.os->device);
-            gcPLS.os->device = -1;
-        }
-
-        /* Mark the gcoOS object as unknown. */
-        gcPLS.os->object.type = gcvOBJ_UNKNOWN;
-
-        /* Free the gcoOS structure. */
-        free(gcPLS.os);
-
-        /* Reset PLS object. */
-        gcPLS.os = gcvNULL;
-    }
-
-    /* Success. */
-    gcmFOOTER_KILL();
     return gcvSTATUS_OK;
-
-OnError:
-    /* Return the status. */
-    gcmFOOTER();
-    return status;
 }
 
 /*******************************************************************************
@@ -1146,31 +1586,31 @@ gcoOS_QueryVideoMemory(
     if (InternalAddress != gcvNULL)
     {
         /* Verify arguments. */
-        gcmVERIFY_ARGUMENT(InternalSize != gcvNULL);
+        gcmDEBUG_VERIFY_ARGUMENT(InternalSize != gcvNULL);
 
         /* Save internal memory size. */
-        *InternalAddress = iface.u.QueryVideoMemory.internalPhysical;
-        *InternalSize    = iface.u.QueryVideoMemory.internalSize;
+        *InternalAddress = gcmINT2PTR(iface.u.QueryVideoMemory.internalPhysical);
+        *InternalSize    = (gctSIZE_T)iface.u.QueryVideoMemory.internalSize;
     }
 
     if (ExternalAddress != gcvNULL)
     {
         /* Verify arguments. */
-        gcmVERIFY_ARGUMENT(ExternalSize != gcvNULL);
+        gcmDEBUG_VERIFY_ARGUMENT(ExternalSize != gcvNULL);
 
         /* Save external memory size. */
-        *ExternalAddress = iface.u.QueryVideoMemory.externalPhysical;
-        *ExternalSize    = iface.u.QueryVideoMemory.externalSize;
+        *ExternalAddress = gcmINT2PTR(iface.u.QueryVideoMemory.externalPhysical);
+        *ExternalSize    = (gctSIZE_T)iface.u.QueryVideoMemory.externalSize;
     }
 
     if (ContiguousAddress != gcvNULL)
     {
         /* Verify arguments. */
-        gcmVERIFY_ARGUMENT(ContiguousSize != gcvNULL);
+        gcmDEBUG_VERIFY_ARGUMENT(ContiguousSize != gcvNULL);
 
         /* Save contiguous memory size. */
-        *ContiguousAddress = iface.u.QueryVideoMemory.contiguousPhysical;
-        *ContiguousSize    = iface.u.QueryVideoMemory.contiguousSize;
+        *ContiguousAddress = gcmINT2PTR(iface.u.QueryVideoMemory.contiguousPhysical);
+        *ContiguousSize    = (gctSIZE_T)iface.u.QueryVideoMemory.contiguousSize;
     }
 
     /* Success. */
@@ -1211,13 +1651,24 @@ gcoOS_GetBaseAddress(
     OUT gctUINT32_PTR BaseAddress
     )
 {
+    gceHARDWARE_TYPE type = gcvHARDWARE_INVALID;
+
     gcmHEADER();
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(BaseAddress != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(BaseAddress != gcvNULL);
+
+    gcmVERIFY_OK(gcoHAL_GetHardwareType(gcvNULL, &type));
 
     /* Return base address. */
-    *BaseAddress = gcPLS.os->baseAddress;
+    if (type == gcvHARDWARE_VG)
+    {
+        *BaseAddress = 0;
+    }
+    else
+    {
+        *BaseAddress = gcPLS.os->baseAddress;
+    }
 
     /* Success. */
     gcmFOOTER_ARG("*BaseAddress=0x%08x", *BaseAddress);
@@ -1256,8 +1707,8 @@ gcoOS_Allocate(
     gcmHEADER_ARG("Bytes=%lu", Bytes);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Bytes > 0);
-    gcmVERIFY_ARGUMENT(Memory != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Bytes > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(Memory != gcvNULL);
 
     if ((gcPLS.os != gcvNULL) && (gcPLS.os->heap != gcvNULL))
     {
@@ -1311,8 +1762,8 @@ gcoOS_GetMemorySize(
     gcmHEADER_ARG("Memory=0x%x", Memory);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Memory != gcvNULL);
-    gcmVERIFY_ARGUMENT(MemorySize != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Memory != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(MemorySize != gcvNULL);
 
     /* Free the memory. */
     if ((gcPLS.os != gcvNULL) && (gcPLS.os->heap != gcvNULL))
@@ -1363,7 +1814,7 @@ gcoOS_Free(
     gcmHEADER_ARG("Memory=0x%x", Memory);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Memory != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Memory != gcvNULL);
 
     /* Free the memory. */
     if ((gcPLS.os != gcvNULL) && (gcPLS.os->heap != gcvNULL))
@@ -1383,6 +1834,63 @@ OnError:
     /* Return the status. */
     gcmFOOTER();
     return status;
+}
+
+/*******************************************************************************
+**
+**  gcoOS_AllocateSharedMemory
+**
+**  Allocate memory that can be used in both user and kernel.
+**
+**  INPUT:
+**
+**      gcoOS Os
+**          Pointer to an gcoOS object.
+**
+**      gctSIZE_T Bytes
+**          Number of bytes to allocate.
+**
+**  OUTPUT:
+**
+**      gctPOINTER * Memory
+**          Pointer to a variable that will hold the pointer to the memory
+**          allocation.
+*/
+gceSTATUS
+gcoOS_AllocateSharedMemory(
+    IN gcoOS Os,
+    IN gctSIZE_T Bytes,
+    OUT gctPOINTER * Memory
+    )
+{
+    return gcoOS_Allocate(Os, Bytes, Memory);
+}
+
+/*******************************************************************************
+ **
+ ** gcoOS_FreeSharedMemory
+ **
+ ** Free allocated memory.
+ **
+ ** INPUT:
+ **
+ **     gcoOS Os
+ **         Pointer to an gcoOS object.
+ **
+ **     gctPOINTER Memory
+ **         Pointer to the memory allocation that needs to be freed.
+ **
+ ** OUTPUT:
+ **
+ **     Nothing.
+ */
+gceSTATUS
+gcoOS_FreeSharedMemory(
+    IN gcoOS Os,
+    IN gctPOINTER Memory
+    )
+{
+    return gcoOS_Free(Os, Memory);
 }
 
 /*******************************************************************************
@@ -1413,21 +1921,56 @@ gcoOS_AllocateMemory(
     )
 {
     gceSTATUS status;
+    gctPOINTER memory;
 
     gcmHEADER_ARG("Bytes=%lu", Bytes);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Bytes > 0);
-    gcmVERIFY_ARGUMENT(Memory != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Bytes > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(Memory != gcvNULL);
 
     /* Allocate the memory. */
-    *Memory = malloc(Bytes);
+#if VIVANTE_PROFILER
+    memory = malloc(Bytes + gcmSIZEOF(gctSIZE_T));
+#else
+    memory = malloc(Bytes);
+#endif
 
-    if (*Memory == gcvNULL)
+    if (memory == gcvNULL)
     {
         /* Out of memory. */
         gcmONERROR(gcvSTATUS_OUT_OF_MEMORY);
     }
+
+#if VIVANTE_PROFILER
+    {
+        gcoOS os = (gcPLS.os != gcvNULL) ? gcPLS.os : Os;
+
+        if (os != gcvNULL)
+        {
+            ++ (os->allocCount);
+            os->allocSize += Bytes;
+            if (os->allocSize > os->maxAllocSize)
+            {
+                os->maxAllocSize = os->allocSize;
+            }
+
+#if gcdGC355_MEM_PRINT
+            if (os->oneRecording == 1)
+            {
+                os->oneSize += (gctINT32)Bytes;
+            }
+#endif
+        }
+
+        /* Return pointer to the memory allocation. */
+        *(gctSIZE_T *) memory = Bytes;
+        *Memory = (gctPOINTER) ((gctSIZE_T *) memory + 1);
+    }
+#else
+    /* Return pointer to the memory allocation. */
+    *Memory = memory;
+#endif
 
     /* Success. */
     gcmFOOTER_ARG("*Memory=0x%x", *Memory);
@@ -1466,10 +2009,30 @@ gcoOS_FreeMemory(
     gcmHEADER_ARG("Memory=0x%x", Memory);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Memory != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Memory != gcvNULL);
 
     /* Free the memory allocation. */
+#if VIVANTE_PROFILER
+    {
+        gcoOS os = (gcPLS.os != gcvNULL) ? gcPLS.os : Os;
+
+        if (os != gcvNULL)
+        {
+#if gcdGC355_MEM_PRINT
+            if (os->oneRecording == 1)
+            {
+                os->oneSize -= (gctINT32)(*((gctSIZE_T *) Memory - 1));
+            }
+#endif
+            os->allocSize -= *((gctSIZE_T *) Memory - 1);
+            os->freeSize += *((gctSIZE_T *) Memory - 1);
+            free((gctSIZE_T *) Memory - 1);
+            ++ (os->freeCount);
+        }
+    }
+#else
     free(Memory);
+#endif
 
     /* Success. */
     gcmFOOTER_NO();
@@ -1520,42 +2083,46 @@ gcoOS_DeviceControl(
     gcsHAL_INTERFACE_PTR outputBuffer;
     gcsDRIVER_ARGS args;
     gcsTLS_PTR tls;
+    gctPOINTER logical = gcvNULL;
+    gctUINT32 interrupt_count = 0;
 
     gcmHEADER_ARG("IoControlCode=%u InputBuffer=0x%x "
                   "InputBufferSize=%lu OutputBuffer=0x%x OutputBufferSize=%lu",
                   IoControlCode, InputBuffer, InputBufferSize,
                   OutputBuffer, OutputBufferSize);
 
+    if (gcPLS.os == gcvNULL)
+    {
+        gcmONERROR(gcvSTATUS_DEVICE);
+    }
+
     /* Cast the interface. */
     inputBuffer  = (gcsHAL_INTERFACE_PTR) InputBuffer;
     outputBuffer = (gcsHAL_INTERFACE_PTR) OutputBuffer;
 
     /* Set current hardware type */
-    switch (inputBuffer->command)
+    if (gcPLS.processID)
     {
-    case gcvHAL_GET_BASE_ADDRESS:
-    case gcvHAL_VERSION:
-    case gcvHAL_CHIP_INFO:
-        inputBuffer->hardwareType = gcvHARDWARE_3D;
-        break;
-
-    default:
         gcmONERROR(gcoOS_GetTLS(&tls));
         inputBuffer->hardwareType = tls->currentType;
-        break;
+    }
+    else
+    {
+        inputBuffer->hardwareType = gcvHARDWARE_2D;
     }
 
     switch (inputBuffer->command)
     {
     case gcvHAL_MAP_MEMORY:
-        inputBuffer->u.MapMemory.logical = mmap(
+        logical = mmap(
             gcvNULL, inputBuffer->u.MapMemory.bytes,
             PROT_READ | PROT_WRITE, MAP_SHARED,
-            gcPLS.os->device, (off_t) inputBuffer->u.MapMemory.physical
+            gcPLS.os->device, (off_t) 0
             );
 
-        if (inputBuffer->u.MapMemory.logical != MAP_FAILED)
+        if (logical != MAP_FAILED)
         {
+            inputBuffer->u.MapMemory.logical = gcmPTR_TO_UINT64(logical);
             inputBuffer->status = gcvSTATUS_OK;
             gcmFOOTER_NO();
             return gcvSTATUS_OK;
@@ -1563,7 +2130,7 @@ gcoOS_DeviceControl(
         break;
 
     case gcvHAL_UNMAP_MEMORY:
-        munmap(inputBuffer->u.UnmapMemory.logical, inputBuffer->u.UnmapMemory.bytes);
+        munmap(gcmUINT64_TO_PTR(inputBuffer->u.UnmapMemory.logical), inputBuffer->u.UnmapMemory.bytes);
 
         inputBuffer->status = gcvSTATUS_OK;
         gcmFOOTER_NO();
@@ -1575,15 +2142,24 @@ gcoOS_DeviceControl(
     }
 
     /* Call kernel. */
-    args.InputBuffer      = InputBuffer;
+    args.InputBuffer      = gcmPTR_TO_UINT64(InputBuffer);
     args.InputBufferSize  = InputBufferSize;
-    args.OutputBuffer     = OutputBuffer;
+    args.OutputBuffer     = gcmPTR_TO_UINT64(OutputBuffer);
     args.OutputBufferSize = OutputBufferSize;
 
-    if (ioctl(gcPLS.os->device, IoControlCode, &args) < 0)
+    while (ioctl(gcPLS.os->device, IoControlCode, &args) < 0)
     {
-        gcmTRACE(gcvLEVEL_ERROR, "ioctl failed; errno=%d\n", errno);
-        gcmONERROR(gcvSTATUS_GENERIC_IO);
+        if (errno != EINTR)
+        {
+            gcmTRACE(gcvLEVEL_ERROR, "ioctl failed; errno=%s\n", strerror(errno));
+            gcmONERROR(gcvSTATUS_GENERIC_IO);
+        }
+        /* Retry MAX_RETRY_IOCTL_TIMES times at most when receiving interrupt */
+        else if (++interrupt_count == MAX_RETRY_IOCTL_TIMES)
+        {
+            gcmTRACE(gcvLEVEL_ERROR, "ioctl failed; too many interrupt\n");
+            gcmONERROR(gcvSTATUS_GENERIC_IO);
+        }
     }
 
     /* Get the status. */
@@ -1657,9 +2233,9 @@ gcoOS_AllocateNonPagedMemory(
                   InUserSpace, gcmOPT_VALUE(Bytes));
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Bytes != gcvNULL);
-    gcmVERIFY_ARGUMENT(Physical != gcvNULL);
-    gcmVERIFY_ARGUMENT(Logical != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Bytes != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Physical != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Logical != gcvNULL);
 
     /* Initialize the gcsHAL_INTERFACE structure. */
     iface.command = gcvHAL_ALLOCATE_NON_PAGED_MEMORY;
@@ -1674,9 +2250,9 @@ gcoOS_AllocateNonPagedMemory(
         ));
 
     /* Return allocated memory. */
-    *Bytes    = iface.u.AllocateNonPagedMemory.bytes;
-    *Physical = iface.u.AllocateNonPagedMemory.physical;
-    *Logical  = iface.u.AllocateNonPagedMemory.logical;
+    *Bytes    = (gctSIZE_T)iface.u.AllocateNonPagedMemory.bytes;
+    *Physical = gcmINT2PTR(iface.u.AllocateNonPagedMemory.physical);
+    *Logical  = gcmUINT64_TO_PTR(iface.u.AllocateNonPagedMemory.logical);
 
     /* Success. */
     gcmFOOTER_ARG("*Bytes=%lu *Physical=0x%x *Logical=0x%x",
@@ -1737,8 +2313,8 @@ gcoOS_FreeNonPagedMemory(
     /* Initialize the gcsHAL_INTERFACE structure. */
     iface.command = gcvHAL_FREE_NON_PAGED_MEMORY;
     iface.u.FreeNonPagedMemory.bytes    = Bytes;
-    iface.u.FreeNonPagedMemory.physical = Physical;
-    iface.u.FreeNonPagedMemory.logical  = Logical;
+    iface.u.FreeNonPagedMemory.physical = gcmPTR2INT32(Physical);
+    iface.u.FreeNonPagedMemory.logical  = gcmPTR_TO_UINT64(Logical);
 
     /* Call kernel driver. */
     gcmONERROR(gcoOS_DeviceControl(
@@ -1801,9 +2377,9 @@ gcoOS_AllocateContiguous(
                   InUserSpace, gcmOPT_VALUE(Bytes));
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Bytes != gcvNULL);
-    gcmVERIFY_ARGUMENT(Physical != gcvNULL);
-    gcmVERIFY_ARGUMENT(Logical != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Bytes != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Physical != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Logical != gcvNULL);
 
     /* Initialize the gcsHAL_INTERFACE structure. */
     iface.command = gcvHAL_ALLOCATE_CONTIGUOUS_MEMORY;
@@ -1818,13 +2394,13 @@ gcoOS_AllocateContiguous(
         ));
 
     /* Return allocated number of bytes. */
-    *Bytes = iface.u.AllocateContiguousMemory.bytes;
+    *Bytes = (gctSIZE_T) iface.u.AllocateContiguousMemory.bytes;
 
     /* Return physical address. */
-    *Physical = iface.u.AllocateContiguousMemory.physical;
+    *Physical = gcmINT2PTR(iface.u.AllocateContiguousMemory.physical);
 
     /* Return logical address. */
-    *Logical = iface.u.AllocateContiguousMemory.logical;
+    *Logical = gcmUINT64_TO_PTR(iface.u.AllocateContiguousMemory.logical);
 
     /* Success. */
     gcmFOOTER_ARG("*Bytes=%lu *Physical=0x%x *Logical=0x%x",
@@ -1886,8 +2462,8 @@ gcoOS_FreeContiguous(
         /* Initialize the gcsHAL_INTERFACE structure. */
         iface.command = gcvHAL_FREE_CONTIGUOUS_MEMORY;
         iface.u.FreeContiguousMemory.bytes    = Bytes;
-        iface.u.FreeContiguousMemory.physical = Physical;
-        iface.u.FreeContiguousMemory.logical  = Logical;
+        iface.u.FreeContiguousMemory.physical = gcmPTR2INT32(Physical);
+        iface.u.FreeContiguousMemory.logical  = gcmPTR_TO_UINT64(Logical);
 
         /* Call kernel driver. */
         gcmERR_BREAK(gcoOS_DeviceControl(
@@ -1907,6 +2483,319 @@ gcoOS_FreeContiguous(
     gcmFOOTER();
     return status;
 }
+
+/* VIV: These three functions are only used to be comptible with Freescale Android,
+   VIV: do NOT use them in other places. */
+/*******************************************************************************
+**
+**  gcoOS_AllocateVideoMemory (OBSOLETE, do NOT use it)
+**
+**  Allocate contiguous video memory from the kernel.
+**
+**
+**  INPUT:
+**
+**      gcoOS Os
+**          Pointer to an gcoOS object.
+**
+**      gctBOOL InUserSpace
+**          gcvTRUE to map the memory into the user space.
+**
+**      gctBOOL InCacheable
+**          gcvTRUE to allocate the cacheable memory.
+**
+**
+**      gctSIZE_T * Bytes
+**          Pointer to the number of bytes to allocate.
+**
+**  OUTPUT:
+**
+**      gctSIZE_T * Bytes
+**          Pointer to a variable that will receive the aligned number of bytes
+**          allocated.
+**
+**      gctUINT32 * Physical
+**          Pointer to a variable that will receive the physical addresses of
+**          the allocated memory.
+**
+**      gctPOINTER * Logical
+**          Pointer to a variable that will receive the logical address of the
+**          allocation.
+**
+**      gctPOINTER * Handle
+**          Pointer to a variable that will receive the node handle of the
+**          allocation.
+*/
+gceSTATUS
+gcoOS_AllocateVideoMemory(
+    IN gcoOS Os,
+    IN gctBOOL InUserSpace,
+    IN gctBOOL InCacheable,
+    IN OUT gctSIZE_T * Bytes,
+    OUT gctUINT32 * Physical,
+    OUT gctPOINTER * Logical,
+    OUT gctPOINTER * Handle
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+    gceHARDWARE_TYPE type;
+    gctUINT32 flag = 0;
+
+    gcmHEADER_ARG("InUserSpace=%d *Bytes=%lu",
+                  InUserSpace, gcmOPT_VALUE(Bytes));
+
+    /* Verify the arguments. */
+    gcmVERIFY_ARGUMENT(Bytes != gcvNULL);
+    gcmVERIFY_ARGUMENT(Physical != gcvNULL);
+    gcmVERIFY_ARGUMENT(Logical != gcvNULL);
+
+    gcmVERIFY_OK(gcoHAL_GetHardwareType(gcvNULL, &type));
+    gcoHAL_SetHardwareType(gcvNULL, gcvHARDWARE_3D);
+
+    flag |= gcvALLOC_FLAG_CONTIGUOUS;
+
+    if (InCacheable)
+    {
+        flag |= gcvALLOC_FLAG_CACHEABLE;
+    }
+
+    iface.command     = gcvHAL_ALLOCATE_LINEAR_VIDEO_MEMORY;
+    iface.u.AllocateLinearVideoMemory.bytes     = *Bytes;
+
+    iface.u.AllocateLinearVideoMemory.alignment = 64;
+    iface.u.AllocateLinearVideoMemory.pool      = gcvPOOL_DEFAULT;
+    iface.u.AllocateLinearVideoMemory.type      = gcvSURF_BITMAP;
+    iface.u.AllocateLinearVideoMemory.flag      = flag;
+
+     /* Call kernel driver. */
+    gcmONERROR(gcoOS_DeviceControl(
+        gcvNULL,
+        IOCTL_GCHAL_INTERFACE,
+        &iface, gcmSIZEOF(iface),
+        &iface, gcmSIZEOF(iface)
+        ));
+
+    /* Return allocated number of bytes. */
+    *Bytes = iface.u.AllocateLinearVideoMemory.bytes;
+
+    /* Return the handle of allocated Node. */
+    *Handle = gcmUINT64_TO_PTR(iface.u.AllocateLinearVideoMemory.node);
+
+    /* Fill in the kernel call structure. */
+    iface.command = gcvHAL_LOCK_VIDEO_MEMORY;
+    iface.u.LockVideoMemory.node = iface.u.AllocateLinearVideoMemory.node;
+    iface.u.LockVideoMemory.cacheable = InCacheable;
+
+    /* Call the kernel. */
+    gcmONERROR(gcoOS_DeviceControl(
+                gcvNULL,
+                IOCTL_GCHAL_INTERFACE,
+                &iface, sizeof(iface),
+                &iface, sizeof(iface)
+                ));
+
+    /* Success? */
+    gcmONERROR(iface.status);
+
+    /* Return physical address. */
+    *Physical = iface.u.LockVideoMemory.physicalAddress;
+
+    /* Return logical address. */
+    *Logical = gcmUINT64_TO_PTR(iface.u.LockVideoMemory.memory);
+
+    gcoHAL_SetHardwareType(gcvNULL, type);
+
+    /* Success. */
+    gcmFOOTER_ARG("*Bytes=%lu *Physical=0x%x *Logical=0x%x",
+                  *Bytes, *Physical, *Logical);
+    return gcvSTATUS_OK;
+
+OnError:
+    gcmTRACE(
+        gcvLEVEL_ERROR,
+        "%s(%d): failed to allocate %lu bytes",
+        __FUNCTION__, __LINE__, *Bytes
+        );
+
+    gcoHAL_SetHardwareType(gcvNULL, type);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoOS_FreeVideoMemory (OBSOLETE, do NOT use it)
+**
+**  Free contiguous video memory from the kernel.
+**
+**  INPUT:
+**
+**      gcoOS Os
+**          Pointer to an gcoOS object.
+**
+**      gctPOINTER  Handle
+**          Pointer to a variable that indicate the node of the
+**          allocation.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoOS_FreeVideoMemory(
+    IN gcoOS Os,
+    IN gctPOINTER Handle
+    )
+{
+    gcsHAL_INTERFACE iface;
+    gceHARDWARE_TYPE type;
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Os=0x%x Handle=0x%x",
+                  Os, Handle);
+    gcmVERIFY_OK(gcoHAL_GetHardwareType(gcvNULL, &type));
+    gcoHAL_SetHardwareType(gcvNULL, gcvHARDWARE_3D);
+
+    do
+    {
+        gcuVIDMEM_NODE_PTR Node = (gcuVIDMEM_NODE_PTR)Handle;
+
+        /* Free first to set freed flag since asynchroneous unlock is needed for the contiguous memory. */
+        iface.command = gcvHAL_RELEASE_VIDEO_MEMORY;
+        iface.u.ReleaseVideoMemory.node = gcmPTR_TO_UINT64(Node);
+
+        /* Call kernel driver. */
+        gcmONERROR(gcoOS_DeviceControl(
+            gcvNULL,
+            IOCTL_GCHAL_INTERFACE,
+            &iface, gcmSIZEOF(iface),
+            &iface, gcmSIZEOF(iface)
+            ));
+
+        /* Unlock the video memory node in asynchronous mode. */
+        iface.command = gcvHAL_UNLOCK_VIDEO_MEMORY;
+        iface.u.UnlockVideoMemory.node = gcmPTR_TO_UINT64(Node);
+        iface.u.UnlockVideoMemory.type = gcvSURF_BITMAP;
+        iface.u.UnlockVideoMemory.asynchroneous = gcvTRUE;
+
+         /* Call kernel driver. */
+        gcmONERROR(gcoOS_DeviceControl(
+            gcvNULL,
+            IOCTL_GCHAL_INTERFACE,
+            &iface, gcmSIZEOF(iface),
+            &iface, gcmSIZEOF(iface)
+            ));
+
+        /* Success? */
+        gcmONERROR(iface.status);
+
+        /* Do we need to schedule an event for the unlock? */
+        if (iface.u.UnlockVideoMemory.asynchroneous)
+        {
+            iface.u.UnlockVideoMemory.asynchroneous = gcvFALSE;
+            gcmONERROR(gcoHAL_ScheduleEvent(gcvNULL, &iface));
+            gcmONERROR(gcoHAL_Commit(gcvNULL, gcvFALSE));
+        }
+
+        gcoHAL_SetHardwareType(gcvNULL, type);
+
+        /* Success. */
+        gcmFOOTER_NO();
+
+        return gcvSTATUS_OK;
+    }
+    while (gcvFALSE);
+
+OnError:
+       gcmTRACE(
+               gcvLEVEL_ERROR,
+               "%s(%d): failed to free handle %lu",
+               __FUNCTION__, __LINE__, Handle
+               );
+
+    gcoHAL_SetHardwareType(gcvNULL, type);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+/* Lock video memory. */
+gceSTATUS
+gcoOS_LockVideoMemory(
+    IN gcoOS Os,
+    IN gctPOINTER Handle,
+    IN gctBOOL InUserSpace,
+    IN gctBOOL InCacheable,
+    OUT gctUINT32 * Physical,
+    OUT gctPOINTER * Logical
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+    gceHARDWARE_TYPE type;
+    gcuVIDMEM_NODE_PTR Node;
+
+    gcmHEADER_ARG("Handle=%d,InUserSpace=%d InCacheable=%d",
+                  Handle, InUserSpace, InCacheable);
+
+    /* Verify the arguments. */
+    gcmVERIFY_ARGUMENT(Handle != gcvNULL);
+    gcmVERIFY_ARGUMENT(Physical != gcvNULL);
+    gcmVERIFY_ARGUMENT(Logical != gcvNULL);
+
+    Node = (gcuVIDMEM_NODE_PTR)Handle;
+
+    gcmVERIFY_OK(gcoHAL_GetHardwareType(gcvNULL, &type));
+    gcoHAL_SetHardwareType(gcvNULL, gcvHARDWARE_3D);
+
+    /* Fill in the kernel call structure. */
+    iface.command = gcvHAL_LOCK_VIDEO_MEMORY;
+    iface.u.LockVideoMemory.node = gcmPTR_TO_UINT64(Node);
+    iface.u.LockVideoMemory.cacheable = InCacheable;
+
+    /* Call the kernel. */
+    gcmONERROR(gcoOS_DeviceControl(
+                gcvNULL,
+                IOCTL_GCHAL_INTERFACE,
+                &iface, sizeof(iface),
+                &iface, sizeof(iface)
+                ));
+
+    /* Success? */
+    gcmONERROR(iface.status);
+
+    /* Return physical address. */
+    *Physical = iface.u.LockVideoMemory.physicalAddress;
+
+    /* Return logical address. */
+    *Logical = gcmUINT64_TO_PTR(iface.u.LockVideoMemory.memory);
+
+    gcoHAL_SetHardwareType(gcvNULL, type);
+
+    /* Success. */
+    gcmFOOTER_ARG("*Physical=0x%x *Logical=0x%x",
+                  *Physical, *Logical);
+    return gcvSTATUS_OK;
+
+OnError:
+    gcmTRACE(
+        gcvLEVEL_ERROR,
+        "%s(%d): failed to lock handle %x",
+        __FUNCTION__, __LINE__, Handle
+        );
+
+    gcoHAL_SetHardwareType(gcvNULL, type);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+
+}
+
 
 /*******************************************************************************
 **
@@ -1963,7 +2852,7 @@ gcoOS_Open(
                   gcmOPT_STRING(FileName), Mode);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(File != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(File != gcvNULL);
 
     /* Open the file. */
     file = fopen(FileName, modes[Mode]);
@@ -2010,7 +2899,7 @@ gcoOS_Close(
     gcmHEADER_ARG("File=0x%x", File);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(File != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(File != gcvNULL);
 
     /* Close the file. */
     fclose((FILE *) File);
@@ -2061,9 +2950,9 @@ gcoOS_Read(
                   File, ByteCount, Data);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(File != gcvNULL);
-    gcmVERIFY_ARGUMENT(ByteCount > 0);
-    gcmVERIFY_ARGUMENT(Data != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(File != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(ByteCount > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(Data != gcvNULL);
 
     /* Read the data from the file. */
     byteRead = fread(Data, 1, ByteCount, (FILE *) File);
@@ -2116,9 +3005,9 @@ gcoOS_Write(
                   File, ByteCount, Data);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(File != gcvNULL);
-    gcmVERIFY_ARGUMENT(ByteCount > 0);
-    gcmVERIFY_ARGUMENT(Data != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(File != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(ByteCount > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(Data != gcvNULL);
 
     /* Write the data to the file. */
     byteWritten = fwrite(Data, 1, ByteCount, (FILE *) File);
@@ -2149,6 +3038,83 @@ gcoOS_Flush(
     fflush((FILE *) File);
 
     /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoOS_FscanfI(
+    IN gcoOS Os,
+    IN gctFILE File,
+    IN gctCONST_STRING Format,
+    OUT gctUINT *result
+    )
+{
+    gctINT ret;
+    gcmHEADER_ARG("File=0x%x Format=0x%x", File, Format);
+
+    /* Verify the arguments. */
+    gcmVERIFY_ARGUMENT(File != gcvNULL);
+    gcmVERIFY_ARGUMENT(Format != gcvNULL);
+
+    /* Format the string. */
+    ret = fscanf(File, Format, result);
+
+    if (!ret)
+    {
+        gcmFOOTER_NO();
+        return gcvSTATUS_GENERIC_IO;
+    }
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoOS_DupFD(
+    IN gcoOS Os,
+    IN gctINT FD,
+    OUT gctINT * FD2
+    )
+{
+    int fd;
+    gceSTATUS status;
+
+    gcmHEADER_ARG("FD=%d", FD);
+    fd = dup(FD);
+
+    if (fd < 0)
+    {
+        status = gcvSTATUS_OUT_OF_RESOURCES;
+        gcmFOOTER();
+        return status;
+    }
+
+    *FD2 = fd;
+    gcmFOOTER_ARG("FD2=%d", FD2);
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoOS_CloseFD(
+    IN gcoOS Os,
+    IN gctINT FD
+    )
+{
+    int err;
+    gceSTATUS status;
+    gcmHEADER_ARG("FD=%d", FD);
+
+    err = close(FD);
+
+    if (err < 0)
+    {
+        status = gcvSTATUS_GENERIC_IO;
+        gcmFOOTER();
+        return status;
+    }
+
     gcmFOOTER_NO();
     return gcvSTATUS_OK;
 }
@@ -2291,6 +3257,7 @@ gcoOS_Connect(
     /* If it is a numeric host name, convert it now */
     if (inAddr->s_addr == INADDR_NONE)
     {
+#if !gcdSTATIC_LINK
         struct hostent *hostEnt;
         struct in_addr *arrayAddr;
 
@@ -2303,6 +3270,7 @@ gcoOS_Connect(
         }
         arrayAddr = (struct in_addr *) *(hostEnt->h_addr_list);
         inAddr->s_addr = arrayAddr[0].s_addr;
+#endif /*gcdSTATIC_LINK*/
     }
 
     sockAddrIn->sin_port = htons((gctUINT16) Port);
@@ -2377,8 +3345,8 @@ gcoOS_Send(
                   SockFd, ByteCount, Data, Flags);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(ByteCount > 0);
-    gcmVERIFY_ARGUMENT(Data != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(ByteCount > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(Data != gcvNULL);
 
     /* Write the data to the file. */
     /*gcoOS_WaitForSend(gcvNULL, SockFd, 0, 50000);*/
@@ -2398,6 +3366,16 @@ gcoOS_Send(
     }
 }
 
+#ifdef ANDROID
+#define MAX_ENV_ITEM 20
+typedef struct _Property_Table {
+    gctCHAR property[PROPERTY_VALUE_MAX];
+    gctCHAR name[PROPERTY_KEY_MAX];
+} Property_Table;
+Property_Table pt[MAX_ENV_ITEM];
+
+#endif
+
 /* Get environment variable value. */
 gceSTATUS
 gcoOS_GetEnv(
@@ -2406,12 +3384,79 @@ gcoOS_GetEnv(
     OUT gctSTRING * Value
     )
 {
+#ifdef ANDROID
+    static gctINT index=0;
+    gctCHAR property[PROPERTY_VALUE_MAX];
+    gctSIZE_T nlen=0,plen=0;
+#endif
     gcmHEADER_ARG("VarName=%s", gcmOPT_STRING(VarName));
+    if (Value == gcvNULL)
+    {
+        gcmFOOTER_ARG("Value=%s", "NULL");
+        return gcvSTATUS_OK;
+    }
+#ifdef ANDROID
+    if (property_get(VarName, property, gcvNULL) != 0)
+    {
 
+        gctINT loopi;
+        gctINT found = -1 ;
+        for(loopi = 0; loopi < MAX_ENV_ITEM;loopi++)
+        {
+            if(!pt[loopi].name ) break;
+            if(gcoOS_StrCmp(pt[loopi].name, VarName) == gcvSTATUS_OK) /*Found name*/
+            {
+                if(gcoOS_StrCmp(pt[loopi].property, property) != gcvSTATUS_OK ) /*Value changed*/
+                {
+                    plen = gcoOS_StrLen(property, gcvNULL);
+                    gcoOS_StrCopySafe(pt[loopi].property, plen + 1, property);
+                }
+                *Value = pt[loopi].property;
+                found = 1;
+                break;
+            }
+        }
+        if(found == -1) /*Not exist*/
+        {
+            nlen = gcoOS_StrLen(VarName, gcvNULL);
+            plen = gcoOS_StrLen(property, gcvNULL);
+            gcoOS_StrCopySafe(pt[index].name, nlen + 1, VarName);
+            gcoOS_StrCopySafe(pt[index].property, plen + 1, property);
+            *Value = pt[index].property;
+            index++;
+            if (index >= MAX_ENV_ITEM)
+            {
+                index=0; /*cover old variable*/
+            }
+        }
+    }
+    else
+    {
+    *Value = gcvNULL;
+     }
+#else
     *Value = getenv(VarName);
-
+#endif
     /* Success. */
     gcmFOOTER_ARG("*Value=%s", gcmOPT_STRING(*Value));
+    return gcvSTATUS_OK;
+}
+
+/* Set environment variable value. */
+gceSTATUS gcoOS_SetEnv(
+    IN gcoOS Os,
+    IN gctCONST_STRING VarName,
+    IN gctSTRING Value
+    )
+{
+#ifdef ANDROID
+    return gcvSTATUS_OK;
+#endif
+    gcmHEADER_ARG("VarName=%s", gcmOPT_STRING(VarName));
+
+
+    /* Success. */
+    gcmFOOTER_NO();
     return gcvSTATUS_OK;
 }
 
@@ -2488,8 +3533,8 @@ gcoOS_GetPos(
     gcmHEADER_ARG("File=0x%x", File);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(File != gcvNULL);
-    gcmVERIFY_ARGUMENT(Position != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(File != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Position != gcvNULL);
 
     /* Get the current file position. */
     *Position = ftell((FILE *) File);
@@ -2530,7 +3575,7 @@ gcoOS_SetPos(
     gcmHEADER_ARG("File=0x%x Position=%u", File, Position);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(File != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(File != gcvNULL);
 
     /* Set file position. */
     fseek((FILE *) File, Position, SEEK_SET);
@@ -2582,7 +3627,7 @@ gcoOS_Seek(
                   File, Offset, Whence);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(File != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(File != gcvNULL);
 
     /* Set file position. */
     switch (Whence)
@@ -2643,7 +3688,7 @@ gcoOS_CreateThread(
     gcmHEADER_ARG("Worker=0x%x Argument=0x%x", Worker, Argument);
 
     /* Validate the arguments. */
-    gcmVERIFY_ARGUMENT(Thread != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Thread != gcvNULL);
 
     if (pthread_create(&thread, gcvNULL, Worker, Argument) != 0)
     {
@@ -2685,7 +3730,7 @@ gcoOS_CloseThread(
     gcmHEADER_ARG("Thread=0x%x", Thread);
 
     /* Validate the arguments. */
-    gcmVERIFY_ARGUMENT(Thread != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Thread != gcvNULL);
 
     pthread_join((pthread_t) Thread, gcvNULL);
 
@@ -2718,19 +3763,24 @@ gcoOS_CreateMutex(
 {
     gceSTATUS status;
     pthread_mutex_t* mutex;
+    pthread_mutexattr_t   mta;
 
     gcmHEADER();
 
     /* Validate the arguments. */
-    gcmVERIFY_ARGUMENT(Mutex != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Mutex != gcvNULL);
 
     /* Allocate memory for the mutex. */
     gcmONERROR(gcoOS_Allocate(
         gcvNULL, gcmSIZEOF(pthread_mutex_t), (gctPOINTER *) &mutex
         ));
 
+    pthread_mutexattr_init(&mta);
+
+    pthread_mutexattr_settype(&mta, PTHREAD_MUTEX_RECURSIVE);
+
     /* Initialize the mutex. */
-    pthread_mutex_init(mutex, gcvNULL);
+    pthread_mutex_init(mutex, &mta);
 
     /* Return mutex to caller. */
     *Mutex = (gctPOINTER) mutex;
@@ -2774,7 +3824,7 @@ gcoOS_DeleteMutex(
     gcmHEADER_ARG("Mutex=0x%x", Mutex);
 
     /* Validate the arguments. */
-    gcmVERIFY_ARGUMENT(Mutex != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Mutex != gcvNULL);
 
     /* Cast the pointer. */
     mutex = (pthread_mutex_t *) Mutex;
@@ -2826,7 +3876,7 @@ gcoOS_AcquireMutex(
     gcmHEADER_ARG("Mutex=0x%x Timeout=%u", Mutex, Timeout);
 
     /* Validate the arguments. */
-    gcmVERIFY_ARGUMENT(Mutex != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Mutex != gcvNULL);
 
     /* Cast the pointer. */
     mutex = (pthread_mutex_t *) Mutex;
@@ -2910,7 +3960,7 @@ gcoOS_ReleaseMutex(
     gcmHEADER_ARG("Mutex=0x%x", Mutex);
 
     /* Validate the arguments. */
-    gcmVERIFY_ARGUMENT(Mutex != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Mutex != gcvNULL);
 
     /* Cast the pointer. */
     mutex = (pthread_mutex_t *) Mutex;
@@ -2957,167 +4007,6 @@ gcoOS_Delay(
     return gcvSTATUS_OK;
 }
 
-/*******************************************************************************
-**
-**  gcoOS_MemCopy
-**
-**  Copy memory from one location to another location.  The memory cannot be
-**  overlapped.
-**
-**  INPUT:
-**
-**      gctPOINTER Destination
-**          Pointer to destination memory.
-**
-**      gctCONST_POINTER Source
-**          Pointer to source memory.
-**
-**      gctSIZE_T Bytes
-**          Number of bytes to copy.
-**
-**  OUTPUT:
-**
-**      Nothing.
-*/
-gceSTATUS
-gcoOS_MemCopy(
-    IN gctPOINTER Destination,
-    IN gctCONST_POINTER Source,
-    IN gctSIZE_T Bytes
-    )
-{
-    gcmHEADER_ARG("Destination=0x%x Source=0x%x Bytes=%lu",
-                  Destination, Source, Bytes);
-
-    /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Destination != gcvNULL);
-    gcmVERIFY_ARGUMENT(Source != gcvNULL);
-    gcmVERIFY_ARGUMENT(Bytes > 0);
-
-    /* Copy the memory. */
-    memcpy(Destination, Source, Bytes);
-
-    /* Success. */
-    gcmFOOTER_NO();
-    return gcvSTATUS_OK;
-}
-
-/*******************************************************************************
-**
-**  gcoOS_ZeroMemory
-**
-**  Fill the specified memory with 0's.
-**
-**  INPUT:
-**
-**      gctPOINTER Memory
-**          Pointer to memory to fill.
-**
-**      gctSIZE_T Bytes
-**          Number of bytes to fill.
-**
-**  OUTPUT:
-**
-**      Nothing.
-*/
-gceSTATUS
-gcoOS_ZeroMemory(
-    IN gctPOINTER Memory,
-    IN gctSIZE_T Bytes
-    )
-{
-    gcmHEADER_ARG("Memory=0x%x Bytes=%lu", Memory, Bytes);
-
-    /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Memory != gcvNULL);
-    gcmVERIFY_ARGUMENT(Bytes > 0);
-
-    /* Zero the memory. */
-    memset(Memory, 0, Bytes);
-
-    /* Success. */
-    gcmFOOTER_NO();
-    return gcvSTATUS_OK;
-}
-
-/*******************************************************************************
-**
-**  gcoOS_MemFill
-**
-**  Fill the specified memory with a specified filler.
-**
-**  INPUT:
-**
-**      gctPOINTER Memory
-**          Pointer to memory to fill.
-**
-**      gctUINT8 Filler
-**          Value to fill the memory width.
-**
-**      gctSIZE_T Bytes
-**          Number of bytes to fill.
-**
-**  OUTPUT:
-**
-**      Nothing.
-*/
-gceSTATUS
-gcoOS_MemFill(
-    IN gctPOINTER Memory,
-    IN gctUINT8 Filler,
-    IN gctSIZE_T Bytes
-    )
-{
-    gcmHEADER_ARG("Memory=0x%x Filler=%u Bytes=%lu", Memory, Filler, Bytes);
-
-    /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Memory != gcvNULL);
-    gcmVERIFY_ARGUMENT(Bytes > 0);
-
-    /* Fill the memory. */
-    memset(Memory, Filler, Bytes);
-
-    /* Success. */
-    gcmFOOTER_NO();
-    return gcvSTATUS_OK;
-}
-
-/*******************************************************************************
-**
-**  gcoOS_StrLen
-**
-**  Get the length of the specified string.
-**
-**  INPUT:
-**
-**      gctCONST_STRING String
-**          Pointer to string to get size off.
-**
-**  OUTPUT:
-**
-**      gctSIZE_T * Length
-**          Pointer to a variable that will receive the length of the string.
-*/
-gceSTATUS
-gcoOS_StrLen(
-    IN gctCONST_STRING String,
-    OUT gctSIZE_T * Length
-    )
-{
-    gcmHEADER_ARG("String=0x%x", String);
-
-    /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(String != gcvNULL);
-    gcmVERIFY_ARGUMENT(Length != gcvNULL);
-
-    /* Get the length of the string. */
-    *Length = (gctSIZE_T) strlen(String);
-
-    /* Success. */
-    gcmFOOTER_ARG("*Length=%lu", *Length);
-    return gcvSTATUS_OK;
-}
-
 gceSTATUS
 gcoOS_StrStr(
     IN gctCONST_STRING String,
@@ -3128,8 +4017,8 @@ gcoOS_StrStr(
     gcmHEADER_ARG("String=0x%x SubString=0x%x", String, SubString);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(String != gcvNULL);
-    gcmVERIFY_ARGUMENT(SubString != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(String != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(SubString != gcvNULL);
 
     /* Call C. */
     *Output = strstr(String, SubString);
@@ -3149,8 +4038,8 @@ gcoOS_StrFindReverse(
     gcmHEADER_ARG("String=0x%x Character=%d", String, Character);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(String != gcvNULL);
-    gcmVERIFY_ARGUMENT(Output != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(String != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Output != gcvNULL);
 
     /* Call C. */
     *Output = strrchr(String, Character);
@@ -3189,8 +4078,8 @@ gcoOS_StrCopySafe(
                   Destination, DestinationSize, Source);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Destination != gcvNULL);
-    gcmVERIFY_ARGUMENT(Source != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Destination != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Source != gcvNULL);
 
     /* Don't overflow the destination buffer. */
     strncpy(Destination, Source, DestinationSize - 1);
@@ -3234,12 +4123,12 @@ gcoOS_StrCatSafe(
                   Destination, DestinationSize, Source);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Destination != gcvNULL);
-    gcmVERIFY_ARGUMENT(Source != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Destination != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Source != gcvNULL);
 
     /* Find the end of the destination. */
     n = strlen(Destination);
-    if (n < DestinationSize)
+    if (n + 1 < DestinationSize)
     {
         /* Append the string but don't overflow the destination buffer. */
         strncpy(Destination + n, Source, DestinationSize - n - 1);
@@ -3289,8 +4178,8 @@ gcoOS_StrCmp(
     gcmHEADER_ARG("String1=0x%x String2=0x%x", String1, String2);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(String1 != gcvNULL);
-    gcmVERIFY_ARGUMENT(String2 != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(String1 != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(String2 != gcvNULL);
 
     /* Compare the strings and return proper status. */
     result = strcmp(String1, String2);
@@ -3344,8 +4233,8 @@ gcoOS_StrNCmp(
                   String1, String2, Count);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(String1 != gcvNULL);
-    gcmVERIFY_ARGUMENT(String2 != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(String1 != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(String2 != gcvNULL);
 
     /* Compare the strings and return proper status. */
     result = strncmp(String1, String2, Count);
@@ -3384,7 +4273,7 @@ gcoOS_StrToFloat(
     gcmHEADER_ARG("String=%s", gcmOPT_STRING(String));
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(String != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(String != gcvNULL);
 
     *Float = (gctFLOAT) atof(String);
 
@@ -3394,43 +4283,54 @@ gcoOS_StrToFloat(
 
 /* Converts a hex string to 32-bit integer. */
 gceSTATUS gcoOS_HexStrToInt(IN gctCONST_STRING String,
-			   OUT gctINT * Int)
+               OUT gctINT * Int)
 {
-	gcmHEADER_ARG("String=%s", gcmOPT_STRING(String));
-    gcmVERIFY_ARGUMENT(String != gcvNULL);
-	gcmVERIFY_ARGUMENT(Int != gcvNULL);
+    gcmHEADER_ARG("String=%s", gcmOPT_STRING(String));
+    gcmDEBUG_VERIFY_ARGUMENT(String != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Int != gcvNULL);
 
-	sscanf(String, "%x", Int);
+    sscanf(String, "%x", Int);
 
-	gcmFOOTER_ARG("*Int=%d", *Int);
-	return gcvSTATUS_OK;
+    gcmFOOTER_ARG("*Int=%d", *Int);
+    return gcvSTATUS_OK;
 }
 
 /* Converts a hex string to float. */
 gceSTATUS gcoOS_HexStrToFloat(IN gctCONST_STRING String,
-			   OUT gctFLOAT * Float)
+               OUT gctFLOAT * Float)
 {
-	gctSTRING pch = gcvNULL;
-	gctCONST_STRING delim = "x.p";
-	gctFLOAT b, exp;
-	gctINT s;
+    gctSTRING pch = gcvNULL;
+    gctCONST_STRING delim = "x.p";
+    gctFLOAT b=0.0, exp=0.0;
+    gctINT s=0;
 
-	gcmHEADER_ARG("String=%s", gcmOPT_STRING(String));
-    gcmVERIFY_ARGUMENT(String != gcvNULL);
-    gcmVERIFY_ARGUMENT(Float != gcvNULL);
+    gcmHEADER_ARG("String=%s", gcmOPT_STRING(String));
+    gcmDEBUG_VERIFY_ARGUMENT(String != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Float != gcvNULL);
 
-	pch = strtok((gctSTRING)String, delim);
-	pch = strtok(NULL, delim);
-	gcmVERIFY_OK(gcoOS_StrToFloat(pch, &b));
-	pch = strtok(NULL, delim);
-	gcmVERIFY_OK(gcoOS_HexStrToInt(pch, &s));
-	pch = strtok(NULL, delim);
-	gcmVERIFY_OK(gcoOS_StrToFloat(pch, &exp));
+    pch = strtok((gctSTRING)String, delim);
+    if (pch == NULL) goto onError;
 
-	*Float = (float)(b + s / (float)(1 << 24)) * (float)pow(2.0, exp);
+    pch = strtok(NULL, delim);
+    if (pch == NULL) goto onError;
+    gcmVERIFY_OK(gcoOS_StrToFloat(pch, &b));
 
-	gcmFOOTER_ARG("*Float=%d", *Float);
-	return gcvSTATUS_OK;
+    pch = strtok(NULL, delim);
+    if (pch == NULL) goto onError;
+    gcmVERIFY_OK(gcoOS_HexStrToInt(pch, &s));
+
+    pch = strtok(NULL, delim);
+    if (pch == NULL) goto onError;
+    gcmVERIFY_OK(gcoOS_StrToFloat(pch, &exp));
+
+    *Float = (float)(b + s / (float)(1 << 24)) * (float)pow(2.0, exp);
+
+    gcmFOOTER_ARG("*Float=%d", *Float);
+    return gcvSTATUS_OK;
+
+onError:
+    gcmFOOTER_NO();
+    return gcvSTATUS_INVALID_ARGUMENT;
 }
 
 /*******************************************************************************
@@ -3460,7 +4360,7 @@ gcoOS_StrToInt(
     gcmHEADER_ARG("String=%s", gcmOPT_STRING(String));
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(String != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(String != gcvNULL);
 
     *Int = (gctINT) atoi(String);
 
@@ -3507,9 +4407,9 @@ gcoOS_MemCmp(
                   Memory1, Memory2, Bytes);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Memory1 != gcvNULL);
-    gcmVERIFY_ARGUMENT(Memory2 != gcvNULL);
-    gcmVERIFY_ARGUMENT(Bytes > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(Memory1 != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Memory2 != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Bytes > 0);
 
     /* Compare the memory rregions and return proper status. */
     status = (memcmp(Memory1, Memory2, Bytes) == 0)
@@ -3565,9 +4465,9 @@ gcoOS_PrintStrSafe(
                   String, StringSize, *Offset, Format);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(String != gcvNULL);
-    gcmVERIFY_ARGUMENT(Offset != gcvNULL);
-    gcmVERIFY_ARGUMENT(Format != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(String != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Offset != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Format != gcvNULL);
 
     va_start(arguments, Format);
 
@@ -3636,9 +4536,9 @@ gcoOS_PrintStrVSafe(
                   String, StringSize, gcmOPT_VALUE(Offset), Format, Arguments);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(String != gcvNULL);
-    gcmVERIFY_ARGUMENT(Offset != gcvNULL);
-    gcmVERIFY_ARGUMENT(Format != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(String != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Offset != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Format != gcvNULL);
 
     if (*Offset < StringSize)
     {
@@ -3694,19 +4594,43 @@ gcoOS_MapUserMemory(
     )
 {
     gceSTATUS status;
+
+    gcmHEADER_ARG("Memory=0x%x Size=%lu", Memory, Size);
+
+    gcmDEBUG_VERIFY_ARGUMENT(Memory != gcvNULL);
+
+    status = gcoOS_MapUserMemoryEx(Os, Memory, ~0U, Size, Info, Address);
+
+    gcmFOOTER();
+
+    return status;
+}
+
+gceSTATUS
+gcoOS_MapUserMemoryEx(
+    IN gcoOS Os,
+    IN gctPOINTER Memory,
+    IN gctUINT32 Physical,
+    IN gctSIZE_T Size,
+    OUT gctPOINTER * Info,
+    OUT gctUINT32_PTR Address
+    )
+{
+    gceSTATUS status;
     gcsHAL_INTERFACE iface;
 
     gcmHEADER_ARG("Memory=0x%x Size=%lu", Memory, Size);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Memory != gcvNULL);
-    gcmVERIFY_ARGUMENT(Size > 0);
-    gcmVERIFY_ARGUMENT(Info != gcvNULL);
-    gcmVERIFY_ARGUMENT(Address != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Memory != gcvNULL || Physical != ~0U);
+    gcmDEBUG_VERIFY_ARGUMENT(Size > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(Info != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Address != gcvNULL);
 
     /* Initialize the gcsHAL_INTERFACE structure. */
     iface.command = gcvHAL_MAP_USER_MEMORY;
-    iface.u.MapUserMemory.memory = Memory;
+    iface.u.MapUserMemory.memory = gcmPTR_TO_UINT64(Memory);
+    iface.u.MapUserMemory.physical = Physical;
     iface.u.MapUserMemory.size   = Size;
 
     /* Call kernel driver. */
@@ -3716,7 +4640,7 @@ gcoOS_MapUserMemory(
                                    &iface, gcmSIZEOF(iface)));
 
     /* Return the info on success. */
-    *Info    = iface.u.MapUserMemory.info;
+    *Info    = gcmINT2PTR(iface.u.MapUserMemory.info);
     *Address = iface.u.MapUserMemory.address;
 
     /* Success. */
@@ -3770,14 +4694,14 @@ gcoOS_UnmapUserMemory(
                   Memory, Size, Info, Address);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Memory != gcvNULL);
-    gcmVERIFY_ARGUMENT(Size > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(Memory != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Size > 0);
 
     /* Initialize the gcsHAL_INTERFACE structure. */
     iface.command = gcvHAL_UNMAP_USER_MEMORY;
-    iface.u.UnmapUserMemory.memory  = Memory;
+    iface.u.UnmapUserMemory.memory  = gcmPTR_TO_UINT64(Memory);
     iface.u.UnmapUserMemory.size    = Size;
-    iface.u.UnmapUserMemory.info    = Info;
+    iface.u.UnmapUserMemory.info    = gcmPTR2INT32(Info);
     iface.u.UnmapUserMemory.address = Address;
 
     /* Call kernel driver. */
@@ -3828,10 +4752,10 @@ gcoOS_StrDup(
 
     gcmHEADER_ARG("String=0x%x", String);
 
-    gcmVERIFY_ARGUMENT(String != gcvNULL);
-    gcmVERIFY_ARGUMENT(Target != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(String != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Target != gcvNULL);
 
-    gcmONERROR(gcoOS_StrLen(String, &bytes));
+    bytes = gcoOS_StrLen(String, gcvNULL);
 
     gcmONERROR(gcoOS_Allocate(gcvNULL, bytes + 1, (gctPOINTER *) &string));
 
@@ -3885,7 +4809,7 @@ gcoOS_LoadLibrary(
     gcmHEADER_ARG("Library=%s", gcmOPT_STRING(Library));
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Handle != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Handle != gcvNULL);
 
     /* Reset the handle. */
     *Handle = gcvNULL;
@@ -3972,8 +4896,10 @@ gcoOS_FreeLibrary(
 #else
     gcmHEADER_ARG("Handle=0x%x", Handle);
 
+#if !gcdBUILT_FOR_VALGRIND
     /* Free the library. */
     dlclose(Handle);
+#endif
 
     /* Success. */
     gcmFOOTER_NO();
@@ -4019,8 +4945,8 @@ gcoOS_GetProcAddress(
     gcmHEADER_ARG("Handle=0x%x Name=%s", Handle, gcmOPT_STRING(Name));
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Name != gcvNULL);
-    gcmVERIFY_ARGUMENT(Function != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Name != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Function != gcvNULL);
 
     /* Get the address of the function. */
     *Function = dlsym(Handle, Name);
@@ -4049,6 +4975,17 @@ gcoOS_ProfileStart(
     IN gcoOS Os
     )
 {
+    gcPLS.os->allocCount   = 0;
+    gcPLS.os->allocSize    = 0;
+    gcPLS.os->maxAllocSize = 0;
+    gcPLS.os->freeCount    = 0;
+    gcPLS.os->freeSize     = 0;
+
+#if gcdGC355_MEM_PRINT
+    gcPLS.os->oneRecording = 0;
+    gcPLS.os->oneSize      = 0;
+#endif
+
     return gcvSTATUS_OK;
 }
 
@@ -4058,6 +4995,12 @@ gcoOS_ProfileEnd(
     IN gctCONST_STRING Title
     )
 {
+    gcmPRINT("08) System memory - maximum: %u \n", gcPLS.os->maxAllocSize);
+    gcmPRINT("09) System memory - allocation count: %u \n", gcPLS.os->allocCount);
+    gcmPRINT("10) System memory - allocation total: %u \n", gcPLS.os->allocSize);
+    gcmPRINT("11) System memory - deallocation count: %u \n", gcPLS.os->freeCount);
+    gcmPRINT("12) System memory - deallocation total: %u \n", gcPLS.os->freeSize);
+
     return gcvSTATUS_OK;
 }
 
@@ -4099,7 +5042,6 @@ gcoOS_SetProfileSetting(
     /* Initialize the gcsHAL_INTERFACE structure. */
     iface.command = gcvHAL_SET_PROFILE_SETTING;
     iface.u.SetProfileSetting.enable = Enable;
-    strcpy(iface.u.SetProfileSetting.fileName, FileName);
 
     /* Call the kernel. */
     return gcoOS_DeviceControl(gcvNULL,
@@ -4125,8 +5067,10 @@ struct gcsATOM
     /* Counter. */
     gctINT32 counter;
 
+#if !gcdBUILTIN_ATOMIC_FUNCTIONS
     /* Mutex. */
     pthread_mutex_t mutex;
+#endif
 };
 
 /* Create an atom. */
@@ -4142,7 +5086,7 @@ gcoOS_AtomConstruct(
     gcmHEADER();
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Atom != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Atom != gcvNULL);
 
     do
     {
@@ -4153,11 +5097,14 @@ gcoOS_AtomConstruct(
 
         /* Initialize the atom to 0. */
         atom->counter = 0;
+
+#if !gcdBUILTIN_ATOMIC_FUNCTIONS
         if (pthread_mutex_init(&atom->mutex, gcvNULL) != 0)
         {
             status = gcvSTATUS_OUT_OF_RESOURCES;
             break;
         }
+#endif
 
         /* Return pointer to atom. */
         *Atom = atom;
@@ -4191,7 +5138,7 @@ gcoOS_AtomDestroy(
     gcmHEADER_ARG("Atom=0x%x", Atom);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Atom != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Atom != gcvNULL);
 
     /* Free the atom. */
     status = gcmOS_SAFE_FREE(gcvNULL, Atom);
@@ -4199,6 +5146,46 @@ gcoOS_AtomDestroy(
     /* Return the status. */
     gcmFOOTER();
     return status;
+}
+
+gceSTATUS
+gcoOS_AtomGet(
+    IN gcoOS Os,
+    IN gcsATOM_PTR Atom,
+    OUT gctINT32_PTR Value
+    )
+{
+    gcmHEADER_ARG("Atom=0x%0x", Atom);
+
+    /* Verify the arguments. */
+    gcmVERIFY_ARGUMENT(Atom != gcvNULL);
+
+    /* Get the atom value. */
+    *Value = Atom->counter;
+
+    /* Success. */
+    gcmFOOTER_ARG("*Value=%d", *Value);
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoOS_AtomSet(
+    IN gcoOS Os,
+    IN gcsATOM_PTR Atom,
+    IN gctINT32 Value
+    )
+{
+    gcmHEADER_ARG("Atom=0x%0x Value=%d", Atom, Value);
+
+    /* Verify the arguments. */
+    gcmVERIFY_ARGUMENT(Atom != gcvNULL);
+
+    /* Set the atom value. */
+    Atom->counter = Value;
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
 }
 
 /* Increment an atom. */
@@ -4214,13 +5201,23 @@ gcoOS_AtomIncrement(
     gcmHEADER_ARG("Atom=0x%x", Atom);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Atom != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Atom != gcvNULL);
 
     /* Increment the atom's counter. */
-#ifdef LINUX_OABI
-    value = __sync_fetch_and_add(Atom, 1);
-#else
+#if gcdBUILTIN_ATOMIC_FUNCTIONS
     value = __sync_fetch_and_add(&Atom->counter, 1);
+#else
+    /* Lock the mutex. */
+    pthread_mutex_lock(&Atom->mutex);
+
+    /* Get original value. */
+    value = Atom->counter;
+
+    /* Add given value. */
+    Atom->counter += 1;
+
+    /* Unlock the mutex. */
+    pthread_mutex_unlock(&Atom->mutex);
 #endif
 
     if (OldValue != gcvNULL)
@@ -4247,13 +5244,23 @@ gcoOS_AtomDecrement(
     gcmHEADER_ARG("Atom=0x%x", Atom);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Atom != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Atom != gcvNULL);
 
     /* Decrement the atom's counter. */
-#ifdef LINUX_OABI
-    value = __sync_fetch_and_sub(Atom, 1);
-#else
+#if gcdBUILTIN_ATOMIC_FUNCTIONS
     value = __sync_fetch_and_sub(&Atom->counter, 1);
+#else
+    /* Lock the mutex. */
+    pthread_mutex_lock(&Atom->mutex);
+
+    /* Get original value. */
+    value = Atom->counter;
+
+    /* Subtract given value. */
+    Atom->counter -= 1;
+
+    /* Unlock the mutex. */
+    pthread_mutex_unlock(&Atom->mutex);
 #endif
 
     if (OldValue != gcvNULL)
@@ -4272,7 +5279,7 @@ gcoOS_GetCurrentProcessID(
     void
     )
 {
-    return (gctHANDLE) getpid();
+    return (gctHANDLE)(gctUINTPTR_T) getpid();
 }
 
 gctHANDLE
@@ -4281,57 +5288,6 @@ gcoOS_GetCurrentThreadID(
     )
 {
     return (gctHANDLE) pthread_self();
-}
-
-/* Supply fallback functions in case the CPU architecture doesn't support
-  atomic operations. */
-
-gctINT32
-__sync_fetch_and_add_4(
-    gcsATOM_PTR Atom,
-    gctINT32 Value
-)
-{
-    gctUINT32 value;
-
-    /* Lock the mutex. */
-    pthread_mutex_lock(&Atom->mutex);
-
-    /* Get original value. */
-    value = Atom->counter;
-
-    /* Add given value. */
-    Atom->counter += Value;
-
-    /* Unlock the mutex. */
-    pthread_mutex_unlock(&Atom->mutex);
-
-    /* Return the original value. */
-    return value;
-}
-
-gctINT32
-__sync_fetch_and_sub_4(
-    gcsATOM_PTR Atom,
-    gctINT32 Value
-)
-{
-    gctUINT32 value;
-
-    /* Lock the mutex. */
-    pthread_mutex_lock(&Atom->mutex);
-
-    /* Get original value. */
-    value = Atom->counter;
-
-    /* Subtract given value. */
-    Atom->counter -= Value;
-
-    /* Unlock the mutex. */
-    pthread_mutex_unlock(&Atom->mutex);
-
-    /* Return the original value. */
-    return value;
 }
 
 /*----------------------------------------------------------------------------*/
@@ -4510,7 +5466,7 @@ gcoOS_ReadRegister(
     gcmHEADER_ARG("Address=0x%x", Address);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Data != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Data != gcvNULL);
 
     /* Initialize the gcsHAL_INTERFACE structure. */
     iface.command = gcvHAL_READ_REGISTER;
@@ -4592,7 +5548,7 @@ OnError:
 
 static gceSTATUS
 gcoOS_Cache(
-    IN gcuVIDMEM_NODE_PTR Node,
+    IN gctUINT32 Node,
     IN gctPOINTER Logical,
     IN gctSIZE_T Bytes,
     IN gceCACHEOPERATION Operation
@@ -4605,14 +5561,14 @@ gcoOS_Cache(
                   Node, Logical, Bytes, Operation);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Logical != gcvNULL);
-    gcmVERIFY_ARGUMENT(Bytes > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(Logical != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Bytes > 0);
 
     /* Set up the cache. */
     ioctl.command            = gcvHAL_CACHE;
     ioctl.u.Cache.operation  = Operation;
     ioctl.u.Cache.node       = Node;
-    ioctl.u.Cache.logical    = Logical;
+    ioctl.u.Cache.logical    = gcmPTR_TO_UINT64(Logical);
     ioctl.u.Cache.bytes      = Bytes;
 
     /* Call the kernel. */
@@ -4643,7 +5599,7 @@ OnError:
 **      gcoOS Os
 **          Pointer to gcoOS object.
 **
-**      gcuVIDMEM_NODE_PTR Node
+**      gctUINT32 Node
 **          Pointer to the video memory node that needs to be flushed.
 **
 **      gctPOINTER Logical
@@ -4655,7 +5611,7 @@ OnError:
 gceSTATUS
 gcoOS_CacheClean(
     IN gcoOS Os,
-    IN gcuVIDMEM_NODE_PTR Node,
+    IN gctUINT32 Node,
     IN gctPOINTER Logical,
     IN gctSIZE_T Bytes
     )
@@ -4690,7 +5646,7 @@ OnError:
 **      gcoOS Os
 **          Pointer to gcoOS object.
 **
-**      gcuVIDMEM_NODE_PTR Node
+**      gctUINT32 Node
 **          Pointer to the video memory node that needs to be flushed.
 **
 **      gctPOINTER Logical
@@ -4702,7 +5658,7 @@ OnError:
 gceSTATUS
 gcoOS_CacheFlush(
     IN gcoOS Os,
-    IN gcuVIDMEM_NODE_PTR Node,
+    IN gctUINT32 Node,
     IN gctPOINTER Logical,
     IN gctSIZE_T Bytes
     )
@@ -4736,7 +5692,7 @@ OnError:
 **      gcoOS Os
 **          Pointer to gcoOS object.
 **
-**      gcuVIDMEM_NODE_PTR Node
+**      gctUINT32 Node
 **          Pointer to the video memory node that needs to be invalidated.
 **
 **      gctPOINTER Logical
@@ -4748,7 +5704,7 @@ OnError:
 gceSTATUS
 gcoOS_CacheInvalidate(
     IN gcoOS Os,
-    IN gcuVIDMEM_NODE_PTR Node,
+    IN gctUINT32 Node,
     IN gctPOINTER Logical,
     IN gctSIZE_T Bytes
     )
@@ -4795,7 +5751,7 @@ gcoOS_MemoryBarrier(
     gcmHEADER_ARG("Logical=0x%x", Logical);
 
     /* Call common code. */
-    gcmONERROR(gcoOS_Cache(gcvNULL, Logical, 1, gcvCACHE_MEMORY_BARRIER));
+    gcmONERROR(gcoOS_Cache(0, Logical, 1, gcvCACHE_MEMORY_BARRIER));
 
     /* Success. */
     gcmFOOTER_NO();
@@ -5156,7 +6112,7 @@ gcoOS_CreateSignal(
     gcmHEADER_ARG("ManualReset=%d", ManualReset);
 
     /* Verify the arguments. */
-    gcmVERIFY_ARGUMENT(Signal != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Signal != gcvNULL);
 
     /* Initialize the gcsHAL_INTERFACE structure. */
     iface.command = gcvHAL_USER_SIGNAL;
@@ -5169,7 +6125,7 @@ gcoOS_CreateSignal(
                                    &iface, gcmSIZEOF(iface),
                                    &iface, gcmSIZEOF(iface)));
 
-    *Signal = (gctSIGNAL) iface.u.UserSignal.id;
+    *Signal = (gctSIGNAL)(gctUINTPTR_T) iface.u.UserSignal.id;
 
     gcmFOOTER_ARG("*Signal=0x%x", *Signal);
     return gcvSTATUS_OK;
@@ -5211,13 +6167,13 @@ gcoOS_DestroySignal(
     gcmTRACE_ZONE(
         gcvLEVEL_VERBOSE, gcvZONE_OS,
         "gcoOS_DestroySignal: signal->%d.",
-        (gctINT) Signal
+        (gctINT)(gctUINTPTR_T)Signal
         );
 
     /* Initialize the gcsHAL_INTERFACE structure. */
     iface.command = gcvHAL_USER_SIGNAL;
     iface.u.UserSignal.command = gcvUSER_SIGNAL_DESTROY;
-    iface.u.UserSignal.id      = (gctINT) Signal;
+    iface.u.UserSignal.id      = (gctINT)(gctUINTPTR_T) Signal;
 
     /* Call kernel driver. */
     status = gcoOS_DeviceControl(gcvNULL,
@@ -5267,7 +6223,7 @@ gcoOS_Signal(
     /* Initialize the gcsHAL_INTERFACE structure. */
     iface.command = gcvHAL_USER_SIGNAL;
     iface.u.UserSignal.command = gcvUSER_SIGNAL_SIGNAL;
-    iface.u.UserSignal.id      = (gctINT) Signal;
+    iface.u.UserSignal.id      = (gctINT)(gctUINTPTR_T) Signal;
     iface.u.UserSignal.state   = State;
 
     /* Call kernel driver. */
@@ -5320,7 +6276,7 @@ gcoOS_WaitSignal(
     /* Initialize the gcsHAL_INTERFACE structure. */
     iface.command = gcvHAL_USER_SIGNAL;
     iface.u.UserSignal.command = gcvUSER_SIGNAL_WAIT;
-    iface.u.UserSignal.id      = (gctINT) Signal;
+    iface.u.UserSignal.id      = (gctINT)(gctUINTPTR_T) Signal;
     iface.u.UserSignal.wait    = Wait;
 
     /* Call kernel driver. */
@@ -5360,19 +6316,19 @@ gcoOS_MapSignal(
 
     gcmHEADER_ARG("RemoteSignal=%d", RemoteSignal);
 
-    gcmVERIFY_ARGUMENT(RemoteSignal != gcvNULL);
-    gcmVERIFY_ARGUMENT(LocalSignal != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(RemoteSignal != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(LocalSignal != gcvNULL);
 
     iface.command = gcvHAL_USER_SIGNAL;
     iface.u.UserSignal.command  = gcvUSER_SIGNAL_MAP;
-    iface.u.UserSignal.id = (gctINT)RemoteSignal;
+    iface.u.UserSignal.id = (gctINT)(gctUINTPTR_T) RemoteSignal;
 
     gcmONERROR(gcoOS_DeviceControl(gcvNULL,
                                    IOCTL_GCHAL_INTERFACE,
                                    &iface, gcmSIZEOF(iface),
                                    &iface, gcmSIZEOF(iface)));
 
-    *LocalSignal = (gctSIGNAL) iface.u.UserSignal.id;
+    *LocalSignal = (gctSIGNAL)(gctUINTPTR_T) iface.u.UserSignal.id;
 
     gcmFOOTER_ARG("*LocalSignal=0x%x", *LocalSignal);
     return gcvSTATUS_OK;
@@ -5407,17 +6363,17 @@ gcoOS_UnmapSignal(
 
     gcmHEADER_ARG("Signal=0x%x", Signal);
 
-    gcmVERIFY_ARGUMENT(Signal != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(Signal != gcvNULL);
 
     gcmTRACE_ZONE(
         gcvLEVEL_VERBOSE, gcvZONE_OS,
         "gcoOS_UnmapSignal: signal->%d.",
-        (gctINT) Signal
+        (gctINT)(gctUINTPTR_T)Signal
         );
 
     iface.command = gcvHAL_USER_SIGNAL;
     iface.u.UserSignal.command = gcvUSER_SIGNAL_UNMAP;
-    iface.u.UserSignal.id      = (gctINT) Signal;
+    iface.u.UserSignal.id      = (gctINT)(gctUINTPTR_T) Signal;
 
     status = gcoOS_DeviceControl(gcvNULL,
                                  IOCTL_GCHAL_INTERFACE,
@@ -5494,6 +6450,7 @@ gcoOS_AddSignalHandler (
             {
                 sigact.sa_handler = (void *)_SignalHandlerForSIGFPEWhenSignalCodeIs0;
                 sigact.sa_flags = SA_RESTART | SA_SIGINFO;
+                sigemptyset(&sigact.sa_mask);
                 sigaction(SIGFPE, &sigact, (struct sigaction *)NULL);
             }
 #endif
@@ -5518,14 +6475,17 @@ gcoOS_AddSignalHandler (
 
 /*******************************************************************************
 **
-**  gcoOS_DetectProcessByName
+**  gcoOS_DetectProcessByNamePid
 **
-**  Detect if the process is the executable specified.
+**  Detect if the given process is the executable specified.
 **
 **  INPUT:
 **
 **      gctCONST_STRING Name
 **          Name (full or partial) of executable.
+**
+**      gctHANDLE Pid
+**          Process id.
 **
 **  OUTPUT:
 **
@@ -5541,8 +6501,9 @@ gcoOS_AddSignalHandler (
 **
 */
 gceSTATUS
-gcoOS_DetectProcessByName(
-    IN gctCONST_STRING Name
+gcoOS_DetectProcessByNamePid(
+    IN gctCONST_STRING Name,
+    IN gctHANDLE Pid
     )
 {
     gceSTATUS status = gcvSTATUS_FALSE;
@@ -5553,14 +6514,14 @@ gcoOS_DetectProcessByName(
     char procEntryName[128];
     char procEntry[128];
 
-    gcmHEADER_ARG("Name=%s", Name);
+    gcmHEADER_ARG("Name=%s Pid=%d", Name, Pid);
 
     /* Construct the proc cmdline entry */
     gcmONERROR(gcoOS_PrintStrSafe(procEntryName,
                     gcmSIZEOF(procEntryName),
                     &offset,
                     "/proc/%d/cmdline",
-                    gcoOS_GetCurrentProcessID()));
+                    Pid));
 
     offset = 0;
 
@@ -5573,7 +6534,7 @@ gcoOS_DetectProcessByName(
 
     gcmONERROR(gcoOS_Read(gcvNULL,
                             _handle,
-                            gcmSIZEOF(procEntryName),
+                            gcmSIZEOF(procEntry)-1,
                             procEntry,
                             &bytesRead));
 
@@ -5602,3 +6563,541 @@ OnError:
     return status;
 }
 
+
+/*******************************************************************************
+**
+**  gcoOS_DetectProcessByName
+**
+**  Detect if the current process is the executable specified.
+**
+**  INPUT:
+**
+**      gctCONST_STRING Name
+**          Name (full or partial) of executable.
+**
+**  OUTPUT:
+**
+**      Nothing.
+**
+**
+**  RETURN:
+**
+**      gcvSTATUS_TRUE
+**              if process is as specified by Name parameter.
+**      gcvSTATUS_FALSE
+**              Otherwise.
+**
+*/
+gceSTATUS
+gcoOS_DetectProcessByName(
+    IN gctCONST_STRING Name
+    )
+{
+    gceSTATUS status = gcvSTATUS_FALSE;
+    gcmHEADER_ARG("Name=%s", Name);
+
+    status = gcoOS_DetectProcessByNamePid(Name, gcoOS_GetCurrentProcessID());
+
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gcoOS_DetectProcessByEncryptedName(
+    IN gctCONST_STRING Name
+    )
+{
+    gceSTATUS status = gcvSTATUS_FALSE;
+    gctCHAR *p, buff[1024];
+    p = buff;
+
+    gcmONERROR(gcoOS_StrCopySafe(buff, gcmCOUNTOF(buff), Name));
+
+    while (*p)
+    {
+        *p = ~(*p);
+        p++;
+    }
+
+    status = gcoOS_DetectProcessByName(buff);
+
+OnError:
+    if (gcmIS_ERROR(status))
+    {
+        status = gcvSTATUS_FALSE;
+    }
+
+    return status;
+}
+
+#if defined(ANDROID)
+static gceSTATUS
+ParseSymbol(
+    IN gctCONST_STRING Library,
+    IN gcoOS_SymbolsList Symbols
+    )
+{
+    gceSTATUS status = gcvSTATUS_FALSE;
+    int fp;
+    Elf32_Ehdr ehdr;
+    Elf32_Shdr shdr;
+    Elf32_Sym  sym;
+    char secNameTab[2048];
+    char *symNameTab = gcvNULL;
+    int i = 0, j = 0, size_dynsym = 0, match = 0;
+    unsigned int offset_dynsym = 0, offset_dynstr = 0, size_dynstr = 0;
+
+    fp = open(Library, O_RDONLY);
+    if (fp == -1)
+        return gcvSTATUS_FALSE;
+
+    if (read(fp, &ehdr, sizeof(Elf32_Ehdr)) == 0)
+    {
+        close(fp);
+        return gcvSTATUS_FALSE;
+    }
+
+    if (ehdr.e_type != ET_DYN)
+    {
+        close(fp);
+        return gcvSTATUS_FALSE;
+    }
+
+    if (lseek(fp, 0, SEEK_END) > 1024 * 1024 * 10)
+    {
+        close(fp);
+        return gcvSTATUS_SKIP;
+    }
+
+    lseek(fp, ehdr.e_shoff + ehdr.e_shstrndx * 40, SEEK_SET);
+    if (read(fp, &shdr, ehdr.e_shentsize) == 0)
+    {
+        close(fp);
+        return gcvSTATUS_FALSE;
+    }
+
+    lseek(fp, (unsigned int)shdr.sh_offset, SEEK_SET);
+    if (read(fp, secNameTab, shdr.sh_size) == 0)
+    {
+        close(fp);
+        return gcvSTATUS_FALSE;
+    }
+
+    lseek(fp, ehdr.e_shoff, SEEK_SET);
+    for (i = 0; i <  ehdr.e_shnum; i++)
+    {
+        if (read(fp, &shdr, (ssize_t)ehdr.e_shentsize) == 0)
+        {
+            close(fp);
+            return gcvSTATUS_FALSE;
+        }
+
+        if (strcmp(secNameTab + shdr.sh_name, ".dynsym") == 0)
+        {
+            offset_dynsym = (unsigned int)shdr.sh_offset;
+            size_dynsym = (int)(shdr.sh_size / shdr.sh_entsize);
+        }
+        else if(strcmp(secNameTab + shdr.sh_name, ".dynstr") == 0)
+        {
+            offset_dynstr = (unsigned int)shdr.sh_offset;
+            size_dynstr = (unsigned int)shdr.sh_size;
+        }
+    }
+
+    if (size_dynstr == 0)
+    {
+        close(fp);
+        return gcvSTATUS_FALSE;
+    }
+    else
+        symNameTab = (char *)malloc(size_dynstr);
+
+    if ((lseek(fp, (off_t)offset_dynstr, SEEK_SET) != (off_t)offset_dynstr) || (offset_dynstr == 0))
+    {
+        free(symNameTab);
+        symNameTab = gcvNULL;
+        close(fp);
+        return gcvSTATUS_FALSE;
+    }
+    if (read(fp, symNameTab, (size_t)(size_dynstr)) == 0)
+    {
+        free(symNameTab);
+        symNameTab = gcvNULL;
+        close(fp);
+        return gcvSTATUS_FALSE;
+    }
+
+    if (size_dynsym > 8 * 1000)
+    {
+        free(symNameTab);
+        symNameTab = gcvNULL;
+        close(fp);
+        return gcvSTATUS_SKIP;
+    }
+
+    lseek(fp, (off_t)offset_dynsym, SEEK_SET);
+    for (i = 0; i < size_dynsym; i ++)
+    {
+        if (read(fp, &sym, (size_t)16) > 0)
+        {
+            for (j = 0; j < 10 && Symbols.symList[j]; j ++ )
+            {
+                gctCHAR *p, buffers[1024];
+                p = buffers;
+                buffers[0]='\0';
+                strcat(buffers, Symbols.symList[j]);
+
+                while (*p)
+                {
+                    *p = ~(*p);
+                    p++;
+                }
+
+                if (strcmp(symNameTab + sym.st_name, buffers) == 0)
+                    match++;
+            }
+
+            if (match >= j)
+            {
+                free(symNameTab);
+                symNameTab = gcvNULL;
+                close(fp);
+                return gcvSTATUS_TRUE;
+            }
+        }
+        else
+        {
+            status = gcvSTATUS_FALSE;
+            break;
+        }
+    }
+
+    if (symNameTab != gcvNULL)
+    {
+        free(symNameTab);
+        symNameTab = gcvNULL;
+    }
+
+    close(fp);
+
+    if (gcmIS_ERROR(status))
+    {
+        status = gcvSTATUS_FALSE;
+    }
+    return status;
+}
+
+gceSTATUS
+gcoOS_DetectProgrameByEncryptedSymbols(
+    IN gcoOS_SymbolsList Symbols
+    )
+{
+    gceSTATUS status = gcvSTATUS_FALSE;
+
+    /* Detect shared library path. */
+    char path[256] = "/data/data/";
+    char * s = NULL, * f = NULL;
+    ssize_t size;
+
+    s = path + strlen(path);
+
+    /* Open cmdline file. */
+    int fd = open("/proc/self/cmdline", O_RDONLY);
+
+    if (fd < 0)
+    {
+        gcmPRINT("open /proc/self/cmdline failed");
+        return gcvSTATUS_FALSE;
+    }
+
+    /* Connect cmdline string to path. */
+    size = read(fd, s, 64);
+    close(fd);
+
+    if (size < 0)
+    {
+        gcmPRINT("read /proc/self/cmdline failed");
+        return gcvSTATUS_FALSE;
+    }
+
+    f = strstr(s, ":");
+    size = (f != NULL) ? (f - s) : size;
+
+    s[size] = '\0';
+
+    /* Connect /lib. */
+    strcat(path, "/lib");
+
+    /* Open shared library path. */
+    DIR * dir = opendir(path);
+
+    if (!dir)
+    {
+        return gcvSTATUS_FALSE;
+    }
+
+    //const char * found = NULL;
+    struct dirent * dp;
+    int count = 0;
+
+    while ((dp = readdir(dir)) != NULL)
+    {
+        if (dp->d_type == DT_REG && ++count > 8)
+        {
+            status = gcvSTATUS_SKIP;
+            goto OnError;
+        }
+    }
+    rewinddir(dir);
+
+    while ((dp = readdir(dir)) != NULL)
+    {
+        /* Only test regular file. */
+        if (dp->d_type == DT_REG)
+        {
+            char buf[256];
+
+            snprintf(buf, 256, "%s/%s", path, dp->d_name);
+
+            gcmONERROR(ParseSymbol(buf, Symbols));
+
+            if (status)
+                break;
+        }
+    }
+
+OnError:
+
+    closedir(dir);
+
+    if (gcmIS_ERROR(status))
+    {
+        status = gcvSTATUS_FALSE;
+    }
+
+    return status;
+}
+#endif
+
+#if gcdANDROID_NATIVE_FENCE_SYNC
+#include <sync/sync.h>
+
+gceSTATUS
+gcoOS_CreateSyncPoint(
+    IN gcoOS Os,
+    OUT gctSYNC_POINT * SyncPoint
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+
+    gcmHEADER_ARG("Os=0x%x", Os);
+
+    /* Call kernel API to dup signal to native fence fd. */
+    iface.command                       = gcvHAL_SYNC_POINT;
+    iface.u.SyncPoint.command           = gcvSYNC_POINT_CREATE;
+
+    gcmONERROR(gcoOS_DeviceControl(
+        gcvNULL,
+        IOCTL_GCHAL_INTERFACE,
+        &iface, gcmSIZEOF(iface),
+        &iface, gcmSIZEOF(iface)
+        ));
+
+    /* Return created sync point. */
+    *SyncPoint = gcmUINT64_TO_PTR(iface.u.SyncPoint.syncPoint);
+
+    /* Success. */
+    gcmFOOTER_ARG("*SyncPoint=%u", (gctUINT) iface.u.SyncPoint.syncPoint);
+    return gcvSTATUS_OK;
+
+OnError:
+    *SyncPoint = gcvNULL;
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gcoOS_DestroySyncPoint(
+    IN gcoOS Os,
+    IN gctSYNC_POINT SyncPoint
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+
+    gcmHEADER_ARG("Os=0x%x SyncPoint=%u", Os, (gctUINT) SyncPoint);
+
+    /* Call kernel API to dup signal to native fence fd. */
+    iface.command                       = gcvHAL_SYNC_POINT;
+    iface.u.SyncPoint.command           = gcvSYNC_POINT_DESTROY;
+    iface.u.SyncPoint.syncPoint         = gcmPTR_TO_UINT64(SyncPoint);
+
+    gcmONERROR(gcoOS_DeviceControl(
+        gcvNULL,
+        IOCTL_GCHAL_INTERFACE,
+        &iface, gcmSIZEOF(iface),
+        &iface, gcmSIZEOF(iface)
+        ));
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gcoOS_CreateNativeFence(
+    IN gcoOS Os,
+    IN gctSYNC_POINT SyncPoint,
+    OUT gctINT * FenceFD
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+
+    gcmHEADER_ARG("Os=0x%x SyncPoint=%d", Os, (gctUINT) SyncPoint);
+
+    /* Call kernel API to dup signal to native fence fd. */
+    iface.command                       = gcvHAL_CREATE_NATIVE_FENCE;
+    iface.u.CreateNativeFence.syncPoint = gcmPTR_TO_UINT64(SyncPoint);
+    iface.u.CreateNativeFence.fenceFD   = -1;
+
+    gcmONERROR(gcoOS_DeviceControl(
+        gcvNULL,
+        IOCTL_GCHAL_INTERFACE,
+        &iface, gcmSIZEOF(iface),
+        &iface, gcmSIZEOF(iface)
+        ));
+
+    /* Return fence fd. */
+    *FenceFD = iface.u.CreateNativeFence.fenceFD;
+
+    /* Success. */
+    gcmFOOTER_ARG("*FenceFD=%d", iface.u.CreateNativeFence.fenceFD);
+    return gcvSTATUS_OK;
+
+OnError:
+    *FenceFD = -1;
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gcoOS_WaitNativeFence(
+    IN gcoOS Os,
+    IN gctINT FenceFD,
+    IN gctUINT32 Timeout
+    )
+{
+    int err;
+    int wait;
+    gceSTATUS status;
+
+    gcmASSERT(FenceFD != -1);
+    gcmHEADER_ARG("Os=0x%x FenceFD=%d Timeout=%d", Os, FenceFD, Timeout);
+
+    wait = (Timeout == gcvINFINITE) ? -1
+         : (int) Timeout;
+
+    /* err = ioctl(FenceFD, SYNC_IOC_WAIT, &wait); */
+    err = sync_wait(FenceFD, wait);
+
+    switch (err)
+    {
+    case 0:
+        status = gcvSTATUS_OK;
+        break;
+
+    case -1:
+        /*
+         * libc ioctl:
+         * On error, -1 is returned, and errno is set appropriately.
+         * 'errno' is positive.
+         */
+        if (errno == ETIME)
+        {
+            status = gcvSTATUS_TIMEOUT;
+            break;
+        }
+
+    default:
+        status = gcvSTATUS_GENERIC_IO;
+        break;
+    }
+
+    gcmFOOTER_ARG("status=%d", status);
+    return status;
+}
+#endif
+
+gceSTATUS
+gcoOS_CPUPhysicalToGPUPhysical(
+    IN gctUINT32 CPUPhysical,
+    OUT gctUINT32_PTR GPUPhysical
+    )
+{
+    *GPUPhysical = CPUPhysical;
+    return gcvSTATUS_OK;
+}
+
+void
+gcoOS_RecordAllocation(void)
+{
+#if gcdGC355_MEM_PRINT
+    gcoOS os;
+    if (gcPLS.os != gcvNULL)
+    {
+        os = gcPLS.os;
+
+        os->oneSize = 0;
+        os->oneRecording = 1;
+    }
+#endif
+}
+
+gctINT32
+gcoOS_EndRecordAllocation(void)
+{
+    gctINT32   result = 0;
+#if gcdGC355_MEM_PRINT
+    gcoOS os;
+
+    if (gcPLS.os != gcvNULL)
+    {
+        os = gcPLS.os;
+
+        if (os->oneRecording == 1)
+        {
+            result = os->oneSize;
+
+            os->oneSize = 0;
+            os->oneRecording = 0;
+        }
+    }
+
+#endif
+    return result;
+}
+
+void
+gcoOS_AddRecordAllocation(gctSIZE_T Size)
+{
+#if gcdGC355_MEM_PRINT
+    gcoOS os;
+
+    if (gcPLS.os != gcvNULL)
+    {
+        os = gcPLS.os;
+
+        if (os->oneRecording == 1)
+        {
+            os->oneSize += (gctINT32)Size;
+        }
+    }
+#endif
+}

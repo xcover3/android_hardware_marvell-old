@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -9,10 +9,6 @@
 *    without the express written permission of Vivante Corporation.
 *
 *****************************************************************************/
-
-
-
-
 
 
 #ifndef __gc_hal_driver_vg_h_
@@ -52,37 +48,37 @@ typedef struct _gcsCOMMAND_BUFFER_INFO
 
     /* Alignment and mask for the buffer address. */
     gctUINT                     addressMask;
-    gctSIZE_T                   addressAlignment;
+    gctUINT32                    addressAlignment;
 
     /* Alignment for each command. */
-    gctSIZE_T                   commandAlignment;
+    gctUINT32                   commandAlignment;
 
     /* Number of bytes required by the STATE command. */
-    gctSIZE_T                   stateCommandSize;
+    gctUINT32                   stateCommandSize;
 
     /* Number of bytes required by the RESTART command. */
-    gctSIZE_T                   restartCommandSize;
+    gctUINT32                   restartCommandSize;
 
     /* Number of bytes required by the FETCH command. */
-    gctSIZE_T                   fetchCommandSize;
+    gctUINT32                   fetchCommandSize;
 
     /* Number of bytes required by the CALL command. */
-    gctSIZE_T                   callCommandSize;
+    gctUINT32                   callCommandSize;
 
     /* Number of bytes required by the RETURN command. */
-    gctSIZE_T                   returnCommandSize;
+    gctUINT32                   returnCommandSize;
 
     /* Number of bytes required by the EVENT command. */
-    gctSIZE_T                   eventCommandSize;
+    gctUINT32                   eventCommandSize;
 
     /* Number of bytes required by the END command. */
-    gctSIZE_T                   endCommandSize;
+    gctUINT32                   endCommandSize;
 
     /* Number of bytes reserved at the tail of a static command buffer. */
-    gctSIZE_T                   staticTailSize;
+    gctUINT32                   staticTailSize;
 
     /* Number of bytes reserved at the tail of a dynamic command buffer. */
-    gctSIZE_T                   dynamicTailSize;
+    gctUINT32                   dynamicTailSize;
 }
 gcsCOMMAND_BUFFER_INFO;
 
@@ -101,8 +97,7 @@ typedef enum _gceTASK
     gcvTASK_UNLOCK_VIDEO_MEMORY,
     gcvTASK_FREE_VIDEO_MEMORY,
     gcvTASK_FREE_CONTIGUOUS_MEMORY,
-    gcvTASK_UNMAP_USER_MEMORY,
-    gcvTASK_UNMAP_MEMORY
+    gcvTASK_UNMAP_USER_MEMORY
 }
 gceTASK;
 
@@ -207,7 +202,7 @@ typedef struct _gcsTASK_UNLOCK_VIDEO_MEMORY
     IN gceTASK                  id;
 
     /* Allocated video memory. */
-    IN gcuVIDMEM_NODE_PTR       node;
+    IN gctUINT64                node;
 }
 gcsTASK_UNLOCK_VIDEO_MEMORY;
 
@@ -218,7 +213,7 @@ typedef struct _gcsTASK_FREE_VIDEO_MEMORY
     IN gceTASK                  id;
 
     /* Allocated video memory. */
-    IN gcuVIDMEM_NODE_PTR       node;
+    IN gctUINT32                node;
 }
 gcsTASK_FREE_VIDEO_MEMORY;
 
@@ -259,23 +254,6 @@ typedef struct _gcsTASK_UNMAP_USER_MEMORY
     IN gctUINT32                address;
 }
 gcsTASK_UNMAP_USER_MEMORY;
-
-typedef struct _gcsTASK_UNMAP_MEMORY * gcsTASK_UNMAP_MEMORY_PTR;
-typedef struct _gcsTASK_UNMAP_MEMORY
-{
-    /* Task ID (gcvTASK_UNMAP_MEMORY). */
-    IN gceTASK                  id;
-
-    /* Physical memory address to unmap. */
-    IN gctPHYS_ADDR             physical;
-
-    /* Number of bytes in physical memory to unmap. */
-    IN gctSIZE_T                bytes;
-
-    /* Address of mapped memory to unmap. */
-    IN gctPOINTER               logical;
-}
-gcsTASK_UNMAP_MEMORY;
 
 #ifdef __cplusplus
 }

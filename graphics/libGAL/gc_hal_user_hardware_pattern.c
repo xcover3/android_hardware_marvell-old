@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -11,13 +11,12 @@
 *****************************************************************************/
 
 
-
-
 #include "gc_hal_user_hardware_precomp.h"
 
 /* Zone used for header/footer. */
 #define _GC_OBJ_ZONE    gcvZONE_HARDWARE
 
+#if gcdENABLE_2D
 /*******************************************************************************
 **
 **  gcoHARDWARE_LoadSolidColorPattern
@@ -92,9 +91,19 @@ gceSTATUS gcoHARDWARE_LoadSolidColorPattern(
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Hardware, gcvOBJ_HARDWARE);
 
+    if (Mask && Hardware->features[gcvFEATURE_2D_NO_COLORBRUSH_INDEX8])
+    {
+        gcmONERROR(gcvSTATUS_NOT_SUPPORTED);
+    }
+
     if (Hardware->hw2DEngine && !Hardware->sw2DEngine)
     {
         gctUINT32 config;
+
+        if (Hardware->bigEndian)
+        {
+            Mask = (Mask << 32) | (Mask >> 32);
+        }
 
         /* LoadState(AQDE_PATTERN_MASK, 2), Mask. */
         gcmONERROR(gcoHARDWARE_Load2DState(
@@ -102,7 +111,7 @@ gceSTATUS gcoHARDWARE_LoadSolidColorPattern(
             0x01248, 2, &Mask
             ));
 
-        if (!ColorConvert && Hardware->hw2DPE20)
+        if (!ColorConvert && Hardware->features[gcvFEATURE_2DPE20])
         {
             /* Convert color to ARGB8 if it was specified in target format. */
             gcmONERROR(gcoHARDWARE_ColorConvertToARGB8(
@@ -237,7 +246,7 @@ gceSTATUS gcoHARDWARE_LoadMonochromePattern(
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Hardware, gcvOBJ_HARDWARE);
 
-    if (Hardware->hw2DNoIndex8_Brush)
+    if (Hardware->features[gcvFEATURE_2D_NO_COLORBRUSH_INDEX8])
     {
         gcmONERROR(gcvSTATUS_NOT_SUPPORTED);
     }
@@ -254,7 +263,7 @@ gceSTATUS gcoHARDWARE_LoadMonochromePattern(
         data[2] = (gctUINT32) (Mask & 0xFFFFFFFF);
         data[3] = (gctUINT32) (Mask >> 32);
 
-        if (!ColorConvert && Hardware->hw2DPE20)
+        if (!ColorConvert && Hardware->features[gcvFEATURE_2DPE20])
         {
             /* Convert colors to ARGB8 if they were specified in target format. */
             gcmONERROR(gcoHARDWARE_ColorConvertToARGB8(
@@ -386,7 +395,7 @@ gceSTATUS gcoHARDWARE_LoadColorPattern(
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Hardware, gcvOBJ_HARDWARE);
 
-    if (Hardware->hw2DNoIndex8_Brush)
+    if (Hardware->features[gcvFEATURE_2D_NO_COLORBRUSH_INDEX8])
     {
         gcmONERROR(gcvSTATUS_NOT_SUPPORTED);
     }
@@ -394,11 +403,17 @@ gceSTATUS gcoHARDWARE_LoadColorPattern(
     if (Hardware->hw2DEngine && !Hardware->sw2DEngine)
     {
         gctUINT32 format, swizzle, isYUVformat, config;
+        gctUINT32 reset[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 
         /* Convert the format. */
         gcmONERROR(gcoHARDWARE_TranslatePatternFormat(
             Hardware, Format, &format, &swizzle, &isYUVformat
             ));
+
+        if (Hardware->bigEndian)
+        {
+            Mask = (Mask << 32) | (Mask >> 32);
+        }
 
         /* LoadState(AQDE_PATTERN_MASK_LOW, 2), Mask. */
         gcmONERROR(gcoHARDWARE_Load2DState(
@@ -411,6 +426,9 @@ gceSTATUS gcoHARDWARE_LoadColorPattern(
             Hardware,
             0x01238, Address
             ));
+
+        /* Dump the memory. */
+        gcmDUMP_2D_SURFACE(gcvTRUE, Address);
 
         /* Setup pattern configuration. */
         config
@@ -441,11 +459,75 @@ gceSTATUS gcoHARDWARE_LoadColorPattern(
             }
         }
 
+        gcmONERROR(gcoHARDWARE_Load2DState32(
+                Hardware,
+                0x0380C,
+                ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 3:3) - (0 ? 3:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 3:3) - (0 ? 3:3) + 1))))))) << (0 ? 3:3))) | (((gctUINT32) (0x1 & ((gctUINT32) ((((1 ? 3:3) - (0 ? 3:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 3:3) - (0 ? 3:3) + 1))))))) << (0 ? 3:3)))));
+
+        gcmONERROR(gcoHARDWARE_Load2DState(
+            Hardware,
+            0x0120C,
+            1,
+            reset
+            ));
+
+        gcmONERROR(gcoHARDWARE_Load2DState(
+            Hardware,
+            0x12830,
+            4,
+            reset
+            ));
+
+        gcmONERROR(gcoHARDWARE_Load2DState(
+            Hardware,
+            0x12A60,
+            8,
+            reset
+            ));
+
+        reset[0] = reset[1] =reset[2] =reset[3] =
+        reset[4] = reset[5] =reset[6] =reset[7] = 0xFFFE1000;
+        gcmONERROR(gcoHARDWARE_Load2DState(
+            Hardware,
+            0x01300,
+            1,
+            reset
+            ));
+
+        gcmONERROR(gcoHARDWARE_Load2DState(
+            Hardware,
+            0x12960,
+            4,
+            reset
+            ));
+
+        gcmONERROR(gcoHARDWARE_Load2DState(
+            Hardware,
+            0x12CC0,
+            8,
+            reset
+            ));
+
+        gcmONERROR(gcoHARDWARE_Load2DState32(
+                Hardware,
+                0x0132C,
+                0xFFF0FFFF));
+
+        gcmONERROR(gcoHARDWARE_Load2DState32(
+                Hardware,
+                0x0380C,
+                ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 3:3) - (0 ? 3:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 3:3) - (0 ? 3:3) + 1))))))) << (0 ? 3:3))) | (((gctUINT32) (0x1 & ((gctUINT32) ((((1 ? 3:3) - (0 ? 3:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 3:3) - (0 ? 3:3) + 1))))))) << (0 ? 3:3)))));
+
         /* LoadState(AQDE_PATTERN_CONFIG, 1), cofig. */
         gcmONERROR(gcoHARDWARE_Load2DState32(
             Hardware,
             0x0123C, config
             ));
+
+        gcmONERROR(gcoHARDWARE_Load2DState32(
+                Hardware,
+                0x0380C,
+                ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 3:3) - (0 ? 3:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 3:3) - (0 ? 3:3) + 1))))))) << (0 ? 3:3))) | (((gctUINT32) (0x1 & ((gctUINT32) ((((1 ? 3:3) - (0 ? 3:3) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 3:3) - (0 ? 3:3) + 1))))))) << (0 ? 3:3)))));
     }
     else
     {
@@ -565,4 +647,5 @@ gceSTATUS gcoHARDWARE_TranslatePatternTransparency(
     gcmFOOTER_ARG("*HwValue=%d", *HwValue);
     return gcvSTATUS_OK;
 }
+#endif  /* gcdENABLE_2D */
 

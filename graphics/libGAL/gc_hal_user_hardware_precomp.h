@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -11,15 +11,15 @@
 *****************************************************************************/
 
 
-
-
 #ifndef __gc_hal_user_hardware_precomp_h_
 #define __gc_hal_user_hardware_precomp_h_
 
 #include "gc_hal_user.h"
 #include "gc_hal_user_hardware.h"
+#if gcdENABLE_THIRD_PARTY_OPERATION
+#include "gc_hal_user_hardware_thirdparty.h"
+#endif
 
-/* Workaround GCC optimizer's bug */
 #if defined(__GNUC__) && !gcmIS_DEBUG(gcdDEBUG_TRACE)
     gcmINLINE static void
     __do_nothing(

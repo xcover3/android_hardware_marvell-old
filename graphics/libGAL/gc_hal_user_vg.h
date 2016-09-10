@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -9,10 +9,6 @@
 *    without the express written permission of Vivante Corporation.
 *
 *****************************************************************************/
-
-
-
-
 
 
 #ifndef _gc_hal_user_vg_h__
@@ -36,7 +32,7 @@ typedef struct _gcsTESSELATION * gcsTESSELATION_PTR;
 typedef struct _gcsTESSELATION
 {
     /* Tesselation buffer memory node. */
-    gcuVIDMEM_NODE_PTR          node;
+    gctUINT32                   node;
 
     /* Actual allocated size. */
     gctSIZE_T                   allocatedSize;
@@ -57,6 +53,12 @@ typedef struct _gcsTESSELATION
     gctUINT                     clearSize;
 #if gcdENABLE_SHARE_TESSELLATION
     gctINT                      reference;
+#endif
+
+#if gcdMOVG
+    /* Customizable TS buffer size. */
+    gctUINT                     width;
+    gctUINT                     height;
 #endif
 }
 gcsTESSELATION;
@@ -126,9 +128,78 @@ struct _gcoVG
 
     /** Fill color. */
     gctUINT32                   tileFillColor;
+
+   /* Flag for Get Apis' times*/
+#if GC355_PROFILER
+    gctBOOL                     enableGetAPITimes;
+    gctUINT64                   appStartTime;
+    gctUINT                     TreeDepth;
+    gctUINT                     saveLayerTreeDepth;
+    gctUINT                     varTreeDepth;
+    gctSTRING                   pathName;
+    gctFILE                     apiTimeFile;
+    gcsPROFILERFUNCNODE_PTR     funcDList;
+#endif
+
+#if gcdGC355_MEM_PRINT
+#ifdef LINUX
+    gctINT                      tsMaxMemSize;
+    gctINT                      tsCurMemSize;
+#endif
+#endif
+
 };
 
+#if GC355_PROFILER
+    gctUINT64 hal_startTimeusec;
+    gctUINT64 hal_endTimeusec;
+    gctUINT64 hal_deltaValue;
+    gctUINT64 hal_elapsedTime;
+    gcsPROFILERFUNCData_PTR elem;
+#define vghalENTERSUBAPI(FunctionName) \
+    do \
+    { \
+    \
+        if(Vg && Vg->enableGetAPITimes) \
+        { \
+            Vg->saveLayerTreeDepth = Vg->varTreeDepth; \
+            if ((Vg->varTreeDepth > 0) && !(Vg->varTreeDepth & 0x80000000)) \
+            { \
+                gcoOS_GetTime(&hal_startTimeusec); \
+                elem = (gcsPROFILERFUNCData_PTR)malloc(sizeof(gcsPROFILERFUNCData)); \
+                elem->funcName = #FunctionName; \
+                elem->Tag = Vg->pathName; \
+                elem->TreeDepth = Vg->TreeDepth; \
+                elem->saveLayerTreeDepth = Vg->saveLayerTreeDepth; \
+                elem->varTreeDepth = Vg->varTreeDepth - 1; \
+                vgHALProfilerDLinklist_Insert(Vg->funcDList, vgHALProfilerDLinklist_GetLength(Vg->funcDList)+1, elem); \
+            } \
+            Vg->varTreeDepth = Vg->saveLayerTreeDepth - 1; \
+        } \
 
+#define vghalLEAVESUBAPI(FunctionName) \
+    } \
+    while (gcvFALSE); \
+    \
+    if((Vg != gcvNULL) && (Vg->enableGetAPITimes)) \
+    { \
+        gcoOS_GetTime(&hal_endTimeusec); \
+        hal_deltaValue = hal_endTimeusec - hal_startTimeusec; \
+        if ((Vg->saveLayerTreeDepth > 0) && !(Vg->varTreeDepth & 0x80000000)) \
+        { \
+            Vg->varTreeDepth = Vg->saveLayerTreeDepth; \
+            hal_elapsedTime = (gctINT32)(hal_endTimeusec - Vg->appStartTime); \
+            vgHALProfilerDLinklist_SearchAndFill(Vg->funcDList, #FunctionName, hal_elapsedTime, hal_deltaValue); \
+        \
+        } \
+        if ((Vg->TreeDepth != 0) && (Vg->TreeDepth != Vg->saveLayerTreeDepth)) \
+        { \
+            Vg->saveLayerTreeDepth ++; \
+            Vg->varTreeDepth = Vg->saveLayerTreeDepth - 1; \
+        } \
+    }
+
+#endif
 /* Construct a new gcoVGHARDWARE object. */
 gceSTATUS
 gcoVGHARDWARE_Construct(
@@ -181,6 +252,12 @@ gcoVGHARDWARE_FlushPipe(
     IN gcoVGHARDWARE Hardware
     );
 
+/* Flush for auto-commit usage when command buffer to be full. */
+gceSTATUS
+gcoVGHARDWARE_FlushAuto(
+    IN gcoVGHARDWARE Hardware
+    );
+
 /* Send semaphore down the current pipe. */
 gceSTATUS
 gcoVGHARDWARE_Semaphore(
@@ -189,7 +266,8 @@ gcoVGHARDWARE_Semaphore(
     IN gceBLOCK From,
     IN gceBLOCK To,
     IN gceHOW How,
-    OUT gctSIZE_T * Bytes
+    OUT gctUINT32 * Bytes,
+    IN gctBOOL Forced
     );
 
 /* Update all 32 bits of a single state in the context. */
@@ -205,7 +283,8 @@ gceSTATUS
 gcoVGHARDWARE_SetState(
     IN gcoVGHARDWARE Hardware,
     IN gctUINT32 Address,
-    IN gctUINT32 Data
+    IN gctUINT32 Data,
+    IN gctBOOL   FromBuffer
     );
 
 /* Set all 32 bits of a specified number of states. */
@@ -213,7 +292,15 @@ gceSTATUS
 gcoVGHARDWARE_SetStates(
     IN gcoVGHARDWARE Hardware,
     IN gctUINT32 Address,
-    IN gctSIZE_T Count,
+    IN gctUINT32 Count,
+    IN gctPOINTER Data
+    );
+
+/* Generate data load command. */
+gceSTATUS
+gcoVGHARDWARE_SetData(
+    IN gcoVGHARDWARE Hardware,
+    IN gctUINT32 Count,
     IN gctPOINTER Data
     );
 
@@ -369,7 +456,7 @@ gcoVGHARDWARE_ReserveTask(
     IN gcoVGHARDWARE Hardware,
     IN gceBLOCK Block,
     IN gctUINT TaskCount,
-    IN gctSIZE_T Bytes,
+    IN gctUINT32 Bytes,
     OUT gctPOINTER * Memory
     );
 
@@ -401,7 +488,7 @@ gcoVGHARDWARE_AllocateVideoMemory(
     IN gceSURF_TYPE Type,
     IN gceSURF_FORMAT Format,
     IN gcePOOL Pool,
-    OUT gcuVIDMEM_NODE_PTR * Node,
+    OUT gctUINT32 * Node,
     OUT gctUINT32 * Address,
     OUT gctPOINTER * Memory,
     OUT gcePOOL * ActualPool
@@ -414,7 +501,8 @@ gcoVGHARDWARE_AllocateLinearVideoMemory(
     IN gctUINT Size,
     IN gctUINT Alignment,
     IN gcePOOL Pool,
-    OUT gcuVIDMEM_NODE_PTR * Node,
+    IN gctUINT32 Flag,
+    OUT gctUINT32 * Node,
     OUT gctUINT32 * Address,
     OUT gctPOINTER * Memory
     );
@@ -423,15 +511,24 @@ gcoVGHARDWARE_AllocateLinearVideoMemory(
 gceSTATUS
 gcoVGHARDWARE_FreeVideoMemory(
     IN gcoVGHARDWARE Hardware,
-    IN gcuVIDMEM_NODE_PTR Node
+    IN gctUINT32 Node
     );
 
 /* Schedule to free linear video memory allocated. */
 gceSTATUS
 gcoVGHARDWARE_ScheduleVideoMemory(
     IN gcoVGHARDWARE Hardware,
-    IN gcuVIDMEM_NODE_PTR Node,
+    IN gctUINT32 Node,
     IN gctBOOL Unlock
+    );
+
+gceSTATUS
+gcoVGHARDWARE_ScheduleUnmapUserMemory(
+    IN gcoVGHARDWARE Hardware,
+    IN gctPOINTER Info,
+    IN gctSIZE_T Size,
+    IN gctUINT32 Address,
+    IN gctPOINTER Memory
     );
 
 /* Allocate a temporary surface with specified parameters. */
@@ -491,7 +588,7 @@ gceSTATUS
 gcoVGHARDWARE_WriteBuffer(
     IN gcoVGHARDWARE Hardware,
     IN gctCONST_POINTER Data,
-    IN gctSIZE_T Bytes,
+    IN gctUINT32 Bytes,
     IN gctBOOL Aligned
     );
 
@@ -550,7 +647,7 @@ gcoVGHARDWARE_DataCommand(
     IN gcoVGHARDWARE Hardware,
     IN gctPOINTER Logical,
     IN gctSIZE_T Count,
-    IN OUT gctSIZE_T * Bytes
+    IN OUT gctUINT32 * Bytes
     );
 
 /* Form a RESTART command at the specified location in the command buffer. */
@@ -596,7 +693,7 @@ gceSTATUS
 gcoVGHARDWARE_EndCommand(
     IN gcoVGHARDWARE Hardware,
     IN gctPOINTER Logical,
-    IN gctINT32 InterruptId,
+    IN gctUINT InterruptId,
     IN OUT gctSIZE_T * Bytes
     );
 
@@ -690,7 +787,7 @@ gceSTATUS
 gcoVGHARDWARE_ProgramControl(
     gcoVGHARDWARE Hardware,
     gctPOINTER Logical,
-    gctSIZE_T * Bytes
+    gctUINT32 * Bytes
     );
 
 gceSTATUS
@@ -823,6 +920,12 @@ gceSTATUS
 gcoVGHARDWARE_SetTessellation(
     IN gcoVGHARDWARE Hardware,
     IN gctBOOL SoftwareTesselation,
+#if gcdMOVG
+    IN gctINT  PathX,
+    IN gctINT  PathY,
+    IN gctINT  TsX,
+    IN gctINT  TsY,
+#endif
     IN gctUINT16 TargetWidth,
     IN gctUINT16 TargetHeight,
     IN gctFLOAT Bias,
@@ -856,7 +959,8 @@ gcoVGHARDWARE_DrawImage(
     IN gcsVG_RECT_PTR SrcRect,
     IN gcsVG_RECT_PTR TrgRect,
     IN gceIMAGE_FILTER Filter,
-    IN gctBOOL Mask
+    IN gctBOOL Mask,
+    IN gctBOOL isDrawImage
     );
 
 gceSTATUS
@@ -870,6 +974,18 @@ gcoVGHARDWARE_TesselateImage(
     IN gctFLOAT UserToSurface[9],
     IN gctFLOAT SurfaceToImage[9],
     IN gcsTESSELATION_PTR TessellationBuffer
+    );
+
+gceSTATUS
+gcoVGHARDWARE_DrawSurfaceToImage(
+    IN gcoVGHARDWARE Hardware,
+    IN const gcsSURF_INFO_PTR Image,
+    IN const gcsVG_RECT_PTR SrcRectangle,
+    IN const gcsVG_RECT_PTR DstRectangle,
+    IN gceIMAGE_FILTER Filter,
+    IN gctBOOL Mask,
+    IN const gctFLOAT SurfaceToImage[9],
+    IN gctBOOL FirstTime
     );
 
 gceSTATUS
@@ -979,7 +1095,7 @@ gcoVGBUFFER_Construct(
     IN gcoHAL Hal,
     IN gcoVGHARDWARE Hardware,
     IN gcsVGCONTEXT_PTR Context,
-    IN gctSIZE_T CommandBufferSize,
+    IN gctUINT32 CommandBufferSize,
     IN gctUINT TaskBufferGranulatiry,
     IN gctUINT QueueEntryCount,
     OUT gcoVGBUFFER * Buffer
@@ -1031,7 +1147,7 @@ gcoVGBUFFER_MarkRestart(
     IN gcoVGBUFFER Buffer,
     IN gctPOINTER Logical,
     IN gctBOOL Begin,
-    OUT gctSIZE_T * Bytes
+    OUT gctUINT32 * Bytes
     );
 
 /* Return the current address inside the current command buffe. */
@@ -1047,16 +1163,18 @@ gceSTATUS
 gcoVGBUFFER_EnsureSpace(
     IN gcoVGBUFFER Buffer,
     IN gctSIZE_T Bytes,
-    IN gctBOOL Aligned
+    IN gctBOOL Aligned,
+    IN gctBOOL FromBuffer
     );
 
 /* Reserve space in a command buffer. */
 gceSTATUS
 gcoVGBUFFER_Reserve(
     IN gcoVGBUFFER Buffer,
-    IN gctSIZE_T Bytes,
+    IN gctUINT32 Bytes,
     IN gctBOOL Aligned,
-    OUT gctPOINTER * Memory
+    OUT gctPOINTER * Memory,
+    IN gctBOOL FromBuffer
     );
 
 /* Write data into the command buffer. */
@@ -1064,7 +1182,7 @@ gceSTATUS
 gcoVGBUFFER_Write(
     IN gcoVGBUFFER Buffer,
     IN gctCONST_POINTER Data,
-    IN gctSIZE_T Bytes,
+    IN gctUINT32 Bytes,
     IN gctBOOL Aligned
     );
 
@@ -1090,7 +1208,7 @@ gcoVGBUFFER_AppendBuffer(
     IN gcoVGBUFFER Buffer,
     IN gctPOINTER Logical,
     IN gcsCMDBUFFER_PTR CommandBuffer,
-    OUT gctSIZE_T * Bytes
+    OUT gctUINT32 * Bytes
     );
 
 /* Reserve space for a task. */
@@ -1099,7 +1217,7 @@ gcoVGBUFFER_ReserveTask(
     IN gcoVGBUFFER Buffer,
     IN gceBLOCK Block,
     IN gctUINT TaskCount,
-    IN gctSIZE_T Bytes,
+    IN gctUINT32 Bytes,
     OUT gctPOINTER * Memory
     );
 

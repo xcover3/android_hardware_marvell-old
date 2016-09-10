@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -11,141 +11,19 @@
 *****************************************************************************/
 
 
-
-
 /*
  * gco3D object for user HAL layers.
  */
 
 #include "gc_hal_user_precomp.h"
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
 
 #if gcdNULL_DRIVER < 2
 
 /* Zone used for header/footer. */
 #define _GC_OBJ_ZONE    gcvZONE_3D
 
-/******************************************************************************\
-********************************** Structures **********************************
-\******************************************************************************/
-
-/* gco3D object. */
-struct _gco3D
-{
-    /* Object. */
-    gcsOBJECT                   object;
-
-    /* Render target. */
-    gcoSURF                     target;
-    gctPOINTER                  targetMemory;
-
-    /* Depth buffer. */
-    gcoSURF                     depth;
-    gctPOINTER                  depthMemory;
-
-    /* Clear color. */
-    gctBOOL                     clearColorDirty;
-    gceVALUE_TYPE               clearColorType;
-    gcuVALUE                    clearColorRed;
-    gcuVALUE                    clearColorGreen;
-    gcuVALUE                    clearColorBlue;
-    gcuVALUE                    clearColorAlpha;
-
-    /* Clear depth value. */
-    gctBOOL                     clearDepthDirty;
-    gceVALUE_TYPE               clearDepthType;
-    gcuVALUE                    clearDepth;
-
-    /* Clear stencil value. */
-    gctBOOL                     clearStencilDirty;
-    gctUINT                     clearStencil;
-
-    /* Converted clear values. */
-    gctUINT32                   hwClearColor;
-    gceSURF_FORMAT              hwClearColorFormat;
-    gctUINT32                   hwClearVAA;
-    gctUINT8                    hwClearColorMask;
-    gctUINT32                   hwClearDepth;
-    gctUINT32                   hwClearHzDepth;
-    gctUINT8                    hwClearDepthMask;
-    gctUINT8                    hwClearStencilMask;
-    gceSURF_FORMAT              hwClearDepthFormat;
-
-    /* Buffer write enable mask. */
-    gctUINT8                    colorEnableMask;
-    gctBOOL                     depthEnableMask;
-    gctUINT8                    stencilEnableMask;
-
-    /* Depth mode. */
-    gceDEPTH_MODE               depthMode;
-
-    /* API type. */
-    gceAPI                      apiType;
-};
-
-
-/******************************************************************************\
-********************************* Support Code *********************************
-\******************************************************************************/
-
-/*******************************************************************************
-**
-**  _ConvertValue
-**
-**  Convert a value to a 32-bit color or depth value.
-**
-**  INPUT:
-**
-**      gceVALUE_TYPE ValueType
-**          Type of value.
-**
-**      gcuVALUE Value
-**          Value data.
-**
-**      gctUINT Bits
-**          Number of bits used in output.
-**
-**  OUTPUT:
-**
-**      Nothing.
-**
-**  RETURNS:
-**
-**      gctUINT32
-**          Converted or casted value.
-*/
-static gctUINT32
-_ConvertValue(
-    IN gceVALUE_TYPE ValueType,
-    IN gcuVALUE Value,
-    IN gctUINT Bits
-    )
-{
-    /* Setup maximum value. */
-    gctUINT maxValue = (Bits == 32) ? ~0 : ((1 << Bits) - 1);
-    gcmASSERT(Bits <= 32);
-
-    /* Dispatch on value type. */
-    switch (ValueType)
-    {
-    case gcvVALUE_UINT:
-        /* Convert integer into color value. */
-        return (Bits > 8) ? 0 : (Value.uintValue >> (8 - Bits));
-
-    case gcvVALUE_FIXED:
-        /* Convert fixed point (0.0 - 1.0) into color value. */
-        return (gctUINT32) (((gctUINT64) maxValue * Value.fixedValue) >> 16);
-
-    case gcvVALUE_FLOAT:
-        /* Convert floating point (0.0 - 1.0) into color value. */
-        return gcoMATH_Float2UInt(gcoMATH_Multiply(gcoMATH_UInt2Float(maxValue),
-                                                   Value.floatValue));
-
-    default:
-        return 0;
-    }
-}
 
 /******************************************************************************\
 ********************************* gco3D API Code ********************************
@@ -191,8 +69,7 @@ gco3D_Construct(
     engine = pointer;
 
     /* Zero out entire object. */
-    gcmVERIFY_OK(
-        gcoOS_ZeroMemory(engine, gcmSIZEOF(struct _gco3D)));
+    gcoOS_ZeroMemory(engine, gcmSIZEOF(struct _gco3D));
 
     /* Initialize the gco3D object. */
     engine->object.type = gcvOBJ_3D;
@@ -205,9 +82,17 @@ gco3D_Construct(
     /* Set default API type. */
     engine->apiType = gcvAPI_OPENGL;
 
+    /* Set MRT tile status buffer support flag */
+    engine->mRTtileStatus = gcoHAL_IsFeatureAvailable(gcvNULL, gcvFEATURE_MRT_TILE_STATUS_BUFFER);
+
+    gcmONERROR(gcoHAL_SetHardwareType(gcvNULL, gcvHARDWARE_3D));
+
+    /* Construct hardware object for this engine */
+    gcmONERROR(gcoHARDWARE_Construct(Hal, gcvFALSE, &engine->hardware));
+    gcmONERROR(gcoHARDWARE_SelectPipe(engine->hardware, gcvPIPE_3D, gcvNULL));
+    gcmONERROR(gcoHARDWARE_InvalidateCache(engine->hardware, gcvTRUE));
     /* Initialize 3D hardware. */
-    gcmONERROR(
-        gcoHARDWARE_Initialize3D(gcvNULL));
+    gcmONERROR(gcoHARDWARE_Initialize3D(engine->hardware));
 
     /* Return pointer to the gco3D object. */
     *Engine = engine;
@@ -248,6 +133,7 @@ gco3D_Destroy(
     IN gco3D Engine
     )
 {
+    gctINT index;
     gcmHEADER_ARG("Engine=0x%x", Engine);
 
     /* Verify the arguments. */
@@ -255,6 +141,30 @@ gco3D_Destroy(
 
     /* Mark the gco3D object as unknown. */
     Engine->object.type = gcvOBJ_UNKNOWN;
+
+    /* Destroy referenced render target. */
+    for (index = 0; index < 4; index++)
+    {
+        if (Engine->mRT[index] != gcvNULL)
+        {
+            gcmVERIFY_OK(
+                gcoSURF_Unlock(Engine->mRT[index],
+                               Engine->mRTMemory[index]));
+
+            gcmVERIFY_OK(gcoSURF_Destroy(Engine->mRT[index]));
+        }
+    }
+
+    /* Destroy referenced render target. */
+    if (Engine->depth != gcvNULL)
+    {
+        gcmVERIFY_OK(gcoSURF_Unlock(Engine->depth, Engine->depthMemory));
+
+        gcmVERIFY_OK(gcoSURF_Destroy(Engine->depth));
+    }
+
+    /* Free Hardware Object */
+    gcmVERIFY_OK(gcoHARDWARE_Destroy(Engine->hardware, gcvFALSE));
 
     /* Free the gco3D object. */
     gcmVERIFY_OK(gcmOS_SAFE_FREE(gcvNULL, Engine));
@@ -297,11 +207,338 @@ gco3D_SetAPI(
     Engine->apiType = ApiType;
 
     /* Propagate to hardware. */
-    status = gcoHARDWARE_SetAPI(ApiType);
+    status = gcoHARDWARE_SetAPI(Engine->hardware, ApiType);
 
     gcmFOOTER();
     return status;
 }
+
+/*******************************************************************************
+**
+**  gco3D_GetAPI
+**
+**  Get 3D API type.
+**
+**  INPUT:
+**
+**      gcoHAL Hal
+**          Pointer to an gcoHAL object.
+**
+**  OUTPUT:
+**
+**      gceAPI * ApiType
+**          Pointer to a API type.
+*/
+gceSTATUS gco3D_GetAPI(
+    IN gco3D Engine,
+    OUT gceAPI * ApiType
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+
+    gcmHEADER_ARG("Engine=0x%x", Engine);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
+    /* Get the API. */
+    *ApiType = Engine->apiType;
+
+    gcmFOOTER();
+    return status;
+}
+
+
+gceSTATUS
+gco3D_SetPSOutputMapping(
+    IN gco3D Engine,
+    IN gctINT32 * psOutputMapping
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+
+    gcmHEADER_ARG("Engine=0x%x psOutputMapping=%d", Engine, psOutputMapping);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
+    gcmONERROR(
+       gcoHARDWARE_SetPSOutputMapping(Engine->hardware, psOutputMapping));
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+
+/*******************************************************************************
+**
+**  gco3D_SetTargetEx
+**
+**  Unified API to set the current render target used for future primitives.
+**
+**  INPUT:
+**
+**      gco3D Engine
+**          Pointer to an gco3D object.
+**
+**      gctUINT32 TargetIndex
+**          Base from 0
+**
+**      gcoSURF Surface
+**          Pointer to an gcoSURF object that becomes the new render target or
+**          gcvNULL to delete the current render target.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+
+gceSTATUS
+gco3D_SetTargetEx(
+    IN gco3D Engine,
+    IN gctUINT32 TargetIndex,
+    IN gcoSURF Surface,
+    IN gctUINT32 LayerIndex
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x TargetIndex=%d Surface=0x%x", Engine, TargetIndex, Surface);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
+    if (Surface != gcvNULL)
+    {
+        gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+    }
+
+    gcmASSERT(TargetIndex < gcdMAX_DRAW_BUFFERS);
+
+    /* Only process if different than current target. */
+    if (Engine->mRT[TargetIndex] != Surface)
+    {
+        /* Verify linear render target. */
+        if ((Surface != gcvNULL)
+        &&  (Surface->info.tiling == gcvLINEAR)
+        &&  (gcoHAL_IsFeatureAvailable(gcvNULL, gcvFEATURE_LINEAR_RENDER_TARGET)
+                != gcvSTATUS_TRUE)
+        )
+        {
+            gcmONERROR(gcvSTATUS_NOT_SUPPORTED);
+        }
+
+        /* Verify if target is properly aligned. */
+        if ((Surface != gcvNULL)
+        &&  Surface->resolvable
+        &&  (  (Surface->info.alignedWidth  & 15)
+            || (Surface->info.alignedHeight & 3)
+            )
+        )
+        {
+            gcmONERROR(gcvSTATUS_NOT_ALIGNED);
+        }
+
+        /* Unset previous target if any. */
+        if (Engine->mRT[TargetIndex] != gcvNULL)
+        {
+            /* Disable tile status for this surface with color slot0 */
+            gcmONERROR(
+                gcoSURF_DisableTileStatus(Engine->mRT[TargetIndex], gcvFALSE));
+
+            /* Disable tile status setting for MRT */
+            if (Engine->mRTtileStatus && (TargetIndex != 0))
+            {
+                gcmONERROR(
+                    gcoHARDWARE_DisableHardwareTileStatus(Engine->hardware,
+                                                          gcvTILESTATUS_COLOR,
+                                                          TargetIndex));
+            }
+            /* Sync between GPUs */
+#if gcdMULTI_GPU
+            gcmONERROR(
+                    gcoHARDWARE_MultiGPUSync(gcvNULL, gcvTRUE, gcvNULL));
+#endif
+            /* Unlock the current render target. */
+            gcmVERIFY_OK(
+                gcoSURF_Unlock(Engine->mRT[TargetIndex], Engine->mRTMemory[TargetIndex]));
+
+            /* Reset mapped memory pointer. */
+            Engine->mRTMemory[TargetIndex] = gcvNULL;
+
+            /* Dereference the surface. */
+            gcmONERROR(gcoSURF_Destroy(Engine->mRT[TargetIndex]));
+        }
+
+        /* Set new target. */
+        if (Surface == gcvNULL)
+        {
+            /* Reset current target. */
+            Engine->mRT[TargetIndex] = gcvNULL;
+
+            /* Invalidate target. */
+            gcmONERROR(
+                gcoHARDWARE_SetRenderTarget(Engine->hardware, TargetIndex, gcvNULL, 0));
+        }
+        else
+        {
+            gctPOINTER targetMemory[3] = {gcvNULL};
+
+            /* Set new render target. */
+            Engine->mRT[TargetIndex] = Surface;
+
+            /* Lock the surface. */
+            gcmONERROR(
+                gcoSURF_Lock(Surface, gcvNULL, targetMemory));
+
+            Engine->mRTMemory[TargetIndex] = targetMemory[0];
+
+            /* Program render target. */
+            gcmONERROR(
+                gcoHARDWARE_SetRenderTarget(Engine->hardware, TargetIndex, &Surface->info, LayerIndex));
+
+            /* Reference the surface. */
+            gcmONERROR(gcoSURF_ReferenceSurface(Surface));
+         }
+
+         if (Engine->mRTtileStatus && Surface)
+         {
+            gcmONERROR(gcoSURF_EnableTileStatusEx(Surface, TargetIndex));
+         }
+         else
+         {
+             if ((TargetIndex == 0) && Surface)
+             {
+                 /* Enable tile status. */
+                 gcmONERROR(
+                     gcoSURF_EnableTileStatus(Surface));
+             }
+         }
+    }
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+
+/*******************************************************************************
+**
+**  gco3D_UnsetTargetEx
+**
+**  Unified API which try to unset render target
+**
+**  INPUT:
+**
+**      gco3D Engine
+**          Pointer to an gco3D object.
+**
+**      gctUINT32 TargetIndex
+**          Base from 0
+**
+**      gcoSURF Surface
+**          Pointer to an gcoSURF object that will be unset if it's a current
+**          render target
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gco3D_UnsetTargetEx(
+    IN gco3D Engine,
+    IN gctUINT32 TargetIndex,
+    IN gcoSURF Surface
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x TargetIndex=%d Surface=0x%x ", Engine, TargetIndex, Surface);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+
+    gcmASSERT(TargetIndex < gcdMAX_DRAW_BUFFERS);
+
+    /* Only unset surface if it is the current render target. */
+    if (Engine->mRT[TargetIndex] == Surface)
+    {
+        gcmONERROR(gco3D_SetTargetEx(Engine, TargetIndex, gcvNULL, 0));
+    }
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+
+
+/*******************************************************************************
+**
+**  gco3D_SetTargetOffsetEx
+**
+**  Unified API to set render target offset
+**
+**  INPUT:
+**
+**      gco3D Engine
+**          Pointer to an gco3D object.
+**
+**      gctUINT32 targetIndex
+**          Base from 0
+**
+**      gctUINT32 offset
+**          offset inside the render target, useful for cubemap/array renderging
+**
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+
+gceSTATUS
+gco3D_SetTargetOffsetEx(
+    IN gco3D Engine,
+    IN gctUINT32 TargetIndex,
+    IN gctSIZE_T Offset
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gctUINT32 offset;
+
+    gcmHEADER_ARG("Engine=0x%x TargetIndex=%d Offset=0x%x", Engine, TargetIndex, Offset);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
+    gcmASSERT(TargetIndex < gcdMAX_DRAW_BUFFERS);
+
+    gcmSAFECASTSIZET(offset, Offset);
+
+    Engine->mRTOffset[TargetIndex] = offset;
+
+    gcmONERROR(
+       gcoHARDWARE_SetRenderTargetOffset(Engine->hardware, TargetIndex, offset));
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
 
 /*******************************************************************************
 **
@@ -328,89 +565,9 @@ gco3D_SetTarget(
     IN gcoSURF Surface
     )
 {
-    gceSTATUS status;
-
-    gcmHEADER_ARG("Engine=0x%x Surface=0x%x", Engine, Surface);
-
-    /* Verify the arguments. */
-    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
-
-    if (Surface != gcvNULL)
-    {
-        gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
-    }
-
-    /* Only process if different than current target. */
-    if (Engine->target != Surface)
-    {
-        /* Verify if target is properly aligned. */
-        if ((Surface != gcvNULL)
-        &&  Surface->resolvable
-        &&  (  (Surface->info.alignedWidth  & 15)
-            || (Surface->info.alignedHeight & 3)
-            )
-        )
-        {
-            gcmONERROR(gcvSTATUS_NOT_ALIGNED);
-        }
-
-        /* Unset previous target if any. */
-        if (Engine->target != gcvNULL)
-        {
-            /* Disable tile status. */
-            gcmONERROR(
-                gcoSURF_DisableTileStatus(Engine->target, gcvFALSE));
-
-            /* Unlock the current render target. */
-            gcmVERIFY_OK(
-                gcoSURF_Unlock(Engine->target, Engine->targetMemory));
-
-            /* Reset mapped memory pointer. */
-            Engine->targetMemory = gcvNULL;
-        }
-
-        /* Set new target. */
-        if (Surface == gcvNULL)
-        {
-            /* Reset current target. */
-            Engine->target = gcvNULL;
-
-            /* Invalidate target. */
-            gcmONERROR(
-                gcoHARDWARE_SetRenderTarget(gcvNULL));
-        }
-        else
-        {
-            gctPOINTER targetMemory[3] = {gcvNULL};
-
-            /* Set new render target. */
-            Engine->target = Surface;
-
-            /* Lock the surface. */
-            gcmONERROR(
-                gcoSURF_Lock(Surface, gcvNULL, targetMemory));
-
-            Engine->targetMemory = targetMemory[0];
-
-            /* Program render target. */
-            gcmONERROR(
-                gcoHARDWARE_SetRenderTarget(&Surface->info));
-
-            /* Enable tile status. */
-            gcmONERROR(
-                gcoSURF_EnableTileStatus(Surface));
-        }
-    }
-
-    /* Success. */
-    gcmFOOTER_NO();
-    return gcvSTATUS_OK;
-
-OnError:
-    /* Return the status. */
-    gcmFOOTER();
-    return status;
+    return gco3D_SetTargetEx(Engine, 0,Surface, 0);
 }
+
 
 gceSTATUS
 gco3D_UnsetTarget(
@@ -418,45 +575,36 @@ gco3D_UnsetTarget(
     IN gcoSURF Surface
     )
 {
-    gceSTATUS status;
+    return gco3D_UnsetTargetEx(Engine, 0, Surface);
+}
 
-    gcmHEADER_ARG("Engine=0x%x Surface=0x%x", Engine, Surface);
+
+gceSTATUS
+gco3D_SetDepthBufferOffset(
+    IN gco3D Engine,
+    IN gctSIZE_T Offset
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gctUINT32 offset;
+    gcmHEADER_ARG("Engine=0x%x depthOffset=0x%x", Engine, Offset);
 
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
-    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
 
-    /* Only unset surface if it is the current render target. */
-    if (Engine->target == Surface)
-    {
-        /* Disable tile status. */
-        gcmONERROR(
-            gcoSURF_DisableTileStatus(Surface, gcvFALSE));
+    gcmSAFECASTSIZET(offset, Offset);
 
-        /* Remove render target. */
-        gcmONERROR(
-            gcoHARDWARE_SetRenderTarget(gcvNULL));
+    Engine->depthOffset = offset;
 
-        /* Unlock the current render target. */
-        gcmONERROR(
-            gcoSURF_Unlock(Surface, Engine->targetMemory));
-
-        /* Reset mapped memory pointer. */
-        Engine->targetMemory = gcvNULL;
-
-        /* Reset render target. */
-        Engine->target = gcvNULL;
-    }
-
-    /* Success. */
-    gcmFOOTER_NO();
-    return gcvSTATUS_OK;
+    gcmONERROR(
+       gcoHARDWARE_SetDepthBufferOffset(Engine->hardware, offset));
 
 OnError:
     /* Return the status. */
     gcmFOOTER();
     return status;
 }
+
 
 /*******************************************************************************
 **
@@ -522,6 +670,9 @@ gco3D_SetDepth(
 
             /* Reset mapped memory pointer. */
             Engine->depthMemory = gcvNULL;
+
+            /* Dereference the surface. */
+            gcmONERROR(gcoSURF_Destroy(Engine->depth));
         }
 
         /* Set new depth buffer. */
@@ -532,7 +683,7 @@ gco3D_SetDepth(
 
             /* Disable depth. */
             gcmONERROR(
-                gcoHARDWARE_SetDepthBuffer(gcvNULL));
+                gcoHARDWARE_SetDepthBuffer(Engine->hardware, gcvNULL));
         }
         else
         {
@@ -550,11 +701,14 @@ gco3D_SetDepth(
 
             /* Set depth buffer. */
             gcmONERROR(
-                gcoHARDWARE_SetDepthBuffer(&Surface->info));
+                gcoHARDWARE_SetDepthBuffer(Engine->hardware, &Surface->info));
 
             /* Enable tile status. */
             gcmONERROR(
                 gcoSURF_EnableTileStatus(Surface));
+
+            /* Reference the surface. */
+            gcmONERROR(gcoSURF_ReferenceSurface(Surface));
         }
     }
 
@@ -585,23 +739,7 @@ gco3D_UnsetDepth(
     /* Only unset surface if it is the current depth buffer. */
     if (Engine->depth == Surface)
     {
-        /* Disable tile status. */
-        gcmONERROR(
-            gcoSURF_DisableTileStatus(Surface, gcvFALSE));
-
-        /* Unlock the current render target. */
-        gcmONERROR(
-            gcoSURF_Unlock(Surface, Engine->depthMemory));
-
-        /* Reset mapped memory pointer. */
-        Engine->depthMemory = gcvNULL;
-
-        /* Reset depth buffer. */
-        Engine->depth = gcvNULL;
-
-        /* Disable depth. */
-        gcmONERROR(
-            gcoHARDWARE_SetDepthBuffer(gcvNULL));
+        gcmONERROR(gco3D_SetDepth(Engine, gcvNULL));
     }
 
     /* Success. */
@@ -659,7 +797,7 @@ gco3D_SetViewport(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program viewport. */
-    status = gcoHARDWARE_SetViewport(Left, Top, Right, Bottom);
+    status = gcoHARDWARE_SetViewport(Engine->hardware, Left, Top, Right, Bottom);
 
     /* Return the status. */
     gcmFOOTER();
@@ -711,7 +849,7 @@ gco3D_SetScissors(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program scissors. */
-    status = gcoHARDWARE_SetScissors(Left, Top, Right, Bottom);
+    status = gcoHARDWARE_SetScissors(Engine->hardware, Left, Top, Right, Bottom);
 
     /* Return the status. */
     gcmFOOTER();
@@ -1081,790 +1219,8 @@ gco3D_SetShading(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program shading. */
-    status = gcoHARDWARE_SetShading(Shading);
+    status = gcoHARDWARE_SetShading(Engine->hardware, Shading);
 
-    /* Return the status. */
-    gcmFOOTER();
-    return status;
-}
-
-static gceSTATUS
-_ComputeClear(
-    IN gco3D Engine,
-    IN gceSURF_FORMAT Format,
-    IN gctUINT32 Flags
-    )
-{
-    gceSTATUS status;
-
-    gcmHEADER_ARG("Engine=0x%x Format=%d Flags=0x%x", Engine, Format, Flags);
-
-    /* Verify the arguments. */
-    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
-    gcmDEBUG_VERIFY_ARGUMENT(Flags != 0);
-
-    /* Test for clearing render target. */
-    if (Flags & gcvCLEAR_COLOR)
-    {
-        /* Get color write enable mask bits. */
-        gctUINT8 colorMask = ((Engine->colorEnableMask & 0x1) << 2) /* Red   */
-                           |  (Engine->colorEnableMask & 0x2)       /* Green */
-                           | ((Engine->colorEnableMask & 0x4) >> 2) /* Blue  */
-                           |  (Engine->colorEnableMask & 0x8);      /* Alpha */
-
-        /* Set the color mask. */
-        Engine->hwClearColorMask = colorMask;
-
-        /* Test for different clear color or render target format. */
-        if (Engine->clearColorDirty
-        ||  (Engine->hwClearColorFormat != Format)
-        ||  ((Flags & gcvCLEAR_HAS_VAA) != Engine->hwClearVAA)
-        )
-        {
-            /* Dispatch on render target format. */
-            switch (Format)
-            {
-            case gcvSURF_X4R4G4B4: /* 12-bit RGB color without alpha channel. */
-            case gcvSURF_A4R4G4B4: /* 12-bit RGB color with alpha channel. */
-                Engine->hwClearColor
-                    /* Convert red into 4-bit. */
-                    = (_ConvertValue(Engine->clearColorType,
-                                     Engine->clearColorRed, 4) << 8)
-                    /* Convert green into 4-bit. */
-                    | (_ConvertValue(Engine->clearColorType,
-                                     Engine->clearColorGreen, 4) << 4)
-                    /* Convert blue into 4-bit. */
-                    | _ConvertValue(Engine->clearColorType,
-                                    Engine->clearColorBlue, 4)
-                    /* Convert alpha into 4-bit. */
-                    | (_ConvertValue(Engine->clearColorType,
-                                     Engine->clearColorAlpha, 4) << 12);
-
-                /* Expand 16-bit color into 32-bit color. */
-                Engine->hwClearColor |= Engine->hwClearColor << 16;
-
-                break;
-
-            case gcvSURF_X1R5G5B5: /* 15-bit RGB color without alpha channel. */
-            case gcvSURF_A1R5G5B5: /* 15-bit RGB color with alpha channel. */
-                Engine->hwClearColor
-                    /* Convert red into 5-bit. */
-                    = (_ConvertValue(Engine->clearColorType,
-                                     Engine->clearColorRed, 5) << 10)
-                    /* Convert green into 5-bit. */
-                    | (_ConvertValue(Engine->clearColorType,
-                                     Engine->clearColorGreen, 5) << 5)
-                    /* Convert blue into 5-bit. */
-                    | _ConvertValue(Engine->clearColorType,
-                                    Engine->clearColorBlue, 5)
-                    /* Convert alpha into 1-bit. */
-                    | (_ConvertValue(Engine->clearColorType,
-                                     Engine->clearColorAlpha, 1) << 15);
-
-                /* Expand 16-bit color into 32-bit color. */
-                Engine->hwClearColor |= Engine->hwClearColor << 16;
-
-                break;
-
-            case gcvSURF_R5G6B5: /* 16-bit RGB color without alpha channel. */
-                Engine->hwClearColor
-                    /* Convert red into 5-bit. */
-                    = (_ConvertValue(Engine->clearColorType,
-                                     Engine->clearColorRed, 5) << 11)
-                    /* Convert green into 6-bit. */
-                    | (_ConvertValue(Engine->clearColorType,
-                                     Engine->clearColorGreen, 6) << 5)
-                    /* Convert blue into 5-bit. */
-                    | _ConvertValue(Engine->clearColorType,
-                                    Engine->clearColorBlue, 5);
-
-                /* Expand 16-bit color into 32-bit color. */
-                Engine->hwClearColor |= Engine->hwClearColor << 16;
-
-                break;
-
-            case gcvSURF_YUY2:
-                {
-                    gctUINT8 r, g, b;
-                    gctUINT8 y, u, v;
-
-                    /* Query YUY2 render target support. */
-                    if (gcoHAL_IsFeatureAvailable(gcvNULL,
-                                                  gcvFEATURE_YUY2_RENDER_TARGET)
-                        != gcvSTATUS_TRUE)
-                    {
-                        /* No, reject. */
-                        gcmFOOTER_NO();
-                        return gcvSTATUS_INVALID_ARGUMENT;
-                    }
-
-                    /* Get 8-bit RGB values. */
-                    r = (gctUINT8) _ConvertValue(Engine->clearColorType,
-                                      Engine->clearColorRed, 8);
-
-                    g = (gctUINT8) _ConvertValue(Engine->clearColorType,
-                                      Engine->clearColorGreen, 8);
-
-                    b = (gctUINT8) _ConvertValue(Engine->clearColorType,
-                                      Engine->clearColorBlue, 8);
-
-                    /* Convert to YUV. */
-                    gcoHARDWARE_RGB2YUV(r, g, b, &y, &u, &v);
-
-                    /* Set the clear value. */
-                    Engine->hwClearColor =  ((gctUINT32) y)
-                                         | (((gctUINT32) u) <<  8)
-                                         | (((gctUINT32) y) << 16)
-                                         | (((gctUINT32) v) << 24);
-                }
-                break;
-
-            case gcvSURF_X8R8G8B8: /* 24-bit RGB without alpha channel. */
-            case gcvSURF_A8R8G8B8: /* 24-bit RGB with alpha channel. */
-                Engine->hwClearColor
-                    /* Convert red to 8-bit. */
-                    = (_ConvertValue(Engine->clearColorType,
-                                     Engine->clearColorRed, 8) << 16)
-                    /* Convert green to 8-bit. */
-                    | (_ConvertValue(Engine->clearColorType,
-                                     Engine->clearColorGreen, 8) << 8)
-                    /* Convert blue to 8-bit. */
-                    | _ConvertValue(Engine->clearColorType,
-                                    Engine->clearColorBlue, 8)
-                    /* Convert alpha to 8-bit. */
-                    | (_ConvertValue(Engine->clearColorType,
-                                     Engine->clearColorAlpha, 8) << 24);
-
-                /* Test for VAA. */
-                if (Flags & gcvCLEAR_HAS_VAA)
-                {
-                    if (Format == gcvSURF_X8R8G8B8)
-                    {
-                        /* Convert to C4R4G4B4C4R4G4B4. */
-                        Engine->hwClearColor
-                            = ((Engine->hwClearColor & 0x00000F)      )
-                            | ((Engine->hwClearColor & 0x0000F0) << 12)
-                            | ((Engine->hwClearColor & 0x000F00) >>  4)
-                            | ((Engine->hwClearColor & 0x00F000) <<  8)
-                            | ((Engine->hwClearColor & 0x0F0000) >>  8)
-                            | ((Engine->hwClearColor & 0xF00000) <<  4);
-                    }
-                }
-                break;
-
-            default:
-                gcmTRACE(
-                    gcvLEVEL_ERROR,
-                    "%s(%d): Unknown format=%d",
-                    __FUNCTION__, __LINE__, Format
-                    );
-
-                /* Invalid surface format. */
-                gcmONERROR(gcvSTATUS_INVALID_ARGUMENT);
-            }
-
-            /* Clear color has been converted. */
-            Engine->clearColorDirty    = gcvFALSE;
-            Engine->hwClearColorFormat = Format;
-            Engine->hwClearVAA         = (Flags & gcvCLEAR_HAS_VAA);
-        }
-    }
-
-    /* Test for clearing depth or stencil buffer. */
-    if (Flags & (gcvCLEAR_DEPTH | gcvCLEAR_STENCIL))
-    {
-        /* Get color write enable mask bits */
-        gctBOOL  depthMask   = Engine->depthEnableMask;
-        gctUINT8 stencilMask = Engine->stencilEnableMask;
-
-		switch (Format)
-		{
-		case gcvSURF_D16: /* 16-bit depth without stencil. */
-			/* Write to all bytes for depth, no bytes for stencil. */
-			Engine->hwClearDepthMask   = depthMask ? 0xF : 0x0;
-			Engine->hwClearStencilMask = 0x0;
-			break;
-
-		case gcvSURF_D24S8: /* 24-bit depth with 8-bit stencil. */
-			/* Write to upper 3 bytes for depth, lower byte for stencil. */
-			Engine->hwClearDepthMask   = depthMask   ? 0xE : 0x0;
-			Engine->hwClearStencilMask = stencilMask ? 0x1 : 0x0;
-			break;
-
-		case gcvSURF_D24X8: /* 24-bit depth with no stencil. */
-			/* Write all bytes for depth. */
-			Engine->hwClearDepthMask   = depthMask ? 0xF : 0x0;
-			Engine->hwClearStencilMask = 0x0;
-			break;
-
-		default:
-			/* Invalid depth buffer format. */
-			break;
-		}
-
-        /* Test for different clear depth value or depth buffer format. */
-        if (Engine->clearDepthDirty
-        ||  Engine->clearStencilDirty
-        ||  (Engine->hwClearDepthFormat != Format)
-        )
-        {
-            /* Dispatch on depth format. */
-            switch (Format)
-            {
-            case gcvSURF_D16: /* 16-bit depth without stencil. */
-                /* Convert depth value to 16-bit. */
-                Engine->hwClearDepth = _ConvertValue(Engine->clearDepthType,
-                                                     Engine->clearDepth,
-                                                     16);
-
-                /* Expand 16-bit depth value into 32-bit. */
-                Engine->hwClearDepth |= (Engine->hwClearDepth << 16);
-
-                break;
-
-            case gcvSURF_D24S8: /* 24-bit depth with 8-bit stencil. */
-                /* Convert depth value to 24-bit. */
-                Engine->hwClearDepth = _ConvertValue(Engine->clearDepthType,
-                                                     Engine->clearDepth,
-                                                     24) << 8;
-
-                /* Combine with masked stencil value. */
-                Engine->hwClearDepth |= Engine->clearStencil & 0xFF;
-                break;
-
-            case gcvSURF_D24X8: /* 24-bit depth with no stencil. */
-                /* Convert depth value to 24-bit. */
-                Engine->hwClearDepth = _ConvertValue(Engine->clearDepthType,
-                                                     Engine->clearDepth,
-                                                     24) << 8;
-                break;
-
-            default:
-                /* Invalid depth buffer format. */
-                gcmONERROR(gcvSTATUS_INVALID_ARGUMENT);
-            }
-
-            /* Compuet HZ clear value. */
-            gcmONERROR(gcoHARDWARE_HzClearValueControl(Format,
-                                                       Engine->hwClearDepth,
-                                                       &Engine->hwClearHzDepth,
-                                                       gcvNULL));
-
-            /* Clear depth value has been converted. */
-            Engine->clearDepthDirty    = gcvFALSE;
-            Engine->clearStencilDirty  = gcvFALSE;
-            Engine->hwClearDepthFormat = Format;
-        }
-    }
-
-    /* Success. */
-    gcmFOOTER_NO();
-    return gcvSTATUS_OK;
-
-OnError:
-    /* Return the error. */
-    gcmFOOTER();
-    return status;
-}
-
-/*******************************************************************************
-**
-**  gco3D_ClearRect
-**
-**  Perform a clear with the current clear colors, depth values, or stencil
-**  values, based on the specified flags. Rectangle is specified in opengl style
-**  with 0,0 as left bottom and
-**
-**  INPUT:
-**
-**      gco3D Engine
-**          Pointer to an gco3D object.
-**
-**      gctUINT32 Address
-**          Base address of surface to clear.
-**
-**      gctPOINTER Memory
-**          Base address of surface to clear.
-**
-**      gctUINT32 Stride
-**          Stride of surface to clear.
-**
-**      gceSURF_FORMAT Format
-**          Format of surface to clear.
-**
-**      gctINT32 Left
-**          Left corner of surface to clear.
-**
-**      gctINT32 Top
-**          Top corner of surface to clear.
-**
-**      gctINT32 Right
-**          Right of surface to clear.
-**
-**      gctINT32 Bottom
-**          Bottom of surface to clear.
-**
-**      gctUINT32 Width
-**          Width of surface to clear.
-**
-**      gctUINT32 Height
-**          Height of surface to clear.
-**
-**      gctUINT32 Flags
-**          Flags that specifiy the clear operations to perform.  Can be any
-**          combination of:
-**
-**              gcvCLEAR_COLOR   - Clear color.
-**              gcvCLEAR_DEPTH   - Clear depth.
-**              gcvCLEAR_STENCIL - Clear stencil.
-**
-**  OUTPUT:
-**
-**      Nothing.
-*/
-gceSTATUS
-gco3D_ClearRect(
-    IN gco3D Engine,
-    IN gctUINT32 Address,
-    IN gctPOINTER Memory,
-    IN gctUINT32 Stride,
-    IN gceSURF_FORMAT Format,
-    IN gctINT32 Left,
-    IN gctINT32 Top,
-    IN gctINT32 Right,
-    IN gctINT32 Bottom,
-    IN gctUINT32 Width,
-    IN gctUINT32 Height,
-    IN gctUINT32 Flags
-    )
-{
-    gctUINT8 mask;
-    gceSTATUS status;
-    gctINT32 left, top, right, bottom;
-
-    gcmHEADER_ARG("Engine=0x%x Address=0x%08x Memory=0x%x Stride=%u Format=%d "
-                  "Left=%d Top=%d Right=%d Bottom=%d Width=%d Height=%d "
-                  "Flags=0x%x",
-                  Engine, Address, Memory, Stride, Format, Left, Top, Right,
-                  Bottom, Width, Height, Flags);
-
-    /* Verify the arguments. */
-    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
-    gcmDEBUG_VERIFY_ARGUMENT(Flags != 0);
-
-    /* Clamp the coordinates to surface dimensions. */
-    left   = gcmMAX(Left,   0);
-    top    = gcmMAX(Top,    0);
-    right  = gcmMIN(Right,  (gctINT32) Width);
-    bottom = gcmMIN(Bottom, (gctINT32) Height);
-
-    /* Test for a valid rectangle. */
-    if ((left < right) && (top < bottom))
-    {
-        /* Compute clear values. */
-        gcmONERROR(_ComputeClear(Engine, Format, Flags));
-
-        /* Test for clearing render target. */
-        if (Flags & gcvCLEAR_COLOR)
-        {
-            /* Send the clear command to the hardware. */
-            gcmONERROR(
-                gcoHARDWARE_ClearRect(Address,
-                                      Memory,
-                                      Stride,
-                                      left, top, right, bottom,
-                                      Engine->hwClearColorFormat,
-                                      Engine->hwClearColor,
-                                      Engine->hwClearColorMask,
-                                      Width,
-                                      Height));
-
-        }
-
-        /* Test for clearing depth or stencil buffer. */
-        if (Flags & (gcvCLEAR_DEPTH | gcvCLEAR_STENCIL))
-        {
-            /* Zero mask. */
-            mask = 0;
-
-            if (Flags & gcvCLEAR_DEPTH)
-            {
-                /* Enable depth clearing.*/
-                mask |= Engine->hwClearDepthMask;
-            }
-
-            if (Flags & gcvCLEAR_STENCIL)
-            {
-                /* Enable stencil clearing.*/
-                mask |= Engine->hwClearStencilMask;
-            }
-
-            if (mask != 0)
-            {
-                /* Send clear command to hardware. */
-    			gcmONERROR(
-                    gcoHARDWARE_ClearRect(Address,
-                                          Memory,
-                                          Stride,
-                                          left, top, right, bottom,
-                                          Engine->hwClearDepthFormat,
-                                          Engine->hwClearDepth,
-                                          mask,
-                                          Width,
-                                          Height));
-            }
-        }
-
-        if (Flags & gcvCLEAR_HZ)
-        {
-            gctUINT width, height;
-
-            /* Compute the hw specific clear window. */
-            gcmONERROR(
-                gcoHARDWARE_ComputeClearWindow(Stride,
-                                               &width,
-                                               &height));
-
-            /* Send clear command to hardware. */
-            gcmONERROR(
-                gcoHARDWARE_ClearRect(Address,
-                                      Memory,
-                                      width * 4,
-                                      0, 0, width, height,
-                                      gcvSURF_A8R8G8B8,
-                                      Engine->hwClearHzDepth,
-                                      0xF,
-                                      width,
-                                      height));
-        }
-    }
-
-    /* Success. */
-    gcmFOOTER_NO();
-    return gcvSTATUS_OK;
-
-OnError:
-    /* Return the status. */
-    gcmFOOTER();
-    return status;
-}
-
-/*******************************************************************************
-**
-**  gco3D_Clear
-**
-**  Perform a clear with the current clear colors, depth values, or stencil
-**  values, based on the specified flags.
-**
-**  INPUT:
-**
-**      gco3D Engine
-**          Pointer to an gco3D object.
-**
-**      gctUINT32 Address
-**          Base address of surface to clear.
-**
-**      gctUINT32 Stride
-**          Stride of surface to clear.
-**
-**      gceSURF_FORMAT Format
-**          Format of surface to clear.
-**
-**      gctUINT32 Width
-**          Width of surface to clear.
-**
-**      gctUINT32 Height
-**          Height of surface to clear.
-**
-**      gctUINT32 Flags
-**          Flags that specifiy the clear operations to perform.  Can be any
-**          combination of:
-**
-**              gcvCLEAR_COLOR   - Clear color.
-**              gcvCLEAR_DEPTH   - Clear depth.
-**              gcvCLEAR_STENCIL - Clear stencil.
-**
-**  OUTPUT:
-**
-**      Nothing.
-*/
-gceSTATUS
-gco3D_Clear(
-    IN gco3D Engine,
-    IN gctUINT32 Address,
-    IN gctUINT32 Stride,
-    IN gceSURF_FORMAT Format,
-    IN gctUINT32 Width,
-    IN gctUINT32 Height,
-    IN gctUINT32 Flags
-    )
-{
-    gctUINT8 mask;
-    gceSTATUS status;
-
-    gcmHEADER_ARG("Engine=0x%x Address=0x%08x Stride=%u Format=%d Width=%u "
-                  "Height=%u Flags=0x%x",
-                  Engine, Address, Stride, Format, Width, Height, Flags);
-
-    /* Verify the arguments. */
-    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
-    gcmDEBUG_VERIFY_ARGUMENT(Flags != 0);
-
-    /* Compute clear values. */
-    gcmONERROR(_ComputeClear(Engine, Format, Flags));
-
-    /* Test for clearing render target. */
-    if (Flags & gcvCLEAR_COLOR)
-    {
-        /* Send the clear command to the hardware. */
-        gcmONERROR(
-            gcoHARDWARE_Clear(Address,
-                              Stride,
-                              0, 0, Width, Height,
-                              Engine->hwClearColorFormat,
-                              Engine->hwClearColor,
-                              Engine->hwClearColorMask,
-                              Width, Height));
-
-    }
-
-    /* Test for clearing depth or stencil buffer. */
-    if (Flags & (gcvCLEAR_DEPTH | gcvCLEAR_STENCIL))
-    {
-        /* Zero mask. */
-        mask = 0;
-
-        if (Flags & gcvCLEAR_DEPTH)
-        {
-            /* Enable depth clearing.*/
-            mask |= Engine->hwClearDepthMask;
-        }
-
-        if (Flags & gcvCLEAR_STENCIL)
-        {
-            /* Enable stencil clearing.*/
-            mask |= Engine->hwClearStencilMask;
-        }
-
-        if (mask != 0)
-        {
-            /* Send clear command to hardware. */
-            gcmONERROR(
-                gcoHARDWARE_Clear(Address,
-                                  Stride,
-                                  0, 0, Width, Height,
-                                  Engine->hwClearDepthFormat,
-                                  Engine->hwClearDepth,
-                                  mask,
-                                  Width, Height));
-        }
-    }
-
-    /* Success. */
-    gcmFOOTER_NO();
-    return gcvSTATUS_OK;
-
-OnError:
-    /* Return the status. */
-    gcmFOOTER();
-    return status;
-}
-
-/*******************************************************************************
-**
-**  gco3D_ClearTileStatus
-**
-**  Perform a tile status clear with the current clear colors, depth values, or
-**  stencil values, based on the specified flags.
-**
-**  INPUT:
-**
-**      gco3D Engine
-**          Pointer to an gco3D object.
-**
-**      gcsSURF_INFO_PTR Surface
-**          Pointer of the surface to clear.
-**
-**      gctUINT32 TileStatusAddress
-**          Base address of the tile status buffer to clear.
-**
-**      gctUINT32 Flags
-**          Flags that specifiy the clear operations to perform.  Can be any
-**          combination of:
-**
-**              gcvCLEAR_COLOR   - Clear color.
-**              gcvCLEAR_DEPTH   - Clear depth.
-**              gcvCLEAR_STENCIL - Clear stencil.
-**
-**  OUTPUT:
-**
-**      Nothing.
-*/
-gceSTATUS
-gco3D_ClearTileStatus(
-    IN gco3D Engine,
-    IN gcsSURF_INFO_PTR Surface,
-    IN gctUINT32 TileStatusAddress,
-    IN gctUINT32 Flags
-    )
-{
-    gctUINT8 mask;
-    gceSTATUS status;
-
-    gcmHEADER_ARG("Engine=0x%x Surface=0x%x TileStatusAddress=0x%08x Flags=x%x",
-                  Engine, Surface, TileStatusAddress, Flags);
-
-    /* Verify the arguments. */
-    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
-    gcmDEBUG_VERIFY_ARGUMENT(Flags != 0);
-
-    /* Compute clear values. */
-    gcmONERROR(
-        _ComputeClear(Engine, Surface->format, Flags));
-
-    /* Flush the tile status cache. */
-    gcmONERROR(
-        gcoHARDWARE_FlushTileStatus(Surface,
-                                    gcvFALSE));
-
-    /* Test for clearing render target. */
-    if (Flags & gcvCLEAR_COLOR)
-    {
-        /* Send the clear command to the hardware. */
-        status =
-            gcoHARDWARE_ClearTileStatus(Surface,
-                                        TileStatusAddress,
-                                        0,
-                                        gcvSURF_RENDER_TARGET,
-                                        Engine->hwClearColor,
-                                        Engine->hwClearColorMask);
-
-        if (status == gcvSTATUS_NOT_SUPPORTED)
-        {
-            goto OnError;
-        }
-
-        gcmONERROR(status);
-    }
-
-    /* Test for clearing depth or stencil buffer. */
-    if (Flags & (gcvCLEAR_DEPTH | gcvCLEAR_STENCIL))
-    {
-        /* Zero mask. */
-        mask = 0;
-
-        if (Flags & gcvCLEAR_DEPTH)
-        {
-            /* Enable depth clearing.*/
-            mask |= Engine->hwClearDepthMask;
-        }
-
-        if (Flags & gcvCLEAR_STENCIL)
-        {
-            /* Enable stencil clearing.*/
-            mask |= Engine->hwClearStencilMask;
-        }
-
-        if (mask != 0)
-        {
-            /* Send clear command to hardware. */
-            status = gcoHARDWARE_ClearTileStatus(Surface,
-                                                 TileStatusAddress,
-                                                 0,
-                                                 gcvSURF_DEPTH,
-                                                 Engine->hwClearDepth,
-                                                 mask);
-
-            if (gcmIS_ERROR(status))
-            {
-                /* Print error only if it's really an error. */
-                if (status != gcvSTATUS_NOT_SUPPORTED)
-                {
-                    gcmONERROR(status);
-                }
-
-                /* Otherwise just quietly return. */
-                goto OnError;
-            }
-
-            /* Send semaphore from RASTER to PIXEL. */
-            gcmONERROR(
-                gcoHARDWARE_Semaphore(gcvWHERE_RASTER,
-                                      gcvWHERE_PIXEL,
-                                      gcvHOW_SEMAPHORE));
-        }
-        else
-        {
-            gcmFOOTER_ARG("%s", "gcvSTATUS_SKIP");
-            return gcvSTATUS_SKIP;
-        }
-    }
-
-    /* Success. */
-    gcmFOOTER_NO();
-    return gcvSTATUS_OK;
-
-OnError:
-    /* Return the status. */
-    gcmFOOTER();
-    return status;
-}
-
-/*******************************************************************************
-**
-**  gco3D_ClearHzTileStatus
-**
-**  Perform a hierarchical Z tile status clear with the current depth values.
-**  Note that this function does not recompute the clear colors, since it must
-**  be called after gco3D_ClearTileStatus has cleared the depth tile status.
-**
-**  INPUT:
-**
-**      gco3D Engine
-**          Pointer to an gco3D object.
-**
-**      gcsSURF_INFO_PTR Surface
-**          Pointer of the depth surface to clear.
-**
-**      gcsSURF_NODE_PTR TileStatusAddress
-**          Pointer to the hierarhical Z tile status node toclear.
-**
-**  OUTPUT:
-**
-**      Nothing.
-*/
-gceSTATUS
-gco3D_ClearHzTileStatus(
-    IN gco3D Engine,
-    IN gcsSURF_INFO_PTR Surface,
-    IN gcsSURF_NODE_PTR TileStatus
-    )
-{
-    gceSTATUS status;
-
-    gcmHEADER_ARG("Engine=0x%x Surface=0x%x TileStatus=0x%x",
-                  Engine, Surface, TileStatus);
-
-    /* Send clear command to hardware. */
-    gcmONERROR(
-        gcoHARDWARE_ClearTileStatus(Surface,
-                                    TileStatus->physical,
-                                    TileStatus->size,
-                                    gcvSURF_HIERARCHICAL_DEPTH,
-                                    Engine->hwClearHzDepth,
-                                    0xF));
-
-    /* Send semaphore from RASTER to PIXEL. */
-    gcmONERROR(
-        gcoHARDWARE_Semaphore(gcvWHERE_RASTER,
-                              gcvWHERE_PIXEL,
-                              gcvHOW_SEMAPHORE));
-
-    /* Success. */
-    gcmFOOTER_NO();
-    return gcvSTATUS_OK;
-
-OnError:
     /* Return the status. */
     gcmFOOTER();
     return status;
@@ -1902,7 +1258,7 @@ gco3D_EnableBlending(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program blending. */
-    status = gcoHARDWARE_SetBlendEnable(Enable);
+    status = gcoHARDWARE_SetBlendEnable(Engine->hardware, Enable);
 
     /* Return the status. */
     gcmFOOTER();
@@ -1956,13 +1312,15 @@ gco3D_SetBlendFunction(
     if (Unit == gcvBLEND_SOURCE)
     {
         /* Program source blend function. */
-        status = gcoHARDWARE_SetBlendFunctionSource(FunctionRGB,
+        status = gcoHARDWARE_SetBlendFunctionSource(Engine->hardware,
+                                                    FunctionRGB,
                                                     FunctionAlpha);
     }
     else
     {
         /* Program target blend function. */
-        status = gcoHARDWARE_SetBlendFunctionTarget(FunctionRGB,
+        status = gcoHARDWARE_SetBlendFunctionTarget(Engine->hardware,
+                                                    FunctionRGB,
                                                     FunctionAlpha);
     }
 
@@ -2008,7 +1366,8 @@ gco3D_SetBlendMode(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program blending. */
-    status = gcoHARDWARE_SetBlendMode(ModeRGB,
+    status = gcoHARDWARE_SetBlendMode(Engine->hardware,
+                                      ModeRGB,
                                       ModeAlpha);
 
     /* Return the status. */
@@ -2062,7 +1421,8 @@ gco3D_SetBlendColor(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program blending color.  Clamp between 0 and 255. */
-    status = gcoHARDWARE_SetBlendColor((gctUINT8) gcmMIN(Red,   255),
+    status = gcoHARDWARE_SetBlendColor(Engine->hardware,
+                                       (gctUINT8) gcmMIN(Red,   255),
                                        (gctUINT8) gcmMIN(Green, 255),
                                        (gctUINT8) gcmMIN(Blue,  255),
                                        (gctUINT8) gcmMIN(Alpha, 255));
@@ -2119,7 +1479,8 @@ gco3D_SetBlendColorX(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program blending color.  Clamp between 0.0 and 1.0. */
-    status = gcoHARDWARE_SetBlendColorX(gcmCLAMP(Red,   0, gcvONE_X),
+    status = gcoHARDWARE_SetBlendColorX(Engine->hardware,
+                                        gcmCLAMP(Red,   0, gcvONE_X),
                                         gcmCLAMP(Green, 0, gcvONE_X),
                                         gcmCLAMP(Blue,  0, gcvONE_X),
                                         gcmCLAMP(Alpha, 0, gcvONE_X));
@@ -2175,7 +1536,8 @@ gco3D_SetBlendColorF(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program blending color.  Clamp between 0.0 and 1.0. */
-    status = gcoHARDWARE_SetBlendColorF(gcmCLAMP(Red,   0.0f, 1.0f),
+    status = gcoHARDWARE_SetBlendColorF(Engine->hardware,
+                                        gcmCLAMP(Red,   0.0f, 1.0f),
                                         gcmCLAMP(Green, 0.0f, 1.0f),
                                         gcmCLAMP(Blue,  0.0f, 1.0f),
                                         gcmCLAMP(Alpha, 0.0f, 1.0f));
@@ -2221,7 +1583,7 @@ gco3D_SetCulling(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the culling mode. */
-    status = gcoHARDWARE_SetCulling(Mode);
+    status = gcoHARDWARE_SetCulling(Engine->hardware, Mode);
 
     /* Return the status. */
     gcmFOOTER();
@@ -2260,7 +1622,7 @@ gco3D_SetPointSizeEnable(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the point size enable/disable. */
-    status = gcoHARDWARE_SetPointSizeEnable(Enable);
+    status = gcoHARDWARE_SetPointSizeEnable(Engine->hardware, Enable);
 
     /* Return the status. */
     gcmFOOTER();
@@ -2299,7 +1661,7 @@ gco3D_SetPointSprite(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the point sprite enable/disable. */
-    status = gcoHARDWARE_SetPointSprite(Enable);
+    status = gcoHARDWARE_SetPointSprite(Engine->hardware, Enable);
 
     /* Return the status. */
     gcmFOOTER();
@@ -2342,7 +1704,7 @@ gco3D_SetFill(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the fill mode. */
-    status = gcoHARDWARE_SetFill(Mode);
+    status = gcoHARDWARE_SetFill(Engine->hardware, Mode);
 
     /* Return the status. */
     gcmFOOTER();
@@ -2381,7 +1743,7 @@ gco3D_SetDepthCompare(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program depth compare. */
-    status = gcoHARDWARE_SetDepthCompare(Compare);
+    status = gcoHARDWARE_SetDepthCompare(Engine->hardware, Compare);
 
     /* Return the status. */
     gcmFOOTER();
@@ -2419,13 +1781,8 @@ gco3D_EnableDepthWrite(
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
-    /* Save depth write enable bit */
-    Engine->depthEnableMask = Enable;
-
     /* Program the depth write. */
-    status = gcoHARDWARE_SetDepthWrite(Engine->depthMode != gcvDEPTH_NONE
-                                       ? Enable
-                                       : gcvFALSE);
+    status = gcoHARDWARE_SetDepthWrite(Engine->hardware, Enable);
 
     /* Return the status. */
     gcmFOOTER();
@@ -2463,22 +1820,9 @@ gco3D_SetDepthMode(
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
-    /* Save depth mode. */
-    Engine->depthMode = Mode;
-
     /* Program the depth mode. */
-    status = gcoHARDWARE_SetDepthMode(Mode);
+    status = gcoHARDWARE_SetDepthMode(Engine->hardware, Mode);
 
-    if (gcmIS_ERROR(status))
-    {
-        gcmFOOTER();
-        return status;
-    }
-
-    /* Update depth write bit. */
-    status = gcoHARDWARE_SetDepthWrite(Mode != gcvDEPTH_NONE
-                                       ? Engine->depthEnableMask
-                                       : gcvFALSE);
     /* Return the status. */
     gcmFOOTER();
     return status;
@@ -2526,7 +1870,8 @@ gco3D_SetDepthRangeX(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the depth range.  Clamp between 0.0 and 1.0. */
-    status = gcoHARDWARE_SetDepthRangeX(Mode,
+    status = gcoHARDWARE_SetDepthRangeX(Engine->hardware,
+                                        Mode,
                                         gcmCLAMP(Near, 0, gcvONE_X),
                                         gcmCLAMP(Far,  0, gcvONE_X));
 
@@ -2576,9 +1921,55 @@ gco3D_SetDepthRangeF(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the depth range.  Clamp between 0.0 and 1.0. */
-    status = gcoHARDWARE_SetDepthRangeF(Mode,
+    status = gcoHARDWARE_SetDepthRangeF(Engine->hardware,
+                                        Mode,
                                         gcmCLAMP(Near, 0.0f, 1.0f),
                                         gcmCLAMP(Far,  0.0f, 1.0f));
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gco3D_SetDepthRangeF.
+**
+**  Set the depth near and far plane, specified in floating point.
+**
+**  INPUT:
+**
+**      gco3D Engine
+**          Pointer to an gco3D object.
+**
+**
+**      gctFLOAT Near
+**          Near plane value for depth specified in floating point.
+**
+**      gctFLOAT Far
+**          Far plane value for depth specified in floating point.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gco3D_SetDepthPlaneF(
+    IN gco3D Engine,
+    IN gctFLOAT Near,
+    IN gctFLOAT Far
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x Near=%f Far=%f",
+                  Engine, Near, Far);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
+    /* Program the depth plane, include near and far plane. */
+    status = gcoHARDWARE_SetDepthPlaneF(Engine->hardware, Near, Far);
 
     /* Return the status. */
     gcmFOOTER();
@@ -2615,7 +2006,7 @@ gco3D_SetLastPixelEnable(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the Last Pixel Enable register */
-    status = gcoHARDWARE_SetLastPixelEnable(Enable);
+    status = gcoHARDWARE_SetLastPixelEnable(Engine->hardware, Enable);
 
     /* Return the status. */
     gcmFOOTER();
@@ -2659,7 +2050,8 @@ gco3D_SetDepthScaleBiasF(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the depth scale and Bias */
-    status = gcoHARDWARE_SetDepthScaleBiasF(DepthScale,
+    status = gcoHARDWARE_SetDepthScaleBiasF(Engine->hardware,
+                                            DepthScale,
                                             DepthBias);
 
     /* Return the status. */
@@ -2705,7 +2097,8 @@ gco3D_SetDepthScaleBiasX(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the depth scale and Bias */
-    status = gcoHARDWARE_SetDepthScaleBiasX(DepthScale,
+    status = gcoHARDWARE_SetDepthScaleBiasX(Engine->hardware,
+                                            DepthScale,
                                             DepthBias);
 
     /* Return the status. */
@@ -2745,7 +2138,7 @@ gco3D_EnableDither(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program dithering. */
-    status = gcoHARDWARE_SetDither(Enable);
+    status = gcoHARDWARE_SetDither(Engine->hardware, Enable);
 
     /* Return the status. */
     gcmFOOTER();
@@ -2788,11 +2181,8 @@ gco3D_SetColorWrite(
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
-    /* Save the color write mask bits */
-    Engine->colorEnableMask = Enable;
-
     /* Program color write enable bits. */
-    status = gcoHARDWARE_SetColorWrite(Enable);
+    status = gcoHARDWARE_SetColorWrite(Engine->hardware, Enable);
 
     /* Return the status. */
     gcmFOOTER();
@@ -2831,7 +2221,7 @@ gco3D_SetEarlyDepth(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program early depth. */
-    status = gcoHARDWARE_SetEarlyDepth(Enable);
+    status = gcoHARDWARE_SetEarlyDepth(Engine->hardware, Enable);
 
     /* Return the status. */
     gcmFOOTER();
@@ -2841,6 +2231,7 @@ gco3D_SetEarlyDepth(
 /*******************************************************************************
 **
 **  gco3D_SetAllEarlyDepthModes.
+**  Deprecated. Use gco3D_SetAllEarlyDepthModesEx instead.
 **
 **  Enable or disable all early depth operations.
 **
@@ -2850,7 +2241,7 @@ gco3D_SetEarlyDepth(
 **          Pointer to an gco3D object.
 **
 **      gctBOOL Disable
-**          gcvTRUE to disable early depth operations, gcvTRUE to enable.
+**          gcvTRUE to disable early depth operations, gcvFALSE to enable.
 **
 **  OUTPUT:
 **
@@ -2870,7 +2261,124 @@ gco3D_SetAllEarlyDepthModes(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program early depth. */
-    status = gcoHARDWARE_SetAllEarlyDepthModes(Disable);
+    /* Disable Early Z and Early Z modify together by default. */
+    status = gcoHARDWARE_SetAllEarlyDepthModes(Engine->hardware, Disable, Disable, gcvTRUE);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gco3D_SetAllEarlyDepthModesEx.
+**
+**  Enable or disable all early depth operations.
+**
+**  INPUT:
+**
+**      gco3D Engine
+**          Pointer to an gco3D object.
+**
+**      gctBOOL Disable
+**          gcvTRUE to disable early depth operations, gcvFALSE to enable.
+**
+**      gctBOOL DisableModify
+**          gcvTRUE to disable early depth modify operations, gcvFALSE to enable.
+**          Modify operation should be disabled if pixel shader has discard()
+**          Or alpha test is enabled (es1.1).
+**          This field is considered only when EarlyZ is enabled.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gco3D_SetAllEarlyDepthModesEx(
+    IN gco3D Engine,
+    IN gctBOOL Disable,
+    IN gctBOOL DisableModify,
+    IN gctBOOL DisablePassZ
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x Disable=%d DisableModify=%d",
+        Engine, Disable, DisableModify);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
+    /* Program early depth. */
+    status = gcoHARDWARE_SetAllEarlyDepthModes(Engine->hardware, Disable, DisableModify, DisablePassZ);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gco3D_SwitchDynamicEarlyDepthMode.
+**
+**  Switch Early Depth Mode
+**
+**  INPUT:
+**
+**      gco3D Engine
+**          Pointer to an gco3D object.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gco3D_SwitchDynamicEarlyDepthMode(
+    IN gco3D Engine
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x", Engine);
+
+    /* Program early depth. */
+    status = gcoHARDWARE_SwitchDynamicEarlyDepthMode(Engine->hardware);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gco3D_DisableDynamicEarlyDepthMode.
+**
+**  Switch Early Depth Mode
+**
+**  INPUT:
+**
+**      gco3D Engine
+**          Pointer to an gco3D object.
+**
+**      gctBOOL Disable
+**          gcvTRUE to disable dynamic depth, gcvFALSE to enable.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gco3D_DisableDynamicEarlyDepthMode(
+    IN gco3D Engine,
+    IN gctBOOL Disable
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x Disable=%d", Engine, Disable);
+
+    /* Program early depth. */
+    status = gcoHARDWARE_DisableDynamicEarlyDepthMode(Engine->hardware, Disable);
 
     /* Return the status. */
     gcmFOOTER();
@@ -2909,7 +2417,7 @@ gco3D_SetDepthOnly(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program depth only. */
-    status =  gcoHARDWARE_SetDepthOnly(Enable);
+    status =  gcoHARDWARE_SetDepthOnly(Engine->hardware, Enable);
 
     /* Return the status. */
     gcmFOOTER();
@@ -2952,7 +2460,7 @@ gco3D_SetStencilMode(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the stencil mode. */
-    status = gcoHARDWARE_SetStencilMode(Mode);
+    status = gcoHARDWARE_SetStencilMode(Engine->hardware, Mode);
 
     /* Return the status. */
     gcmFOOTER();
@@ -2991,7 +2499,46 @@ gco3D_SetStencilMask(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the stencil mask. */
-    status = gcoHARDWARE_SetStencilMask(Mask);
+    status = gcoHARDWARE_SetStencilMask(Engine->hardware, Mask);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gco3D_SetStencilMaskBack.
+**
+**  Set stencil back face mask .
+**
+**  INPUT:
+**
+**      gco3D Engine
+**          Pointer to an gco3D object.
+**
+**      gctUINT8 Mask
+**          Stencil back face mask.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gco3D_SetStencilMaskBack(
+    IN gco3D Engine,
+    IN gctUINT8 Mask
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x MaskBack=0x%x", Engine, Mask);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
+    /* Program the stencil mask. */
+    status = gcoHARDWARE_SetStencilMaskBack(Engine->hardware, Mask);
 
     /* Return the status. */
     gcmFOOTER();
@@ -3029,11 +2576,47 @@ gco3D_SetStencilWriteMask(
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
-    /* Save the stencil mask bits. */
-    Engine->stencilEnableMask = Mask;
+    /* Program the stencil write mask. */
+    status = gcoHARDWARE_SetStencilWriteMask(Engine->hardware, Mask);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gco3D_SetStencilWriteMaskBack.
+**
+**  Set stencil write mask.
+**
+**  INPUT:
+**
+**      gco3D Engine
+**          Pointer to an gco3D object.
+**
+**      gctUINT8 Mask
+**          Stencil back write mask.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gco3D_SetStencilWriteMaskBack(
+    IN gco3D Engine,
+    IN gctUINT8 Mask
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x MaskBack=0x%x", Engine, Mask);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the stencil write mask. */
-    status = gcoHARDWARE_SetStencilWriteMask(Mask);
+    status = gcoHARDWARE_SetStencilWriteMaskBack(Engine->hardware, Mask);
 
     /* Return the status. */
     gcmFOOTER();
@@ -3073,7 +2656,7 @@ gco3D_SetStencilReference(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the stencil reference. */
-    status = gcoHARDWARE_SetStencilReference(Reference, Front);
+    status = gcoHARDWARE_SetStencilReference(Engine->hardware, Reference, Front);
 
     /* Return the status. */
     gcmFOOTER();
@@ -3119,7 +2702,7 @@ gco3D_SetStencilCompare(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the stencil compare operation. */
-    status = gcoHARDWARE_SetStencilCompare(Where, Compare);
+    status = gcoHARDWARE_SetStencilCompare(Engine->hardware, Where, Compare);
 
     /* Return the status. */
     gcmFOOTER();
@@ -3180,7 +2763,7 @@ gco3D_SetStencilPass(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the stencil compare pass operation. */
-    status = gcoHARDWARE_SetStencilPass(Where, Operation);
+    status = gcoHARDWARE_SetStencilPass(Engine->hardware, Where, Operation);
 
     /* Return the status. */
     gcmFOOTER();
@@ -3241,7 +2824,7 @@ gco3D_SetStencilFail(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the stencil compare fail operation. */
-    status = gcoHARDWARE_SetStencilFail(Where, Operation);
+    status = gcoHARDWARE_SetStencilFail(Engine->hardware, Where, Operation);
 
     /* Return the status. */
     gcmFOOTER();
@@ -3302,7 +2885,8 @@ gco3D_SetStencilDepthFail(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the stencil compare depth fail operation. */
-    status = gcoHARDWARE_SetStencilDepthFail(Where,
+    status = gcoHARDWARE_SetStencilDepthFail(Engine->hardware,
+                                             Where,
                                              Operation);
 
     /* Return the status. */
@@ -3342,11 +2926,8 @@ gco3D_SetStencilAll(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
     gcmDEBUG_VERIFY_ARGUMENT(Info != gcvNULL);
 
-    /* Save the stencil mask bits. */
-    Engine->stencilEnableMask = Info->writeMask;
-
     /* Program the stencil compare depth fail operation. */
-    status = gcoHARDWARE_SetStencilAll(Info);
+    status = gcoHARDWARE_SetStencilAll(Engine->hardware, Info);
 
     /* Return the status. */
     gcmFOOTER();
@@ -3385,7 +2966,7 @@ gco3D_SetAlphaTest(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the alpha test. */
-    status = gcoHARDWARE_SetAlphaTest(Enable);
+    status = gcoHARDWARE_SetAlphaTest(Engine->hardware, Enable);
 
     /* Return the status. */
     gcmFOOTER();
@@ -3424,7 +3005,7 @@ gco3D_SetAlphaCompare(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the alpha test compare. */
-    status = gcoHARDWARE_SetAlphaCompare(Compare);
+    status = gcoHARDWARE_SetAlphaCompare(Engine->hardware, Compare);
 
     /* Return the status. */
     gcmFOOTER();
@@ -3453,7 +3034,8 @@ gco3D_SetAlphaCompare(
 gceSTATUS
 gco3D_SetAlphaReference(
     IN gco3D Engine,
-    IN gctUINT8 Reference
+    IN gctUINT8 Reference,
+    IN gctFLOAT FloatReference
     )
 {
     gceSTATUS status;
@@ -3464,7 +3046,7 @@ gco3D_SetAlphaReference(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the alpha test reference. */
-    status = gcoHARDWARE_SetAlphaReference(Reference);
+    status = gcoHARDWARE_SetAlphaReference(Engine->hardware, Reference,FloatReference);
 
     /* Return the status. */
     gcmFOOTER();
@@ -3505,7 +3087,7 @@ gco3D_SetAlphaReferenceX(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the alpha test reference. */
-    status = gcoHARDWARE_SetAlphaReferenceX(Reference);
+    status = gcoHARDWARE_SetAlphaReferenceX(Engine->hardware, Reference);
 
     /* Return the status. */
     gcmFOOTER();
@@ -3545,7 +3127,7 @@ gco3D_SetAlphaReferenceF(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program the alpha test reference. */
-    status = gcoHARDWARE_SetAlphaReferenceF(Reference);
+    status = gcoHARDWARE_SetAlphaReferenceF(Engine->hardware, Reference);
 
     /* Return the status. */
     gcmFOOTER();
@@ -3584,7 +3166,7 @@ gco3D_SetAntiAliasLine(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program anti-alias line. */
-    status = gcoHARDWARE_SetAntiAliasLine(Enable);
+    status = gcoHARDWARE_SetAntiAliasLine(Engine->hardware, Enable);
 
     /* Return the status. */
     gcmFOOTER();
@@ -3623,7 +3205,7 @@ gco3D_SetAALineWidth(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program anti-alias line width. */
-    status = gcoHARDWARE_SetAALineWidth(Width);
+    status = gcoHARDWARE_SetAALineWidth(Engine->hardware, Width);
 
     /* Return the status. */
     gcmFOOTER();
@@ -3662,7 +3244,7 @@ gco3D_SetAALineTexSlot(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program anti-alias line width. */
-    status = gcoHARDWARE_SetAALineTexSlot(TexSlot);
+    status = gcoHARDWARE_SetAALineTexSlot(Engine->hardware, TexSlot);
 
     /* Return the status. */
     gcmFOOTER();
@@ -3710,11 +3292,12 @@ gceSTATUS
 gco3D_DrawPrimitives(
     IN gco3D Engine,
     IN gcePRIMITIVE Type,
-    IN gctINT StartVertex,
+    IN gctSIZE_T StartVertex,
     IN gctSIZE_T PrimitiveCount
     )
 {
     gceSTATUS status;
+    gctINT startVertex;
 
     gcmHEADER_ARG("Engine=0x%x Type=%d StartVertex=%d PrimitiveCount=%lu",
                   Engine, Type, StartVertex, PrimitiveCount);
@@ -3723,10 +3306,109 @@ gco3D_DrawPrimitives(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
     gcmDEBUG_VERIFY_ARGUMENT(PrimitiveCount > 0);
 
+    gcmSAFECASTSIZET(startVertex, StartVertex);
     /* Call the gcoHARDWARE object. */
-    status = gcoHARDWARE_DrawPrimitives(Type,
-                                        StartVertex,
+    status = gcoHARDWARE_DrawPrimitives(Engine->hardware,
+                                        Type,
+                                        startVertex,
                                         PrimitiveCount);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gco3D_DrawInstancedPrimitives
+**
+**  Draw a instanced number of primitives.
+**
+**  INPUT:
+**
+**      gco3D Engine
+**          Pointer to an gco3D object.
+**
+**      gcePRIMITIVE Type
+**          Type of the primitives to draw.  Can be one of the following:
+**
+**              gcvPRIMITIVE_POINT_LIST     - List of points.
+**              gcvPRIMITIVE_LINE_LIST      - List of lines.
+**              gcvPRIMITIVE_LINE_STRIP     - List of connecting lines.
+**              gcvPRIMITIVE_LINE_LOOP      - List of connecting lines where the
+**                                            first and last line will also be
+**                                            connected.
+**              gcvPRIMITIVE_TRIANGLE_LIST  - List of triangles.
+**              gcvPRIMITIVE_TRIANGLE_STRIP - List of connecting triangles layed
+**                                            out in a strip.
+**              gcvPRIMITIVE_TRIANGLE_FAN   - List of connecting triangles layed
+**                                            out in a fan.
+**
+**      gctINT StartVertex
+**          Starting vertex number to start drawing.  The starting vertex is
+**          multiplied by the stream stride to compute the starting offset.
+**
+**      gctSIZE_T PrimitiveCount
+**          Number of primitives to draw.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gco3D_DrawInstancedPrimitives(
+    IN gco3D Engine,
+    IN gcePRIMITIVE Type,
+    IN gctBOOL DrawIndex,
+    IN gctSIZE_T StartVertex,
+    IN gctSIZE_T StartIndex,
+    IN gctSIZE_T PrimitiveCount,
+    IN gctSIZE_T VertexCount,
+    IN gctBOOL SpilitDraw,
+    IN gctSIZE_T SpilitCount,
+    IN gcePRIMITIVE SpilitType,
+    IN gctSIZE_T InstanceCount
+    )
+{
+    gceSTATUS status;
+    gctUINT startVertex, startIndex;
+
+    gcmHEADER_ARG("Engine=0x%x Type=%d StartVertex=%d InstanceCount=%lu,VertexCount=%lu,PrimitiveCount=%lu",
+                  Engine, Type, StartVertex, InstanceCount, VertexCount, PrimitiveCount);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+    gcmDEBUG_VERIFY_ARGUMENT(PrimitiveCount > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(InstanceCount > 0);
+    gcmDEBUG_VERIFY_ARGUMENT(VertexCount > 0);
+
+    /* Check if instance count is at most 24 bits. And assert if it is bigger */
+    gcmASSERT((InstanceCount & 0xFF000000) == 0);
+
+    gcmSAFECASTSIZET(startVertex, StartVertex);
+    gcmSAFECASTSIZET(startIndex, StartIndex);
+
+    /* Call the gcoHARDWARE object. */
+    status = gcoHARDWARE_DrawInstancedPrimitives(Engine->hardware,
+                                                 DrawIndex,
+                                                 Type,
+                                                 startVertex,
+                                                 startIndex,
+                                                 PrimitiveCount,
+                                                 VertexCount,
+                                                 InstanceCount);
+
+    if (SpilitDraw)
+    {
+        status = gcoHARDWARE_DrawInstancedPrimitives(Engine->hardware,
+                                                     DrawIndex,
+                                                     SpilitType,
+                                                     startVertex,
+                                                     startIndex,
+                                                     PrimitiveCount,
+                                                     SpilitCount,
+                                                     InstanceCount);
+    }
 
     /* Return the status. */
     gcmFOOTER();
@@ -3794,7 +3476,8 @@ gco3D_DrawPrimitivesCount(
     gcmDEBUG_VERIFY_ARGUMENT(VertexCount != gcvNULL);
 
     /* Call the gcoHARDWARE object. */
-    status = gcoHARDWARE_DrawPrimitivesCount(Type,
+    status = gcoHARDWARE_DrawPrimitivesCount(Engine->hardware,
+                                             Type,
                                              StartVertex,
                                              VertexCount,
                                              PrimitiveCount);
@@ -3867,6 +3550,50 @@ gco3D_DrawPrimitivesOffset(
     return status;
 }
 
+static gceSTATUS _GetPrimitiveCount(
+    IN gcePRIMITIVE PrimitiveMode,
+    IN gctSIZE_T VertexCount,
+    OUT gctSIZE_T * PrimitiveCount
+    )
+{
+    gceSTATUS result = gcvSTATUS_OK;
+
+    /* Translate primitive count. */
+    switch (PrimitiveMode)
+    {
+    case gcvPRIMITIVE_POINT_LIST:
+        *PrimitiveCount = VertexCount;
+        break;
+
+    case gcvPRIMITIVE_LINE_LIST:
+        *PrimitiveCount = VertexCount / 2;
+        break;
+
+    case gcvPRIMITIVE_LINE_LOOP:
+        *PrimitiveCount = VertexCount;
+        break;
+
+    case gcvPRIMITIVE_LINE_STRIP:
+        *PrimitiveCount = VertexCount - 1;
+        break;
+
+    case gcvPRIMITIVE_TRIANGLE_LIST:
+        *PrimitiveCount = VertexCount / 3;
+        break;
+
+    case gcvPRIMITIVE_TRIANGLE_STRIP:
+    case gcvPRIMITIVE_TRIANGLE_FAN:
+        *PrimitiveCount = VertexCount - 2;
+        break;
+
+    default:
+        result = gcvSTATUS_INVALID_ARGUMENT;
+    }
+
+    /* Return result. */
+    return result;
+}
+
 /*******************************************************************************
 **
 **  gco3D_DrawIndexedPrimitives
@@ -3913,12 +3640,17 @@ gceSTATUS
 gco3D_DrawIndexedPrimitives(
     IN gco3D Engine,
     IN gcePRIMITIVE Type,
-    IN gctINT BaseVertex,
-    IN gctINT StartIndex,
-    IN gctSIZE_T PrimitiveCount
+    IN gctSIZE_T BaseVertex,
+    IN gctSIZE_T StartIndex,
+    IN gctSIZE_T PrimitiveCount,
+    IN gctBOOL SpilitDraw,
+    IN gctSIZE_T SpilitCount,
+    IN gcePRIMITIVE SpilitType
     )
 {
     gceSTATUS status;
+    gctUINT baseVertex, startIndex;
+    gctSIZE_T spilitPrimCount;
 
     gcmHEADER_ARG("Engine=0x%x Type=%d BaseVertex=%d StartIndex=%d "
                   "PrimitiveCount=%lu",
@@ -3928,12 +3660,28 @@ gco3D_DrawIndexedPrimitives(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
     gcmDEBUG_VERIFY_ARGUMENT(PrimitiveCount > 0);
 
-    /* Call the gcoHARDWARE object. */
-    status = gcoHARDWARE_DrawIndexedPrimitives(Type,
-                                               BaseVertex,
-                                               StartIndex,
-                                               PrimitiveCount);
+    gcmSAFECASTSIZET(baseVertex, BaseVertex);
+    gcmSAFECASTSIZET(startIndex, StartIndex);
 
+    /* Call the gcoHARDWARE object. */
+    gcmONERROR(_GetPrimitiveCount(Type, PrimitiveCount, &spilitPrimCount));
+    status = gcoHARDWARE_DrawIndexedPrimitives(Engine->hardware,
+                                               Type,
+                                               baseVertex,
+                                               startIndex,
+                                               SpilitDraw?spilitPrimCount:PrimitiveCount);
+
+    if (SpilitDraw)
+    {
+        gcmONERROR(_GetPrimitiveCount(SpilitType, SpilitCount, &spilitPrimCount));
+        status = gcoHARDWARE_DrawIndexedPrimitives(Engine->hardware,
+                                                   SpilitType,
+                                                   baseVertex,
+                                                   startIndex,
+                                                   spilitPrimCount);
+    }
+
+OnError:
     /* Return the status. */
     gcmFOOTER();
     return status;
@@ -4009,6 +3757,27 @@ gco3D_DrawIndexedPrimitivesOffset(
     return status;
 }
 
+
+gceSTATUS
+gco3D_DrawPattern(
+    IN gco3D Engine,
+    IN gcsFAST_FLUSH_PTR FastFlushInfo
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x", Engine);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
+    /* Call the gcoHARDWARE object */
+    status = gcoHARDWARE_DrawPattern(Engine->hardware, FastFlushInfo);
+
+    gcmFOOTER();
+    return status;
+}
+
 /*******************************************************************************
 **
 **  gco3D_SetAntiAlias
@@ -4042,7 +3811,7 @@ gco3D_SetAntiAlias(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Call hardware. */
-    status = gcoHARDWARE_SetAntiAlias(Enable);
+    status = gcoHARDWARE_SetAntiAlias(Engine->hardware, Enable);
 
     /* Return the status. */
     gcmFOOTER();
@@ -4090,7 +3859,7 @@ gco3D_WriteBuffer(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Call hardware. */
-    status = gcoHARDWARE_WriteBuffer(gcvNULL, Data, Bytes, Aligned);
+    status = gcoHARDWARE_WriteBuffer(Engine->hardware, Data, Bytes, Aligned);
 
     /* Return the status. */
     gcmFOOTER();
@@ -4151,7 +3920,8 @@ gco3D_SetFragmentConfiguration(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Set configuration. */
-    status = gcoHARDWARE_SetFragmentConfiguration(ColorFromStream,
+    status = gcoHARDWARE_SetFragmentConfiguration(Engine->hardware,
+                                                  ColorFromStream,
                                                   EnableFog,
                                                   EnableSmoothPoint,
                                                   ClipPlanes);
@@ -4197,7 +3967,7 @@ gco3D_EnableTextureStage(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Set configuration. */
-    status = gcoHARDWARE_EnableTextureStage(Stage, Enable);
+    status = gcoHARDWARE_EnableTextureStage(Engine->hardware, Stage, Enable);
 
     /* Return the status. */
     gcmFOOTER();
@@ -4247,7 +4017,8 @@ gco3D_SetTextureColorMask(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Set configuration. */
-    status = gcoHARDWARE_SetTextureColorMask(Stage,
+    status = gcoHARDWARE_SetTextureColorMask(Engine->hardware,
+                                             Stage,
                                              ColorEnabled,
                                              AlphaEnabled);
 
@@ -4299,7 +4070,8 @@ gco3D_SetTextureAlphaMask(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Set configuration. */
-    status = gcoHARDWARE_SetTextureAlphaMask(Stage,
+    status = gcoHARDWARE_SetTextureAlphaMask(Engine->hardware,
+                                             Stage,
                                              ColorEnabled,
                                              AlphaEnabled);
 
@@ -4346,7 +4118,7 @@ gco3D_SetFragmentColorX(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Set the color. */
-    status = gcoHARDWARE_SetFragmentColorX(Red, Green, Blue, Alpha);
+    status = gcoHARDWARE_SetFragmentColorX(Engine->hardware, Red, Green, Blue, Alpha);
 
     /* Return the status. */
     gcmFOOTER();
@@ -4371,7 +4143,7 @@ gco3D_SetFragmentColorF(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Set the color. */
-    status = gcoHARDWARE_SetFragmentColorF(Red, Green, Blue, Alpha);
+    status = gcoHARDWARE_SetFragmentColorF(Engine->hardware, Red, Green, Blue, Alpha);
 
     /* Return the status. */
     gcmFOOTER();
@@ -4416,7 +4188,7 @@ gco3D_SetFogColorX(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Set the color. */
-    status = gcoHARDWARE_SetFogColorX(Red, Green, Blue, Alpha);
+    status = gcoHARDWARE_SetFogColorX(Engine->hardware, Red, Green, Blue, Alpha);
 
     /* Return the status. */
     gcmFOOTER();
@@ -4441,7 +4213,7 @@ gco3D_SetFogColorF(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Set the color. */
-    status = gcoHARDWARE_SetFogColorF(gcvNULL,
+    status = gcoHARDWARE_SetFogColorF(Engine->hardware,
                                       Red, Green, Blue, Alpha);
 
     /* Return the status. */
@@ -4491,7 +4263,8 @@ gco3D_SetTetxureColorX(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Set the color. */
-    status = gcoHARDWARE_SetTetxureColorX(Stage,
+    status = gcoHARDWARE_SetTetxureColorX(Engine->hardware,
+                                          Stage,
                                           Red, Green, Blue, Alpha);
 
     /* Return the status. */
@@ -4518,7 +4291,8 @@ gco3D_SetTetxureColorF(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Set the color. */
-    status = gcoHARDWARE_SetTetxureColorF(Stage,
+    status = gcoHARDWARE_SetTetxureColorF(Engine->hardware,
+                                          Stage,
                                           Red, Green, Blue, Alpha);
 
     /* Return the status. */
@@ -4582,7 +4356,8 @@ gco3D_SetColorTextureFunction(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Set the texture function. */
-    status = gcoHARDWARE_SetColorTextureFunction(Stage,
+    status = gcoHARDWARE_SetColorTextureFunction(Engine->hardware,
+                                                 Stage,
                                                  Function,
                                                  Source0, Channel0,
                                                  Source1, Channel1,
@@ -4592,6 +4367,135 @@ gco3D_SetColorTextureFunction(
     /* Return the status. */
     gcmFOOTER();
     return status;
+}
+
+gceSTATUS
+gco3D_GetClosestRenderFormat(
+    IN gco3D Engine,
+    IN gceSURF_FORMAT InFormat,
+    OUT gceSURF_FORMAT* OutFormat
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("InFormat=%d", InFormat);
+
+    /* Route to gcoHARDWARE function. */
+    status = gcoHARDWARE_GetClosestRenderFormat(InFormat,
+                                                OutFormat);
+
+    /* Return status. */
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gco3D_SetWClipEnable(
+    IN gco3D Engine,
+    IN gctBOOL Enable
+    )
+{
+#if gcdUSE_WCLIP_PATCH
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x Enable=%u",
+                  Engine, Enable);
+
+    Engine->wClipEnable = Enable;
+
+    /* Route to hardware. */
+    status = gcoHARDWARE_SetWClipEnable(Engine->hardware, Enable);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+#else
+    return gcvSTATUS_OK;
+#endif
+}
+
+gceSTATUS
+gco3D_GetWClipEnable(
+    IN gco3D Engine,
+    OUT gctBOOL * Enable
+    )
+{
+    gcmHEADER_ARG("Engine=0x%x Enable=%u",
+                  Engine, Enable);
+
+    *Enable = Engine->wClipEnable;
+    /* Return the status. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gco3D_SetWPlaneLimitF(
+    IN gco3D Engine,
+    IN gctFLOAT Value
+    )
+{
+#if gcdUSE_WCLIP_PATCH
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x Value=%f",
+                  Engine, Value);
+
+    /* Route to hardware. */
+    status = gcoHARDWARE_SetWPlaneLimit(Engine->hardware, Value);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+#else
+    return gcvSTATUS_OK;
+#endif
+}
+
+gceSTATUS
+gco3D_SetWPlaneLimitX(
+    IN gco3D Engine,
+    IN gctFIXED_POINT Value
+    )
+{
+#if gcdUSE_WCLIP_PATCH
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x Value=%x",
+                  Engine, Value);
+
+    /* Route to hardware. */
+    status = gcoHARDWARE_SetWPlaneLimit(Engine->hardware, Value / 65536.0f);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+#else
+    return gcvSTATUS_OK;
+#endif
+}
+
+gceSTATUS
+gco3D_SetWPlaneLimit(
+        IN gco3D Engine,
+        IN gctFLOAT Value
+        )
+{
+#if gcdUSE_WCLIP_PATCH
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x Value2=%f",
+            Engine, Value);
+
+    /* Route to hardware. */
+    status = gcoHARDWARE_SetWPlaneLimit(Engine->hardware, Value);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+#else
+    return gcvSTATUS_OK;
+#endif
 }
 
 /*******************************************************************************
@@ -4650,7 +4554,8 @@ gco3D_SetAlphaTextureFunction(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Set the texture function. */
-    status = gcoHARDWARE_SetAlphaTextureFunction(Stage,
+    status = gcoHARDWARE_SetAlphaTextureFunction(Engine->hardware,
+                                                 Stage,
                                                  Function,
                                                  Source0, Channel0,
                                                  Source1, Channel1,
@@ -4703,8 +4608,11 @@ gco3D_Semaphore(
 
     gcmHEADER_ARG("Engine=0x%x From=%d To=%d How=%d", Engine, From, To, How);
 
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
     /* Route to hardware. */
-    status = gcoHARDWARE_Semaphore(From, To, How);
+    status = gcoHARDWARE_Semaphore(Engine->hardware, From, To, How, gcvNULL);
 
     /* Return the status. */
     gcmFOOTER();
@@ -4745,8 +4653,47 @@ gco3D_SetCentroids(
     gcmHEADER_ARG("Engine=0x%x Index=%u Centroids=0x%x",
                   Engine, Index, Centroids);
 
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
     /* Route to hardware. */
-    status = gcoHARDWARE_SetCentroids(Index, Centroids);
+    status = gcoHARDWARE_SetCentroids(Engine->hardware, Index, Centroids);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gco3D_FlushSHL1Cache
+**
+**  Explicitly flush shader L1 cache
+**
+**  INPUT:
+**
+**      gco3D Engine
+**          Pointer to the gco3D object.
+**
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gco3D_FlushSHL1Cache(
+    IN gco3D Engine
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x", Engine);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
+    /* Route to hardware. */
+    status = gcoHARDWARE_FlushSHL1Cache(Engine->hardware);
 
     /* Return the status. */
     gcmFOOTER();
@@ -4779,12 +4726,12 @@ gco3D_InvokeThreadWalker(
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
-	/* Route to hardware. */
-	status = gcoHARDWARE_InvokeThreadWalker(Info);
+    /* Route to hardware. */
+    status = gcoHARDWARE_InvokeThreadWalker(Engine->hardware, Info);
 
-	/* Return the status. */
-	gcmFOOTER();
-	return status;
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
 }
 
 /*******************************************************************************
@@ -4819,12 +4766,441 @@ gco3D_SetLogicOp(
     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
 
     /* Program logicOp. */
-    status = gcoHARDWARE_SetLogicOp(Rop);
+    status = gcoHARDWARE_SetLogicOp(Engine->hardware, Rop);
 
     /* Return the status. */
     gcmFOOTER();
     return status;
 }
+
+gceSTATUS
+gco3D_SetColorOutCount(
+    IN gco3D Engine,
+    IN gctUINT32 ColorOutCount)
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x ColorOutCount=%d", Engine, ColorOutCount);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
+    /* Program num mRT. */
+    status = gcoHARDWARE_SetColorOutCount(Engine->hardware, ColorOutCount);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gco3D_SetOQ(
+    IN gco3D Engine,
+    INOUT gctPOINTER * Result,
+    IN gctBOOL Enable)
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gcsOQ * oq = gcvNULL;
+
+    gcmHEADER_ARG("Engine=0x%x Result=%d, Enable=%u", Engine, Result, Enable);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
+    if (Result && *Result == gcvNULL)
+    {
+        gcmONERROR(gcoOS_Allocate(gcvNULL,gcmSIZEOF(gcsOQ),Result));
+
+        gcoOS_ZeroMemory(*Result,gcmSIZEOF(gcsOQ));
+
+        oq = *Result;
+
+        oq->oqStatus = gcvOQ_Disable;
+
+        /* Allocate OQ address, we allocate 64 OQ address for now */
+        oq->oqSize = 64 * gcmSIZEOF(gctUINT64);
+
+        gcmONERROR(gcsSURF_NODE_Construct(
+            &oq->node,
+            oq->oqSize,
+            64,
+            gcvSURF_VERTEX,
+            gcvALLOC_FLAG_NONE,
+            gcvPOOL_DEFAULT
+            ));
+
+        gcmONERROR(gcoHARDWARE_Lock(&oq->node,
+                                &oq->oqPhysic,
+                                &oq->oqPointer));
+
+        gcoOS_ZeroMemory(oq->oqPointer, oq->oqSize);
+
+        oq->oqIndex = -1;
+    }
+    else if (Result && *Result != gcvNULL)
+    {
+        oq = *Result;
+    }
+
+    /* Program OQ. */
+    status = gcoHARDWARE_SetOQ(Engine->hardware, oq, Enable);
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gco3D_GetOQ(
+    IN gco3D Engine,
+    IN gctPOINTER Result,
+    OUT gctINT64 * Logical
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gcsOQ * oq = Result;
+    gctINT i;
+
+    gcmHEADER_ARG("Engine=0x%x Result=%d", Engine, Result);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
+    if (oq)
+    {
+        /* Invalidate CPU cache for it was written by GPU. */
+        gcmONERROR(gcoSURF_NODE_Cache(&oq->node,oq->oqPointer,oq->oqSize, gcvCACHE_INVALIDATE));
+
+        for (i = 0; i <= oq->oqIndex; i++)
+        {
+            *Logical += *(gctUINT64*)((gctUINT64*)oq->oqPointer + i);
+        }
+    }
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gco3D_DeleteOQ(
+    IN gco3D Engine,
+    INOUT gctPOINTER Result
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gcsOQ * oq = Result;
+
+    gcmHEADER_ARG("Engine=0x%x Result=%d", Engine, Result);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
+    if (oq)
+    {
+        if (oq->node.pool != gcvPOOL_UNKNOWN)
+        {
+            gcmONERROR(gcoHARDWARE_Unlock(&oq->node,gcvSURF_VERTEX));
+
+            gcmONERROR(gcoHARDWARE_ScheduleVideoMemory(&oq->node));
+
+            oq->node.pool = gcvPOOL_UNKNOWN;
+        }
+
+        gcmONERROR(gcoOS_Free(gcvNULL, oq));
+    }
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS gco3D_PrimitiveRestart(IN gco3D Engine, IN gctBOOL PrimitiveRestart)
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x PrimitiveRestart=%d", Engine, PrimitiveRestart);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
+    /* Program primitive restart. */
+    status = gcoHARDWARE_PrimitiveRestart(Engine->hardware, PrimitiveRestart);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+#if gcdSTREAM_OUT_BUFFER
+
+
+gceSTATUS
+gco3D_QueryStreamOut(
+    IN gco3D Engine,
+    IN gctUINT32 IndexAddress,
+    IN gctUINT32 IndexOffset,
+    IN gctUINT32 IndexCount,
+    OUT gctBOOL_PTR Found
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x IndexAddress=0x%x IndexOffset=0x%x IndexCount=%u Found=0x%x",
+                  Engine, IndexAddress, IndexOffset, IndexCount, Found);
+
+    /* Output must not be null */
+    gcmVERIFY_ARGUMENT(Found != gcvNULL);
+
+    status = gcoHARDWARE_QueryStreamOut(Engine->hardware, IndexAddress, IndexOffset, IndexCount, Found);
+
+    /* Return the status. */
+    gcmFOOTER_ARG("*Found=", *Found);
+    return status;
+}
+
+gceSTATUS
+gco3D_StartStreamOut(
+    IN gco3D Engine,
+    IN gctINT StreamOutStatus,
+    IN gctUINT32 IndexAddress,
+    IN gctUINT32 IndexOffset,
+    IN gctUINT32 IndexCount
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x StreamOutStatus=%d IndexAddress=0x%x IndexOffset=0x%x IndexCount=%u",
+                  Engine, StreamOutStatus, IndexAddress, IndexOffset, IndexCount);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
+    status = gcoHARDWARE_StartStreamOut(Engine->hardware, StreamOutStatus, IndexAddress, IndexOffset, IndexCount);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gco3D_StopStreamOut(
+    IN gco3D Engine
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x", Engine);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
+    status = gcoHARDWARE_StopStreamOut(Engine->hardware);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gco3D_ReplayStreamOut(
+    IN gco3D Engine,
+    IN gctUINT32 IndexAddress,
+    IN gctUINT32 IndexOffset,
+    IN gctUINT32 IndexCount
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x IndexAddress=0x%x IndexOffset=0x%x IndexCount=%u",
+                  Engine, IndexAddress, IndexOffset, IndexCount);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
+    status = gcoHARDWARE_ReplayStreamOut(Engine->hardware, IndexAddress, IndexOffset, IndexCount);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gco3D_EndStreamOut(
+    IN gco3D Engine
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Engine=0x%x", Engine);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
+    status = gcoHARDWARE_EndStreamOut(Engine->hardware);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+#endif
+
+/*******************************************************************************
+**
+**  gco3D_Get3DEngine
+**
+**  Get the pointer to the gco3D object which is the current one of this thread
+**
+**  OUTPUT:
+**
+**      gco3D * Engine
+**          Pointer to a variable receiving the gco3D object pointer.
+*/
+gceSTATUS
+gco3D_Get3DEngine(
+    OUT gco3D * Engine
+    )
+{
+	gceSTATUS status;
+    gcsTLS_PTR tls;
+
+    gcmHEADER();
+
+    /* Verify the arguments. */
+    gcmDEBUG_VERIFY_ARGUMENT(Engine != gcvNULL);
+
+    do
+    {
+        gcmONERROR(gcoOS_GetTLS(&tls));
+
+        /* Return pointer to the gco3D object. */
+        *Engine = tls->engine3D;
+
+        if (*Engine == gcvNULL)
+        {
+            status = gcvSTATUS_INVALID_OBJECT;
+            gcmERR_BREAK(status);
+        }
+        /* Success. */
+        gcmFOOTER_ARG("*Engine=0x%x", *Engine);
+
+        return gcvSTATUS_OK;
+
+    }while (gcvFALSE);
+
+ OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+/*****************************************************************************
+*********
+**
+**  gco3D_Set3DEngine
+**
+**  Set the pointer as the gco3D object to be current 3D engine of this thread
+**
+**
+**   gco3D Engine
+**       The gco3D object that needs to be set.
+**
+**  OUTPUT:
+**
+**   nothing.
+*/
+gceSTATUS
+gco3D_Set3DEngine(
+     IN gco3D Engine
+     )
+{
+     gceSTATUS status;
+     gcsTLS_PTR tls;
+
+     gcmHEADER();
+
+     /* Verify the arguments. */
+     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
+     gcmONERROR(gcoOS_GetTLS(&tls));
+
+     /* Set the gco3D object. */
+     tls->engine3D = Engine;
+
+     gcmONERROR(gcoHAL_SetHardwareType(gcvNULL, gcvHARDWARE_3D));
+
+     /* Set this engine's hardware object to be current one */
+     gcmONERROR(gcoHARDWARE_Set3DHardware(Engine->hardware));
+
+     /* Success. */
+     gcmFOOTER_NO();
+     return gcvSTATUS_OK;
+
+OnError:
+     /* Return the status. */
+     gcmFOOTER();
+     return status;
+}
+
+
+/*****************************************************************************
+*********
+**
+**  gcoHAL_UnSet3DEngine
+**
+**  UnSet the pointer as the gco3D object from this thread, restore the old
+**  hardware object.
+**
+**  INPUT:
+**
+**
+**   gco3D Engine
+**       The gco3D object that needs to be unset.
+**
+**  OUTPUT:
+**
+**   nothing.
+*/
+gceSTATUS
+gco3D_UnSet3DEngine(
+     IN gco3D Engine
+     )
+{
+     gceSTATUS status;
+     gcsTLS_PTR tls;
+     gcoHARDWARE currentHardware;
+
+     gcmHEADER();
+
+     /* Verify the arguments. */
+     gcmVERIFY_OBJECT(Engine, gcvOBJ_3D);
+
+     gcmONERROR(gcoOS_GetTLS(&tls));
+
+     gcmONERROR(gcoHARDWARE_Get3DHardware(&currentHardware));
+
+     gcmASSERT(currentHardware == Engine->hardware);
+
+     /* Remove the gco3D object from TLS */
+     tls->engine3D = gcvNULL;
+
+     /* Set current hardware object of this thread is NULL */
+     gcmONERROR(gcoHARDWARE_Set3DHardware(gcvNULL));
+
+     /* Success. */
+     gcmFOOTER_NO();
+     return gcvSTATUS_OK;
+
+OnError:
+     /* Return the status. */
+     gcmFOOTER();
+     return status;
+}
+
 
 #else /* gcdNULL_DRIVER < 2 */
 
@@ -4857,6 +5233,57 @@ gceSTATUS gco3D_SetAPI(
     return gcvSTATUS_OK;
 }
 
+gceSTATUS gco3D_GetAPI(
+    IN gco3D Engine,
+    OUT gceAPI * ApiType
+    )
+{
+    *ApiType = gcvAPI_OPENGL;
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gco3D_SetPSOutputMapping(
+    IN gco3D Engine,
+    IN gctINT32 * psOutputMapping
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+
+gceSTATUS
+gco3D_SetTargetEx(
+    IN gco3D Engine,
+    IN gctUINT32 TargetIndex,
+    IN gcoSURF Surface,
+    IN gctUINT32 LayerIndex
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gco3D_UnsetTargetEx(
+    IN gco3D Engine,
+    IN gctUINT32 TargetIndex,
+    IN gcoSURF Surface
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gco3D_SetTargetOffsetEx(
+    IN gco3D Engine,
+    IN gctUINT32 TargetIndex,
+    IN gctSIZE_T Offset
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+
 gceSTATUS gco3D_SetTarget(
     IN gco3D Engine,
     IN gcoSURF Surface
@@ -4873,6 +5300,7 @@ gceSTATUS gco3D_UnsetTarget(
     return gcvSTATUS_OK;
 }
 
+
 gceSTATUS gco3D_SetDepth(
     IN gco3D Engine,
     IN gcoSURF Surface
@@ -4880,6 +5308,17 @@ gceSTATUS gco3D_SetDepth(
 {
     return gcvSTATUS_OK;
 }
+
+
+gceSTATUS
+gco3D_SetDepthBufferOffset(
+    IN gco3D Engine,
+    IN gctSIZE_T Offset
+    )
+{
+    return gcvSTATUS_OK;
+}
+
 
 gceSTATUS gco3D_UnsetDepth(
     IN gco3D Engine,
@@ -4971,56 +5410,6 @@ gceSTATUS gco3D_SetClearStencil(
 gceSTATUS gco3D_SetShading(
     IN gco3D Engine,
     IN gceSHADING Shading
-    )
-{
-    return gcvSTATUS_OK;
-}
-
-gceSTATUS gco3D_ClearRect(
-    IN gco3D Engine,
-    IN gctUINT32 Address,
-    IN gctPOINTER Memory,
-    IN gctUINT32 Stride,
-    IN gceSURF_FORMAT Format,
-    IN gctINT32 Left,
-    IN gctINT32 Top,
-    IN gctINT32 Right,
-    IN gctINT32 Bottom,
-    IN gctUINT32 Width,
-    IN gctUINT32 Height,
-    IN gctUINT32 Flags
-    )
-{
-    return gcvSTATUS_OK;
-}
-
-gceSTATUS gco3D_Clear(
-    IN gco3D Engine,
-    IN gctUINT32 Address,
-    IN gctUINT32 Stride,
-    IN gceSURF_FORMAT Format,
-    IN gctUINT32 Width,
-    IN gctUINT32 Height,
-    IN gctUINT32 Flags
-    )
-{
-    return gcvSTATUS_OK;
-}
-
-gceSTATUS gco3D_ClearTileStatus(
-    IN gco3D Engine,
-    IN gcsSURF_INFO_PTR Surface,
-    IN gctUINT32 TileStatusAddress,
-    IN gctUINT32 Flags
-    )
-{
-    return gcvSTATUS_OK;
-}
-
-gceSTATUS gco3D_ClearHzTileStatus(
-    IN gco3D Engine,
-    IN gcsSURF_INFO_PTR Surface,
-    IN gcsSURF_NODE_PTR TileStatus
     )
 {
     return gcvSTATUS_OK;
@@ -5161,6 +5550,16 @@ gceSTATUS gco3D_SetDepthRangeF(
     return gcvSTATUS_OK;
 }
 
+gceSTATUS
+gco3D_SetDepthPlaneF(
+    IN gco3D Engine,
+    IN gctFLOAT Near,
+    IN gctFLOAT Far
+    )
+{
+    return gcvSTATUS_OK;
+}
+
 gceSTATUS gco3D_SetLastPixelEnable(
     IN gco3D Engine,
     IN gctBOOL Enable
@@ -5235,7 +5634,23 @@ gceSTATUS gco3D_SetStencilMask(
     return gcvSTATUS_OK;
 }
 
+gceSTATUS gco3D_SetStencilMaskBack(
+    IN gco3D Engine,
+    IN gctUINT8 Mask
+    )
+{
+    return gcvSTATUS_OK;
+}
+
 gceSTATUS gco3D_SetStencilWriteMask(
+    IN gco3D Engine,
+    IN gctUINT8 Mask
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS gco3D_SetStencilWriteMaskBack(
     IN gco3D Engine,
     IN gctUINT8 Mask
     )
@@ -5279,6 +5694,22 @@ gco3D_SetAllEarlyDepthModes(
     return gcvSTATUS_OK;
 }
 
+gceSTATUS
+gco3D_SwitchDynamicEarlyDepthMode(
+    IN gco3D Engine
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gco3D_DisableDynamicEarlyDepthMode(
+    IN gco3D Engine,
+    IN gctBOOL Disable
+    )
+{
+    return gcvSTATUS_OK;
+}
 gceSTATUS gco3D_SetStencilFail(
     IN gco3D Engine,
     IN gceSTENCIL_WHERE Where,
@@ -5372,8 +5803,23 @@ gceSTATUS gco3D_SetAALineTexSlot(
 gceSTATUS gco3D_DrawPrimitives(
     IN gco3D Engine,
     IN gcePRIMITIVE Type,
-    IN gctINT StartVertex,
+    IN gctSIZE_T StartVertex,
     IN gctSIZE_T PrimitiveCount
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gco3D_DrawInstancedPrimitives(
+    IN gco3D Engine,
+    IN gcePRIMITIVE Type,
+    IN gctBOOL DrawIndex,
+    IN gctSIZE_T StartVertex,
+    IN gctSIZE_T StartIndex,
+    IN gctSIZE_T PrimitiveCount,
+    IN gctSIZE_T VertexCount,
+    IN gctSIZE_T InstanceCount
     )
 {
     return gcvSTATUS_OK;
@@ -5404,8 +5850,8 @@ gceSTATUS gco3D_DrawPrimitivesOffset(
 gceSTATUS gco3D_DrawIndexedPrimitives(
     IN gco3D Engine,
     IN gcePRIMITIVE Type,
-    IN gctINT BaseVertex,
-    IN gctINT StartIndex,
+    IN gctSIZE_T BaseVertex,
+    IN gctSIZE_T StartIndex,
     IN gctSIZE_T PrimitiveCount
     )
 {
@@ -5581,11 +6027,62 @@ gceSTATUS gco3D_SetAlphaTextureFunction(
     return gcvSTATUS_OK;
 }
 
+gceSTATUS gco3D_SetWClipEnable(
+    IN gco3D Engine,
+    IN gctBOOL Enable
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS gco3D_GetWClipEnable(
+    IN gco3D Engine,
+    OUT gctBOOL * Enable
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gco3D_SetWPlaneLimitF(
+    IN gco3D Engine,
+    IN gctFLOAT Value
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gco3D_SetWPlaneLimitX(
+    IN gco3D Engine,
+    IN gctFIXED_POINT Value
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gco3D_SetWPlaneLimit(
+        IN gco3D Engine,
+        IN gctFLOAT Value
+        )
+{
+    return gcvSTATUS_OK;
+}
+
 gceSTATUS gco3D_Semaphore(
     IN gco3D Engine,
     IN gceWHERE From,
     IN gceWHERE To,
     IN gceHOW How
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gco3D_FlushSHL1Cache(
+    IN gco3D Engine
     )
 {
     return gcvSTATUS_OK;
@@ -5599,7 +6096,6 @@ gceSTATUS gco3D_SetCentroids(
 {
     return gcvSTATUS_OK;
 }
-
 gceSTATUS gco3D_InvokeThreadWalker(
     IN gco3D Engine,
     IN gcsTHREAD_WALKER_INFO_PTR Info
@@ -5616,5 +6112,90 @@ gceSTATUS gco3D_SetLogicOp(
     return gcvSTATUS_OK;
 }
 
+gceSTATUS gco3D_SetOQ(
+    IN gco3D Engine,
+    IN gctUINT32 ResultAddress,
+    IN gctBOOL Enable
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS gco3D_SetColorOutCount(
+    IN gco3D Engine,
+    IN gctUINT32 ColorOutCount
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS gco3D_PrimitiveRestart(
+    IN gco3D Engine,
+    IN gctBOOL PrimitiveRestart
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+#if gcdSTREAM_OUT_BUFFER
+
+gceSTATUS
+gco3D_StartStreamOut(
+    IN gco3D Engine,
+    IN gctINT StreamOutStatus,
+    IN gctUINT32 IndexAddress,
+    IN gctUINT32 IndexOffset,
+    IN gctUINT32 IndexCount
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gco3D_StopStreamOut(
+    IN gco3D Engine
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gco3D_ReplayStreamOut(
+    IN gco3D Engine,
+    IN gctUINT32 IndexAddress,
+    IN gctUINT32 IndexOffset,
+    IN gctUINT32 IndexCount
+)
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gco3D_EndStreamOut(
+    IN gco3D Engine
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+#endif
+
+gceSTATUS
+gco3D_UnSet3DEngine(
+    IN gco3D Engine
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+
+gceSTATUS
+gco3D_Get3DEngine(
+    OUT gco3D * Engine
+    )
+{
+    return gcvSTATUS_OK;
+}
+
 #endif /* gcdNULL_DRIVER < 2 */
-#endif /* VIVANTE_NO_3D */
+#endif /* gcdENABLE_3D */

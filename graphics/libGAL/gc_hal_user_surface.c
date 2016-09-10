@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -11,8 +11,6 @@
 *****************************************************************************/
 
 
-
-
 /**
 **  @file
 **  gcoSURF object for user HAL layers.
@@ -21,13 +19,581 @@
 
 #include "gc_hal_user_precomp.h"
 
-#define gcmALVM         iface.u.AllocateLinearVideoMemory
-
 #define _GC_OBJ_ZONE    gcvZONE_SURFACE
 
 /******************************************************************************\
 **************************** gcoSURF API Support Code **************************
 \******************************************************************************/
+
+#if gcdENABLE_3D
+/*******************************************************************************
+**
+**  gcoSURF_LockTileStatus
+**
+**  Locked tile status buffer of surface
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to an gcoSURF object.
+**
+**
+**  OUTPUT:
+**
+*/
+gceSTATUS
+gcoSURF_LockTileStatus(
+    IN gcoSURF Surface
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+
+    gcmHEADER_ARG("Surface=0x%x", Surface);
+
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+
+    if (Surface->info.tileStatusNode.pool != gcvPOOL_UNKNOWN)
+    {
+        /* Lock the tile status buffer. */
+        gcmONERROR(
+            gcoHARDWARE_Lock(&Surface->info.tileStatusNode,
+                             gcvNULL,
+                             gcvNULL));
+
+        gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
+                      "Locked tile status 0x%x: physical=0x%08X logical=0x%x "
+                      "lockedCount=%d",
+                      &Surface->info.tileStatusNode,
+                      Surface->info.tileStatusNode.physical,
+                      Surface->info.tileStatusNode.logical,
+                      Surface->info.tileStatusNode.lockCount);
+
+        /* Only 1 address. */
+        Surface->info.tileStatusNode.count = 1;
+
+        /* Check if this is the first lock. */
+        if (Surface->info.tileStatusNode.firstLock)
+        {
+            /* Fill the tile status memory with the filler. */
+            gcoOS_MemFill(Surface->info.tileStatusNode.logical,
+                          (gctUINT8) Surface->info.tileStatusFiller,
+                          Surface->info.tileStatusNode.size);
+
+            /* Flush the node from cache. */
+            gcmONERROR(
+                gcoSURF_NODE_Cache(&Surface->info.tileStatusNode,
+                                 Surface->info.tileStatusNode.logical,
+                                 Surface->info.tileStatusNode.size,
+                                 gcvCACHE_CLEAN));
+
+            /* Dump the memory write. */
+            gcmDUMP_BUFFER(gcvNULL,
+                           "memory",
+                           Surface->info.tileStatusNode.physical,
+                           Surface->info.tileStatusNode.logical,
+                           0,
+                           Surface->info.tileStatusNode.size);
+
+#if gcdDUMP
+            if (Surface->info.tileStatusFiller == 0x0)
+            {
+                gcmDUMP_BUFFER(gcvNULL,
+                               "memory",
+                               Surface->info.node.physical,
+                               Surface->info.node.logical,
+                               0,
+                               Surface->info.node.size);
+            }
+#endif
+
+            /* No longer first lock. */
+            Surface->info.tileStatusNode.firstLock = gcvFALSE;
+        }
+    }
+
+    /* Lock the hierarchical Z tile status buffer. */
+    if (Surface->info.hzTileStatusNode.pool != gcvPOOL_UNKNOWN)
+    {
+        /* Lock the tile status buffer. */
+        gcmONERROR(
+            gcoHARDWARE_Lock(&Surface->info.hzTileStatusNode,
+                             gcvNULL,
+                             gcvNULL));
+
+        gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
+                      "Locked HZ tile status 0x%x: physical=0x%08X logical=0x%x "
+                      "lockedCount=%d",
+                      &Surface->info.hzTileStatusNode,
+                      Surface->info.hzTileStatusNode.physical,
+                      Surface->info.hzTileStatusNode.logical,
+                      Surface->info.hzTileStatusNode.lockCount);
+
+        /* Only 1 address. */
+        Surface->info.hzTileStatusNode.count = 1;
+
+        /* Check if this is the first lock. */
+        if (Surface->info.hzTileStatusNode.firstLock)
+        {
+            /* Fill the tile status memory with the filler. */
+            gcoOS_MemFill(Surface->info.hzTileStatusNode.logical,
+                          (gctUINT8) Surface->info.hzTileStatusFiller,
+                          Surface->info.hzTileStatusNode.size);
+
+            /* Flush the node from cache. */
+            gcmONERROR(
+                gcoSURF_NODE_Cache(&Surface->info.hzTileStatusNode,
+                                 Surface->info.hzTileStatusNode.logical,
+                                 Surface->info.hzTileStatusNode.size,
+                                 gcvCACHE_CLEAN));
+
+            /* Dump the memory write. */
+            gcmDUMP_BUFFER(gcvNULL,
+                           "memory",
+                           Surface->info.hzTileStatusNode.physical,
+                           Surface->info.hzTileStatusNode.logical,
+                           0,
+                           Surface->info.hzTileStatusNode.size);
+
+            /* No longer first lock. */
+            Surface->info.hzTileStatusNode.firstLock = gcvFALSE;
+        }
+    }
+OnError:
+    gcmFOOTER_NO();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoSURF_LockHzBuffer
+**
+**  Locked HZ buffer buffer of surface
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to an gcoSURF object.
+**
+**
+**  OUTPUT:
+**
+*/
+gceSTATUS
+gcoSURF_LockHzBuffer(
+    IN gcoSURF Surface
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+
+    gcmHEADER_ARG("Surface=0x%x", Surface);
+
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+
+    if (Surface->info.hzNode.pool != gcvPOOL_UNKNOWN)
+    {
+        gcmONERROR(
+            gcoHARDWARE_Lock(&Surface->info.hzNode,
+                             gcvNULL,
+                             gcvNULL));
+
+        gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
+                      "Locked HZ surface 0x%x: physical=0x%08X logical=0x%x "
+                      "lockCount=%d",
+                      &Surface->info.hzNode,
+                      Surface->info.hzNode.physical,
+                      Surface->info.hzNode.logical,
+                      Surface->info.hzNode.lockCount);
+
+        /* Only 1 address. */
+        Surface->info.hzNode.count = 1;
+    }
+OnError:
+    gcmFOOTER_NO();
+    return status;
+
+}
+
+/*******************************************************************************
+**
+**  gcoSURF_Construct
+**
+**  Allocate tile status buffer for surface
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to an gcoSURF object.
+**
+**
+**  OUTPUT:
+**
+*/
+gceSTATUS
+gcoSURF_AllocateTileStatus(
+    IN gcoSURF Surface
+    )
+{
+    gceSTATUS status;
+    gctSIZE_T bytes;
+    gctUINT alignment;
+    gctBOOL tileStatusInVirtual;
+
+#if gcdENABLE_VG
+    gceHARDWARE_TYPE currentType = gcvHARDWARE_INVALID;
+#endif
+
+    gcmHEADER_ARG("Surface=0x%x", Surface);
+
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+
+    if (Surface->info.tileStatusNode.pool != gcvPOOL_UNKNOWN)
+    {
+        gcmFOOTER_NO();
+        return gcvSTATUS_OK;
+    }
+
+    /* No tile status buffer allocated. */
+    Surface->info.tileStatusNode.pool             = gcvPOOL_UNKNOWN;
+    Surface->info.hzTileStatusNode.pool           = gcvPOOL_UNKNOWN;
+
+    /* Set tile status disabled at the beginging to be consistent with POOL value */
+    Surface->info.tileStatusDisabled = gcvTRUE;
+    Surface->info.dirty = gcvTRUE;
+
+    tileStatusInVirtual = gcoHARDWARE_IsFeatureAvailable(gcvNULL, gcvFEATURE_MC20);
+
+    /*   Verify if the type requires a tile status buffer:
+    ** - do not turn on fast clear if the surface is virtual;
+    ** - for user pools we don't have the address of the surface yet,
+    **   delay tile status determination until we map the surface.
+    */
+    if ((Surface->info.node.pool == gcvPOOL_USER) ||
+        ((Surface->info.node.pool == gcvPOOL_VIRTUAL) && !tileStatusInVirtual))
+    {
+        gcmFOOTER_NO();
+        return gcvSTATUS_OK;
+    }
+
+    if ((Surface->info.type != gcvSURF_RENDER_TARGET) &&
+        (Surface->info.type != gcvSURF_DEPTH))
+    {
+        gcmFOOTER_NO();
+        return gcvSTATUS_OK;
+    }
+
+    if (Surface->info.hints & gcvSURF_NO_TILE_STATUS)
+    {
+        gcmFOOTER_NO();
+        return gcvSTATUS_OK;
+    }
+
+    if ((Surface->info.formatInfo.fakedFormat &&
+        !Surface->info.paddingFormat
+        ) ||
+        ((Surface->info.bitsPerPixel > 32) &&
+         (gcoHAL_IsFeatureAvailable(gcvNULL, gcvFEATURE_64BPP_HW_CLEAR_SUPPORT) == gcvFALSE)
+        ) ||
+        (Surface->info.bitsPerPixel < 16)
+       )
+    {
+        gcmFOOTER_NO();
+        return gcvSTATUS_OK;
+    }
+
+    /* Can't support multi-slice surface*/
+    if (Surface->depth > 1)
+    {
+        gcmFOOTER_NO();
+        return gcvSTATUS_OK;
+    }
+
+
+#if gcdENABLE_VG
+    gcmGETCURRENTHARDWARE(currentType);
+    gcmASSERT(currentType != gcvHARDWARE_VG);
+#endif
+
+    /* Set default fill color. */
+    switch (Surface->info.format)
+    {
+    case gcvSURF_D16:
+        Surface->info.clearValue[0] =
+        Surface->info.fcValue       = 0xFFFFFFFF;
+        gcmONERROR(gcoHARDWARE_HzClearValueControl(Surface->info.format,
+                                                   Surface->info.fcValue,
+                                                   &Surface->info.fcValueHz,
+                                                   gcvNULL));
+        break;
+
+    case gcvSURF_D24X8:
+    case gcvSURF_D24S8:
+        Surface->info.clearValue[0] =
+        Surface->info.fcValue       = 0xFFFFFF00;
+        gcmONERROR(gcoHARDWARE_HzClearValueControl(Surface->info.format,
+                                                   Surface->info.fcValue,
+                                                   &Surface->info.fcValueHz,
+                                                   gcvNULL));
+        break;
+
+    case gcvSURF_S8:
+        Surface->info.clearValue[0] =
+        Surface->info.fcValue       = 0x00000000;
+        break;
+
+    case gcvSURF_R8_1_X8R8G8B8:
+    case gcvSURF_G8R8_1_X8R8G8B8:
+        Surface->info.clearValue[0]      =
+        Surface->info.clearValueUpper[0] =
+        Surface->info.fcValue            =
+        Surface->info.fcValueUpper       = 0xFF000000;
+        break;
+
+    default:
+        Surface->info.clearValue[0]      =
+        Surface->info.clearValueUpper[0] =
+        Surface->info.fcValue            =
+        Surface->info.fcValueUpper       = 0x00000000;
+        break;
+    }
+
+    /* Query the linear size for the tile status buffer. */
+    status = gcoHARDWARE_QueryTileStatus(gcvNULL,
+                                         Surface->info.alignedWidth,
+                                         Surface->info.alignedHeight,
+                                         Surface->info.size,
+                                         &bytes,
+                                         &alignment,
+                                         &Surface->info.tileStatusFiller);
+
+    /* Tile status supported? */
+    if ((status == gcvSTATUS_NOT_SUPPORTED) || (0 == bytes))
+    {
+        gcmFOOTER_NO();
+        return gcvSTATUS_OK;
+    }
+    else if (gcmIS_ERROR(status))
+    {
+        gcmFOOTER_NO();
+        return status;
+    }
+
+    if (Surface->info.TSDirty)
+    {
+        Surface->info.tileStatusFiller = 0x0;
+        Surface->info.dirty = gcvFALSE;
+        Surface->info.TSDirty = gcvFALSE;
+    }
+
+    /* Copy filler. */
+    Surface->info.hzTileStatusFiller = Surface->info.tileStatusFiller;
+
+    if (!(Surface->info.hints & gcvSURF_NO_VIDMEM))
+    {
+        /* Allocate the tile status buffer. */
+        status = gcsSURF_NODE_Construct(
+            &Surface->info.tileStatusNode,
+            bytes,
+            alignment,
+            gcvSURF_TILE_STATUS,
+            gcvALLOC_FLAG_NONE,
+            gcvPOOL_DEFAULT
+            );
+
+        if (gcmIS_ERROR(status))
+        {
+            /* Commit any command buffer and wait for idle hardware. */
+            status = gcoHAL_Commit(gcvNULL, gcvTRUE);
+
+            if (gcmIS_SUCCESS(status))
+            {
+                /* Try allocating again. */
+                status = gcsSURF_NODE_Construct(
+                    &Surface->info.tileStatusNode,
+                    bytes,
+                    alignment,
+                    gcvSURF_TILE_STATUS,
+                    gcvALLOC_FLAG_NONE,
+                    gcvPOOL_DEFAULT
+                    );
+            }
+        }
+    }
+
+    if (gcmIS_SUCCESS(status))
+    {
+        /* When allocate successfully, set tile status is enabled for this surface by default.
+        ** Logically, we should disable tile status buffer initially.
+        ** But for MSAA, we always enable FC, otherwise it will hang up on hw.
+        ** So for non-cleared we also need enable FC by default.
+        */
+        Surface->info.tileStatusDisabled = gcvFALSE;
+
+        /* Only set garbagePadded=0 if by default cleared tile status. */
+        if (Surface->info.paddingFormat)
+        {
+            Surface->info.garbagePadded = gcvFALSE;
+        }
+
+        if (!(Surface->info.hints & gcvSURF_NO_COMPRESSION))
+        {
+            /*
+            ** Get surface compression setting.
+            */
+            gcoHARDWARE_QueryCompression(gcvNULL,
+                                         &Surface->info,
+                                         &Surface->info.compressed,
+                                         &Surface->info.compressFormat);
+
+            gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
+                          "Allocated tile status 0x%x: pool=%d size=%u",
+                          &Surface->info.tileStatusNode,
+                          Surface->info.tileStatusNode.pool,
+                          Surface->info.tileStatusNode.size);
+        }
+
+        /* Allocate tile status for hierarchical Z buffer. */
+        if (Surface->info.hzNode.pool != gcvPOOL_UNKNOWN)
+        {
+            /* Query the linear size for the tile status buffer. */
+            status = gcoHARDWARE_QueryTileStatus(gcvNULL,
+                                                 0,
+                                                 0,
+                                                 Surface->info.hzNode.size,
+                                                 &bytes,
+                                                 &alignment,
+                                                 gcvNULL);
+
+            /* Tile status supported? */
+            if (status == gcvSTATUS_NOT_SUPPORTED)
+            {
+                return gcvSTATUS_OK;
+            }
+
+            if (!(Surface->info.hints & gcvSURF_NO_VIDMEM))
+            {
+                status = gcsSURF_NODE_Construct(
+                             &Surface->info.hzTileStatusNode,
+                             bytes,
+                             alignment,
+                             gcvSURF_TILE_STATUS,
+                             gcvALLOC_FLAG_NONE,
+                             gcvPOOL_DEFAULT
+                             );
+            }
+
+            if (gcmIS_SUCCESS(status))
+            {
+                gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
+                              "Allocated HZ tile status 0x%x: pool=%d size=%u",
+                              &Surface->info.hzTileStatusNode,
+                              Surface->info.hzTileStatusNode.pool,
+                              Surface->info.hzTileStatusNode.size);
+            }
+        }
+    }
+
+OnError:
+    gcmFOOTER_NO();
+    /* Return the status. */
+    return status;
+}
+
+
+/*******************************************************************************
+**
+**  gcoSURF_Construct
+**
+**  Allocate HZ buffer for surface
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to an gcoSURF object.
+**
+**
+**  OUTPUT:
+**
+*/
+gceSTATUS
+gcoSURF_AllocateHzBuffer(
+    IN gcoSURF Surface
+    )
+{
+    gcePOOL  pool;
+    gceSTATUS status;
+    gcmHEADER_ARG("Surface=0x%x", Surface);
+
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+
+    if (Surface->info.hzNode.pool != gcvPOOL_UNKNOWN)
+    {
+        gcmFOOTER_NO();
+        return gcvSTATUS_OK;
+    }
+
+    pool = Surface->info.node.pool;
+
+    /* No Hierarchical Z buffer allocated. */
+    Surface->info.hzNode.pool = gcvPOOL_UNKNOWN;
+
+    Surface->info.hzDisabled = gcvTRUE;
+
+    /* Can't support multi-slice surface*/
+    if (Surface->depth > 1)
+    {
+        gcmFOOTER_NO();
+        return gcvSTATUS_OK;
+    }
+
+    /* Check if this is a depth buffer and the GPU supports hierarchical Z. */
+    if ((Surface->info.type == gcvSURF_DEPTH) &&
+        (Surface->info.format != gcvSURF_S8) &&
+        (pool != gcvPOOL_USER) &&
+        ((Surface->info.hints & gcvSURF_NO_VIDMEM) == 0) &&
+        (gcoHAL_IsFeatureAvailable(gcvNULL, gcvFEATURE_HZ) == gcvSTATUS_TRUE))
+    {
+        gctSIZE_T bytes;
+        gctUINT32 sizeAlignment = 32 * 32 * 4
+                                * ((Surface->info.tiling & gcvTILING_SPLIT_BUFFER) ? 2 : 1);
+
+        gctSIZE_T unalignedBytes = (Surface->info.size + 63)/64 * 4;
+
+        /* Compute the hierarchical Z buffer size.  Allocate enough for
+        ** 16-bit min/max values. */
+        if (gcoHAL_IsFeatureAvailable(gcvNULL, gcvFEATURE_NEW_RA) == gcvSTATUS_TRUE)
+        {
+            bytes = gcmALIGN(unalignedBytes / 2, sizeAlignment);
+        }
+        else
+        {
+            bytes = gcmALIGN(unalignedBytes, sizeAlignment);
+        }
+
+        /* Allocate the hierarchical Z buffer. */
+        status = gcsSURF_NODE_Construct(
+                    &Surface->info.hzNode,
+                    bytes,
+                    64,
+                    gcvSURF_HIERARCHICAL_DEPTH,
+                    gcvALLOC_FLAG_NONE,
+                    pool
+                    );
+
+        if (gcmIS_SUCCESS(status))
+        {
+            gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
+                          "Allocated HZ surface 0x%x: pool=%d size=%u",
+                          &Surface->info.hzNode,
+                          Surface->info.hzNode.pool,
+                          Surface->info.hzNode.size);
+        }
+    }
+
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+}
+#endif
 
 static gceSTATUS
 _Lock(
@@ -60,131 +626,24 @@ _Lock(
                          gcvNULL));
     }
 
+    Surface->info.node.physicalBottom = Surface->info.node.physical + Surface->info.bottomBufferOffset;
+    Surface->info.node.logicalBottom  = Surface->info.node.logical  + Surface->info.bottomBufferOffset;
+
     gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
                   "Locked surface 0x%x: physical=0x%08X logical=0x%x lockCount=%d",
                   &Surface->info.node,
                   Surface->info.node.physical,
                   Surface->info.node.logical,
                   Surface->info.node.lockCount);
-#ifndef VIVANTE_NO_3D
+
+#if gcdENABLE_3D
     /* Lock the hierarchical Z node. */
-    if (Surface->info.hzNode.pool != gcvPOOL_UNKNOWN)
-    {
-        gcmONERROR(
-            gcoHARDWARE_Lock(&Surface->info.hzNode,
-                             gcvNULL,
-                             gcvNULL));
+    gcmONERROR(gcoSURF_LockHzBuffer(Surface));
 
-        gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
-                      "Locked HZ surface 0x%x: physical=0x%08X logical=0x%x "
-                      "lockCount=%d",
-                      &Surface->info.hzNode,
-                      Surface->info.hzNode.physical,
-                      Surface->info.hzNode.logical,
-                      Surface->info.hzNode.lockCount);
+    /* Lock the tile status buffer and hierarchical Z tile status buffer. */
+    gcmONERROR(gcoSURF_LockTileStatus(Surface));
 
-        /* Only 1 address. */
-        Surface->info.hzNode.count = 1;
-    }
-
-    /* Lock the tile status buffer. */
-    if (Surface->info.tileStatusNode.pool != gcvPOOL_UNKNOWN)
-    {
-        /* Lock the tile status buffer. */
-        gcmONERROR(
-            gcoHARDWARE_Lock(&Surface->info.tileStatusNode,
-                             gcvNULL,
-                             gcvNULL));
-
-        gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
-                      "Locked tile status 0x%x: physical=0x%08X logical=0x%x "
-                      "lockedCount=%d",
-                      &Surface->info.tileStatusNode,
-                      Surface->info.tileStatusNode.physical,
-                      Surface->info.tileStatusNode.logical,
-                      Surface->info.tileStatusNode.lockCount);
-
-        /* Only 1 address. */
-        Surface->info.tileStatusNode.count = 1;
-
-        /* Check if this is the forst lock. */
-        if (Surface->info.tileStatusNode.firstLock)
-        {
-            /* Fill the tile status memory with the filler. */
-            gcmONERROR(
-                gcoOS_MemFill(Surface->info.tileStatusNode.logical,
-                              (gctUINT8) Surface->info.tileStatusNode.filler,
-                              Surface->info.tileStatusNode.size));
-
-            /* Flush the node from cache. */
-            gcmONERROR(
-                gcoSURF_NODE_Cache(&Surface->info.tileStatusNode,
-                                 Surface->info.tileStatusNode.logical,
-                                 Surface->info.tileStatusNode.size,
-                                 gcvCACHE_CLEAN));
-
-            /* Dump the memory write. */
-            gcmDUMP_BUFFER(gcvNULL,
-                           "memory",
-                           Surface->info.tileStatusNode.physical,
-                           Surface->info.tileStatusNode.logical,
-                           0,
-                           Surface->info.tileStatusNode.size);
-
-            /* No longer first lock. */
-            Surface->info.tileStatusNode.firstLock = gcvFALSE;
-        }
-    }
-
-    /* Lock the hierarchical Z tile status buffer. */
-    if (Surface->info.hzTileStatusNode.pool != gcvPOOL_UNKNOWN)
-    {
-        /* Lock the tile status buffer. */
-        gcmONERROR(
-            gcoHARDWARE_Lock(&Surface->info.hzTileStatusNode,
-                             gcvNULL,
-                             gcvNULL));
-
-        gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
-                      "Locked HZ tile status 0x%x: physical=0x%08X logical=0x%x "
-                      "lockedCount=%d",
-                      &Surface->info.hzTileStatusNode,
-                      Surface->info.hzTileStatusNode.physical,
-                      Surface->info.hzTileStatusNode.logical,
-                      Surface->info.hzTileStatusNode.lockCount);
-
-        /* Only 1 address. */
-        Surface->info.hzTileStatusNode.count = 1;
-
-        /* Check if this is the forst lock. */
-        if (Surface->info.hzTileStatusNode.firstLock)
-        {
-            /* Fill the tile status memory with the filler. */
-            gcmONERROR(
-                gcoOS_MemFill(Surface->info.hzTileStatusNode.logical,
-                              (gctUINT8) Surface->info.hzTileStatusNode.filler,
-                              Surface->info.hzTileStatusNode.size));
-
-            /* Flush the node from cache. */
-            gcmONERROR(
-                gcoSURF_NODE_Cache(&Surface->info.hzTileStatusNode,
-                                 Surface->info.hzTileStatusNode.logical,
-                                 Surface->info.hzTileStatusNode.size,
-                                 gcvCACHE_CLEAN));
-
-            /* Dump the memory write. */
-            gcmDUMP_BUFFER(gcvNULL,
-                           "memory",
-                           Surface->info.hzTileStatusNode.physical,
-                           Surface->info.hzTileStatusNode.logical,
-                           0,
-                           Surface->info.hzTileStatusNode.size);
-
-            /* No longer first lock. */
-            Surface->info.hzTileStatusNode.firstLock = gcvFALSE;
-        }
-    }
-#endif /* VIVANTE_NO_3D */
+#endif /* gcdENABLE_3D */
     /* Success. */
     return gcvSTATUS_OK;
 
@@ -228,7 +687,7 @@ _Unlock(
                   &Surface->info.node,
                   Surface->info.node.lockCount);
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
     /* Unlock the hierarchical Z buffer. */
     if (Surface->info.hzNode.pool != gcvPOOL_UNKNOWN)
     {
@@ -267,144 +726,47 @@ _Unlock(
                       &Surface->info.hzNode,
                       Surface->info.hzNode.lockCount);
     }
-#endif /* VIVANTE_NO_3D */
+#endif /* gcdENABLE_3D */
 
     /* Success. */
     return gcvSTATUS_OK;
 
 OnError:
-    /* Return the errror. */
+    /* Return the error. */
     return status;
 }
-
-#ifndef VIVANTE_NO_3D
-static gceSTATUS
-_AllocateTileStatus(
-    IN gcoSURF Surface
-    )
-{
-    gceSTATUS status;
-    gctSIZE_T bytes;
-    gctUINT alignment;
-    gcsHAL_INTERFACE iface;
-
-    /* Query the linear size for the tile status buffer. */
-    status = gcoHARDWARE_QueryTileStatus(Surface->info.alignedWidth,
-                                         Surface->info.alignedHeight,
-                                         Surface->info.size,
-                                         &bytes,
-                                         &alignment,
-                                         &Surface->info.tileStatusNode.filler);
-
-    /* Tile status supported? */
-    if (status == gcvSTATUS_NOT_SUPPORTED)
-    {
-        return gcvSTATUS_OK;
-    }
-    else if (gcmIS_ERROR(status))
-    {
-        return status;
-    }
-
-    /* Copy filler. */
-    Surface->info.hzTileStatusNode.filler = Surface->info.tileStatusNode.filler;
-
-    /* Allocate the tile status buffer. */
-    iface.command     = gcvHAL_ALLOCATE_LINEAR_VIDEO_MEMORY;
-    gcmALVM.bytes     = bytes;
-    gcmALVM.alignment = alignment;
-    gcmALVM.type      = gcvSURF_TILE_STATUS;
-    gcmALVM.pool      = gcvPOOL_DEFAULT;
-
-    if (gcmIS_ERROR(gcoHAL_Call(gcvNULL, &iface)))
-    {
-        /* Commit any command buffer and wait for idle hardware. */
-        status = gcoHAL_Commit(gcvNULL, gcvTRUE);
-
-        if (gcmIS_SUCCESS(status))
-        {
-            /* Try allocating again. */
-            status = gcoHAL_Call(gcvNULL, &iface);
-        }
-    }
-
-    if (gcmIS_SUCCESS(status))
-    {
-        /* Set the node for the tile status buffer. */
-        Surface->info.tileStatusNode.u.normal.node = gcmALVM.node;
-        Surface->info.tileStatusNode.u.normal.cacheable = gcvFALSE;
-        Surface->info.tileStatusNode.pool          = gcmALVM.pool;
-        Surface->info.tileStatusNode.size          = gcmALVM.bytes;
-        Surface->info.tileStatusNode.firstLock     = gcvTRUE;
-
-        gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
-                      "Allocated tile status 0x%x: pool=%d size=%u",
-                      &Surface->info.tileStatusNode,
-                      Surface->info.tileStatusNode.pool,
-                      Surface->info.tileStatusNode.size);
-
-        /* Allocate tile status for hierarchical Z buffer. */
-        if (Surface->info.hzNode.pool != gcvPOOL_UNKNOWN)
-        {
-            /* Query the linear size for the tile status buffer. */
-            status = gcoHARDWARE_QueryTileStatus(0,
-                                                 0,
-                                                 Surface->info.hzNode.size,
-                                                 &bytes,
-                                                 &alignment,
-                                                 gcvNULL);
-
-            /* Tile status supported? */
-            if (status == gcvSTATUS_NOT_SUPPORTED)
-            {
-                return gcvSTATUS_OK;
-            }
-
-            /* Allocate the tile status buffer. */
-            iface.command     = gcvHAL_ALLOCATE_LINEAR_VIDEO_MEMORY;
-            gcmALVM.bytes     = bytes;
-            gcmALVM.alignment = alignment;
-            gcmALVM.type      = gcvSURF_TILE_STATUS;
-            gcmALVM.pool      = gcvPOOL_DEFAULT;
-
-            if (gcmIS_SUCCESS(gcoHAL_Call(gcvNULL, &iface)))
-            {
-                /* Set the node for the tile status buffer. */
-                Surface->info.hzTileStatusNode.u.normal.node = gcmALVM.node;
-                Surface->info.hzTileStatusNode.u.normal.cacheable = gcvFALSE;
-                Surface->info.hzTileStatusNode.pool          = gcmALVM.pool;
-                Surface->info.hzTileStatusNode.size          = gcmALVM.bytes;
-                Surface->info.hzTileStatusNode.firstLock     = gcvTRUE;
-
-                gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
-                              "Allocated HZ tile status 0x%x: pool=%d size=%u",
-                              &Surface->info.hzTileStatusNode,
-                              Surface->info.hzTileStatusNode.pool,
-                              Surface->info.hzTileStatusNode.size);
-            }
-        }
-    }
-
-    /* Return the status. */
-    return status;
-}
-#endif /* VIVANTE_NO_3D */
 
 static gceSTATUS
 _FreeSurface(
-#if gcdENABLE_VG
-    IN gcoSURF Surface,
-    IN gceHARDWARE_TYPE CurrentType
-#else
     IN gcoSURF Surface
-#endif
     )
 {
     gceSTATUS status;
+
+#if gcdENABLE_VG
+    gceHARDWARE_TYPE currentType = gcvHARDWARE_INVALID;
+#endif
 
     gcmHEADER_ARG("Surface=0x%x", Surface);
 
     gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+
+#if gcdENABLE_VG
+    gcmGETCURRENTHARDWARE(currentType);
+#endif
+
+#if gcdSYNC
+    {
+        gcsSYNC_CONTEXT_PTR ptr = Surface->info.fenceCtx;
+
+        while(ptr)
+        {
+           Surface->info.fenceCtx = ptr->next;
+           gcmONERROR(gcoOS_Free(gcvNULL,ptr));
+           ptr = Surface->info.fenceCtx;
+        }
+    }
+#endif
 
     /* We only manage valid and non-user pools. */
     if ((Surface->info.node.pool != gcvPOOL_UNKNOWN)
@@ -413,9 +775,9 @@ _FreeSurface(
     {
 #if gcdENABLE_VG
         /* Unlock the video memory. */
-        gcmONERROR(_Unlock(Surface, CurrentType));
+        gcmONERROR(_Unlock(Surface, currentType));
 
-        if (CurrentType == gcvHARDWARE_VG)
+        if (currentType == gcvHARDWARE_VG)
         {
             /* Free the video memory. */
             gcmONERROR(
@@ -427,31 +789,23 @@ _FreeSurface(
             gcmONERROR(
                 gcoHARDWARE_ScheduleVideoMemory(&Surface->info.node));
         }
-
-        gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
-                      "Freed surface 0x%x",
-                      &Surface->info.node);
-
 #else
         /* Unlock the video memory. */
         gcmONERROR(_Unlock(Surface));
 
-        if (!(Surface->info.hints & gcvSURF_NO_VIDMEM))
-        {
-            /* Free the video memory. */
-            gcmONERROR(
-                gcoHARDWARE_ScheduleVideoMemory(&Surface->info.node));
-
-            gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
-                          "Freed surface 0x%x",
-                          &Surface->info.node);
-        }
+        /* Free the video memory. */
+        gcmONERROR(
+            gcoHARDWARE_ScheduleVideoMemory(&Surface->info.node));
 #endif
         /* Mark the memory as freed. */
         Surface->info.node.pool = gcvPOOL_UNKNOWN;
+
+        gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
+                      "Freed surface 0x%x",
+                      &Surface->info.node);
     }
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
     if (Surface->info.hzNode.pool != gcvPOOL_UNKNOWN)
     {
         /* Free the hierarchical Z video memory. */
@@ -468,16 +822,13 @@ _FreeSurface(
 
     if (Surface->info.tileStatusNode.pool != gcvPOOL_UNKNOWN)
     {
-        if (!(Surface->info.hints & gcvSURF_NO_VIDMEM))
-        {
-            /* Free the tile status memory. */
-            gcmONERROR(
-                gcoHARDWARE_ScheduleVideoMemory(&Surface->info.tileStatusNode));
+        /* Free the tile status memory. */
+        gcmONERROR(
+            gcoHARDWARE_ScheduleVideoMemory(&Surface->info.tileStatusNode));
 
-            gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
-                          "Freed tile status 0x%x",
-                          &Surface->info.tileStatusNode);
-        }
+        gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
+                      "Freed tile status 0x%x",
+                      &Surface->info.tileStatusNode);
 
         /* Mark the tile status as freed. */
         Surface->info.tileStatusNode.pool = gcvPOOL_UNKNOWN;
@@ -485,21 +836,28 @@ _FreeSurface(
 
     if (Surface->info.hzTileStatusNode.pool != gcvPOOL_UNKNOWN)
     {
-        if (!(Surface->info.hints & gcvSURF_NO_VIDMEM))
-        {
-            /* Free the hierarchical Z tile status memory. */
-            gcmONERROR(
-                gcoHARDWARE_ScheduleVideoMemory(&Surface->info.hzTileStatusNode));
+        /* Free the hierarchical Z tile status memory. */
+        gcmONERROR(
+            gcoHARDWARE_ScheduleVideoMemory(&Surface->info.hzTileStatusNode));
 
-            gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
-                          "Freed HZ tile status 0x%x",
-                          &Surface->info.hzTileStatusNode);
-        }
+        gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
+                      "Freed HZ tile status 0x%x",
+                      &Surface->info.hzTileStatusNode);
 
         /* Mark the tile status as freed. */
         Surface->info.hzTileStatusNode.pool = gcvPOOL_UNKNOWN;
     }
-#endif /* VIVANTE_NO_3D */
+#endif /* gcdENABLE_3D */
+
+    if (Surface->info.shBuf != gcvNULL)
+    {
+        /* Destroy shared buffer. */
+        gcmVERIFY_OK(
+            gcoHAL_DestroyShBuffer(Surface->info.shBuf));
+
+        /* Mark it as freed. */
+        Surface->info.shBuf = gcvNULL;
+    }
 
     /* Success. */
     gcmFOOTER_NO();
@@ -511,6 +869,9 @@ OnError:
     return status;
 }
 
+#if gcdENABLE_3D
+#if gcdENABLE_BUFFER_ALIGNMENT
+
 #if gcdENABLE_BANK_ALIGNMENT
 
 #if !gcdBANK_BIT_START
@@ -520,9 +881,10 @@ OnError:
 #if !gcdBANK_BIT_END
 #error gcdBANK_BIT_END not defined.
 #endif
+#endif
 
 /*******************************************************************************
-**  gcoSURF_GetBankOffsetBytes
+**  _GetBankOffsetBytes
 **
 **  Return the bytes needed to offset sub-buffers to different banks.
 **
@@ -532,7 +894,7 @@ OnError:
 **          Type of buffer.
 **
 **      gctUINT32 TopBufferSize
-**          Size of the top buffer, needed to compute offset of the second buffer.
+**          Size of the top buffer, need\ed to compute offset of the second buffer.
 **
 **  OUTPUT:
 **
@@ -541,17 +903,23 @@ OnError:
 **
 */
 gceSTATUS
-gcoSURF_GetBankOffsetBytes(
-    IN gcoSURF Surfce,
+_GetBankOffsetBytes(
+    IN gcoSURF Surface,
     IN gceSURF_TYPE Type,
     IN gctUINT32 TopBufferSize,
     OUT gctUINT32_PTR Bytes
     )
+
 {
+    gctUINT32 baseOffset = 0;
+    gctUINT32 offset     = 0;
+
+#if gcdENABLE_BANK_ALIGNMENT
     gctUINT32 bank;
     /* To retrieve the bank. */
     static const gctUINT32 bankMask = (0xFFFFFFFF << gcdBANK_BIT_START)
                                     ^ (0xFFFFFFFF << (gcdBANK_BIT_END + 1));
+#endif
 
     gcmHEADER_ARG("Type=%d TopBufferSize=%x Bytes=0x%x", Type, TopBufferSize, Bytes);
 
@@ -561,62 +929,239 @@ gcoSURF_GetBankOffsetBytes(
     switch(Type)
     {
     case gcvSURF_RENDER_TARGET:
+        /* Put second buffer atleast 16KB away. */
+        baseOffset = offset = (1 << 14);
+
+#if gcdENABLE_BANK_ALIGNMENT
+        TopBufferSize += (1 << 14);
         bank = (TopBufferSize & bankMask) >> (gcdBANK_BIT_START);
 
         /* Put second buffer (c1 or z1) 5 banks away. */
         if (bank <= 5)
         {
-            *Bytes += (5 - bank) << (gcdBANK_BIT_START);
+            offset += (5 - bank) << (gcdBANK_BIT_START);
         }
         else
         {
-            *Bytes += (8 + 5 - bank) << (gcdBANK_BIT_START);
+            offset += (8 + 5 - bank) << (gcdBANK_BIT_START);
+        }
+#if gcdBANK_CHANNEL_BIT
+        /* Minimum 256 byte alignment needed for fast_msaa or small msaa. */
+        if ((gcdBANK_CHANNEL_BIT > 7) ||
+            ((gcoHAL_IsFeatureAvailable(gcvNULL, gcvFEATURE_FAST_MSAA) != gcvSTATUS_TRUE) &&
+             (gcoHAL_IsFeatureAvailable(gcvNULL, gcvFEATURE_SMALL_MSAA) != gcvSTATUS_TRUE)))
+
+        {
+            /* Add a channel offset at the channel bit. */
+            offset += (1 << gcdBANK_CHANNEL_BIT);
         }
 
-#if gcdBANK_CHANNEL_BIT
-        /* Add a channel offset at the channel bit. */
-        *Bytes += (1 << gcdBANK_CHANNEL_BIT);
+#endif
 #endif
         break;
 
     case gcvSURF_DEPTH:
+        /* Put second buffer atleast 16KB away. */
+        baseOffset = offset = (1 << 14);
+
+#if gcdENABLE_BANK_ALIGNMENT
+        TopBufferSize += (1 << 14);
         bank = (TopBufferSize & bankMask) >> (gcdBANK_BIT_START);
 
         /* Put second buffer (c1 or z1) 5 banks away. */
         if (bank <= 5)
         {
-            *Bytes += (5 - bank) << (gcdBANK_BIT_START);
+            offset += (5 - bank) << (gcdBANK_BIT_START);
         }
         else
         {
-            *Bytes += (8 + 5 - bank) << (gcdBANK_BIT_START);
+            offset += (8 + 5 - bank) << (gcdBANK_BIT_START);
         }
 
 #if gcdBANK_CHANNEL_BIT
         /* Subtract the channel bit, as it's added by kernel side. */
-        if (*Bytes >= (1 << gcdBANK_CHANNEL_BIT))
+        if (offset >= (1 << gcdBANK_CHANNEL_BIT))
         {
-            *Bytes -= (1 << gcdBANK_CHANNEL_BIT);
+            /* Minimum 256 byte alignment needed for fast_msaa or small msaa. */
+            if ((gcdBANK_CHANNEL_BIT > 7) ||
+                ((gcoHAL_IsFeatureAvailable(gcvNULL, gcvFEATURE_FAST_MSAA) != gcvSTATUS_TRUE) &&
+                 (gcoHAL_IsFeatureAvailable(gcvNULL, gcvFEATURE_SMALL_MSAA) != gcvSTATUS_TRUE)))
+            {
+                offset -= (1 << gcdBANK_CHANNEL_BIT);
+            }
         }
 #endif
+#endif
+
         break;
 
     default:
         /* No alignment needed. */
-        *Bytes = 0;
+        baseOffset = offset = 0;
     }
+
+    *Bytes = offset;
+
+    /* Avoid compiler warnings. */
+    baseOffset = baseOffset;
+
+    /* Only disable bottom-buffer-offset on android system. */
+#if gcdPARTIAL_FAST_CLEAR && defined(ANDROID)
+    if (!(Surface->info.samples.x > 1 || Surface->info.samples.y > 1))
+    {
+        /* In NOAA mode, disable extra bottom-buffer-offset if want
+         * partial fast clear. 'baseOffset' is 16KB aligned, it can still
+         * support. */
+        *Bytes = baseOffset;
+    }
+#endif
 
     gcmFOOTER_ARG("*Bytes=0x%x", *Bytes);
     return gcvSTATUS_OK;
 }
+
 #endif
+#endif
+
+static void
+_ComputeSurfacePlacement(
+    gcoSURF Surface
+    )
+{
+    gctUINT32 blockSize;
+    gcsSURF_FORMAT_INFO_PTR formatInfo = &Surface->info.formatInfo;
+    blockSize = formatInfo->blockSize / formatInfo->layers;
+
+    switch (Surface->info.format)
+    {
+    case gcvSURF_YV12:
+        /*  WxH Y plane followed by (W/2)x(H/2) V and U planes. */
+        Surface->info.stride
+            = Surface->info.alignedWidth;
+
+        Surface->info.uStride =
+        Surface->info.vStride
+#if defined(ANDROID)
+            /*
+             * Per google's requirement, we need u/v plane align to 16,
+             * and there is no gap between YV plane
+             */
+            = (Surface->info.alignedWidth / 2 + 0xf) & ~0xf;
+#else
+            = (Surface->info.alignedWidth / 2);
+#endif
+
+        Surface->info.vOffset
+            = Surface->info.stride * Surface->info.alignedHeight;
+
+        Surface->info.uOffset
+            = Surface->info.vOffset
+            + Surface->info.vStride * Surface->info.alignedHeight / 2;
+
+        Surface->info.sliceSize
+            = Surface->info.uOffset
+            + Surface->info.uStride * Surface->info.alignedHeight / 2;
+        break;
+
+    case gcvSURF_I420:
+        /*  WxH Y plane followed by (W/2)x(H/2) U and V planes. */
+        Surface->info.stride
+            = Surface->info.alignedWidth;
+
+        Surface->info.uStride =
+        Surface->info.vStride
+#if defined(ANDROID)
+            /*
+             * Per google's requirement, we need u/v plane align to 16,
+             * and there is no gap between YV plane
+             */
+            = (Surface->info.alignedWidth / 2 + 0xf) & ~0xf;
+#else
+            = (Surface->info.alignedWidth / 2);
+#endif
+
+        Surface->info.uOffset
+            = Surface->info.stride * Surface->info.alignedHeight;
+
+        Surface->info.vOffset
+            = Surface->info.uOffset
+            + Surface->info.uStride * Surface->info.alignedHeight / 2;
+
+        Surface->info.sliceSize
+            = Surface->info.vOffset
+            + Surface->info.vStride * Surface->info.alignedHeight / 2;
+        break;
+
+    case gcvSURF_NV12:
+    case gcvSURF_NV21:
+        /*  WxH Y plane followed by (W)x(H/2) interleaved U/V plane. */
+        Surface->info.stride  =
+        Surface->info.uStride =
+        Surface->info.vStride
+            = Surface->info.alignedWidth;
+
+        Surface->info.uOffset =
+        Surface->info.vOffset
+            = Surface->info.stride * Surface->info.alignedHeight;
+
+        Surface->info.sliceSize
+            = Surface->info.uOffset
+            + Surface->info.uStride * Surface->info.alignedHeight / 2;
+        break;
+
+    case gcvSURF_NV16:
+    case gcvSURF_NV61:
+        /*  WxH Y plane followed by WxH interleaved U/V(V/U) plane. */
+        Surface->info.stride  =
+        Surface->info.uStride =
+        Surface->info.vStride
+            = Surface->info.alignedWidth;
+
+        Surface->info.uOffset =
+        Surface->info.vOffset
+            = Surface->info.stride * Surface->info.alignedHeight;
+
+        Surface->info.sliceSize
+            = Surface->info.uOffset
+            + Surface->info.uStride * Surface->info.alignedHeight;
+        break;
+
+    case gcvSURF_YUY2:
+    case gcvSURF_UYVY:
+    case gcvSURF_YVYU:
+    case gcvSURF_VYUY:
+        /*  WxH interleaved Y/U/Y/V plane. */
+        Surface->info.stride  =
+        Surface->info.uStride =
+        Surface->info.vStride
+            = Surface->info.alignedWidth * 2;
+
+        Surface->info.uOffset = Surface->info.vOffset = 0;
+
+        Surface->info.sliceSize
+            = Surface->info.stride * Surface->info.alignedHeight;
+        break;
+
+    default:
+        Surface->info.stride
+            = (Surface->info.alignedWidth / formatInfo->blockWidth)
+            * blockSize / 8;
+
+        Surface->info.uStride = Surface->info.vStride = 0;
+
+        Surface->info.uOffset = Surface->info.vOffset = 0;
+
+        Surface->info.sliceSize
+            = (Surface->info.alignedWidth  / formatInfo->blockWidth)
+            * (Surface->info.alignedHeight / formatInfo->blockHeight)
+            * blockSize / 8;
+        break;
+    }
+}
 
 static gceSTATUS
 _AllocateSurface(
     IN gcoSURF Surface,
-#if gcdENABLE_VG
-    IN gceHARDWARE_TYPE CurrentType,
-#endif
     IN gctUINT Width,
     IN gctUINT Height,
     IN gctUINT Depth,
@@ -626,39 +1171,43 @@ _AllocateSurface(
     )
 {
     gceSTATUS status;
-    gctUINT32 bitsPerPixel;
-    gcsHAL_INTERFACE iface;
+    gceSURF_FORMAT format;
+    gcsSURF_FORMAT_INFO_PTR formatInfo;
     /* Extra pages needed to offset sub-buffers to different banks. */
     gctUINT32 bankOffsetBytes = 0;
-
-#if gcdANDROID_UNALIGNED_LINEAR_COMPOSITION_ADJUST
-    /* Extra room for tile to bitmap flip resovle start address adjustment */
-    gctUINT32 flipOffsetBytes = 0;
-    gctUINT   oldHeight;
-
-    oldHeight = Height;
+    gctUINT32 layers;
+#if gcdENABLE_3D
+    gctUINT32 blockSize;
 #endif
-    gctBOOL tileStatusInVirtual;
 
 #if gcdENABLE_VG
-    if (CurrentType == gcvHARDWARE_VG)
+    gceHARDWARE_TYPE currentType = gcvHARDWARE_INVALID;
+
+    gcmGETCURRENTHARDWARE(currentType);
+#endif
+
+    format = (gceSURF_FORMAT) (Format & ~gcvSURF_FORMAT_OCL);
+    gcmONERROR(gcoSURF_QueryFormat(format, &formatInfo));
+    Surface->info.formatInfo = *formatInfo;
+    layers = formatInfo->layers;
+#if gcdENABLE_3D
+    blockSize = formatInfo->blockSize / layers;
+#endif
+
+#if gcdENABLE_VG
+    if (currentType == gcvHARDWARE_VG)
     {
         /* Compute bits per pixel. */
         gcmONERROR(
             gcoVGHARDWARE_ConvertFormat(gcvNULL,
-                                      Format,
-                                      &bitsPerPixel,
-                                      gcvNULL));
+                                        format,
+                                        (gctUINT32_PTR)&Surface->info.bitsPerPixel,
+                                        gcvNULL));
     }
     else
 #endif
     {
-        /* Compute bits per pixel. */
-        gcmONERROR(
-            gcoHARDWARE_ConvertFormat(
-                                  Format,
-                                  &bitsPerPixel,
-                                  gcvNULL));
+        Surface->info.bitsPerPixel = formatInfo->bitsPerPixel;
     }
 
     /* Set dimensions of surface. */
@@ -672,37 +1221,30 @@ _AllocateSurface(
 
     /* Initialize rotation. */
     Surface->info.rotation    = gcvSURF_0_DEGREE;
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
     Surface->info.orientation = gcvORIENTATION_TOP_BOTTOM;
     Surface->resolvable       = gcvTRUE;
-#endif /* VIVANTE_NO_3D */
+#endif
 
     /* Obtain canonical type of surface. */
     Surface->info.type   = (gceSURF_TYPE) ((gctUINT32) Type & 0xFF);
     /* Get 'hints' of this surface. */
     Surface->info.hints  = (gceSURF_TYPE) ((gctUINT32) Type & ~0xFF);
+    /* Append texture surface flag */
+    Surface->info.hints |= (Surface->info.type == gcvSURF_TEXTURE) ? gcvSURF_CREATE_AS_TEXTURE : 0;
     /* Set format of surface. */
-    Surface->info.format = Format;
-    Surface->info.tiling = gcvLINEAR;
+    Surface->info.format = format;
+    Surface->info.tiling = ((Type & gcvSURF_TEXTURE) == gcvSURF_TEXTURE) ? ((Type & gcvSURF_LINEAR) ? gcvLINEAR : gcvTILED): gcvLINEAR;
 
     /* Set aligned surface size. */
     Surface->info.alignedWidth  = Width;
     Surface->info.alignedHeight = Height;
-    Surface->info.is16Bit       = (bitsPerPixel == 16);
+    Surface->info.is16Bit       = (formatInfo->bitsPerPixel == 16);
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
     /* Init superTiled info. */
     Surface->info.superTiled = gcvFALSE;
-#endif /* VIVANTE_NO_3D */
-
-    /* Reset the node. */
-    Surface->info.node.valid          = gcvFALSE;
-    Surface->info.node.lockCount      = 0;
-    Surface->info.node.lockedInKernel = 0;
-    Surface->info.node.count          = 0;
-    Surface->info.node.size           = 0;
-    Surface->info.node.firstLock      = gcvTRUE;
-    Surface->info.node.pool           = gcvPOOL_UNKNOWN;
+#endif
 
     /* User pool? */
     if (Pool == gcvPOOL_USER)
@@ -711,17 +1253,34 @@ _AllocateSurface(
         Surface->info.node.pool                    = gcvPOOL_USER;
         Surface->info.node.u.wrapped.logicalMapped = gcvFALSE;
         Surface->info.node.u.wrapped.mappingInfo   = gcvNULL;
-        Surface->info.node.size                    = Surface->info.alignedWidth
-                                                   * (bitsPerPixel / 8)
-                                                   * Surface->info.alignedHeight
-                                                   * Surface->depth;
+
+        /* Align the dimensions by the block size. */
+        Surface->info.alignedWidth  = gcmALIGN_NP2(Surface->info.alignedWidth,
+                                                   formatInfo->blockWidth);
+        Surface->info.alignedHeight = gcmALIGN_NP2(Surface->info.alignedHeight,
+                                                   formatInfo->blockHeight);
+
+        /* Always single layer for user surface */
+        gcmASSERT(layers == 1);
+
+        /* Compute the surface placement parameters. */
+        _ComputeSurfacePlacement(Surface);
+
+        Surface->info.layerSize = Surface->info.sliceSize * Surface->depth;
+
+        Surface->info.size = Surface->info.layerSize * layers;
+
+        if (Surface->info.type == gcvSURF_TEXTURE)
+        {
+            Surface->info.tiling = gcvTILED;
+        }
     }
 
     /* No --> allocate video memory. */
     else
     {
 #if gcdENABLE_VG
-        if (CurrentType == gcvHARDWARE_VG)
+        if (currentType == gcvHARDWARE_VG)
         {
             gcmONERROR(
                 gcoVGHARDWARE_AlignToTile(gcvNULL,
@@ -733,7 +1292,7 @@ _AllocateSurface(
 #endif
         {
             /* Align width and height to tiles. */
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
             if ((Surface->info.samples.x > 1 || Surface->info.samples.y > 1)
             &&  (Surface->info.vaa == gcvFALSE)
             )
@@ -742,10 +1301,12 @@ _AllocateSurface(
                 Height = gcoMATH_DivideUInt(Height, Surface->info.samples.y);
 
                 gcmONERROR(
-                    gcoHARDWARE_AlignToTileCompatible(Surface->info.type,
+                    gcoHARDWARE_AlignToTileCompatible(gcvNULL,
+                                                      Surface->info.type,
                                                       Format,
                                                       &Width,
                                                       &Height,
+                                                      Depth,
                                                       &Surface->info.tiling,
                                                       &Surface->info.superTiled));
 
@@ -754,353 +1315,195 @@ _AllocateSurface(
             }
             else
             {
-#if gcdANDROID_UNALIGNED_LINEAR_COMPOSITION_ADJUST
-                /* TODO: Fix alignment for DEPTH_NO_TILE_STATUS! */
-                gceSURF_TYPE type = (Type & ~gcvSURF_NO_VIDMEM) & ~gcvSURF_FLIP;
-
                 gcmONERROR(
-                    gcoHARDWARE_AlignToTileCompatible(type,
+                    gcoHARDWARE_AlignToTileCompatible(gcvNULL,
+                                                      Type,
                                                       Format,
                                                       &Surface->info.alignedWidth,
                                                       &Surface->info.alignedHeight,
+                                                      Depth,
                                                       &Surface->info.tiling,
                                                       &Surface->info.superTiled));
 
-                if ((oldHeight != Surface->info.alignedHeight)
-                &&  (Type == gcvSURF_FLIP_BITMAP)
-                )
+#if defined(ANDROID) && gcdANDROID_UNALIGNED_LINEAR_COMPOSITION_ADJUST
+                if ((Type == gcvSURF_FLIP_BITMAP) &&
+                    (Height != Surface->info.alignedHeight))
                 {
-                    oldHeight = Surface->info.alignedHeight + 1;
-
-                    gcmONERROR(
-                        gcoHARDWARE_AlignToTileCompatible(type,
-                                                          Format,
-                                                          gcvNULL,
-                                                          &oldHeight,
-                                                          gcvNULL,
-                                                          gcvNULL));
-
-                     flipOffsetBytes = (oldHeight - Surface->info.alignedHeight)
-                                     * Surface->info.alignedWidth;
+                    Surface->info.flipBitmapOffset = (Surface->info.alignedHeight - Height)
+                                                   *  Surface->info.alignedWidth
+                                                   *  Surface->info.bitsPerPixel / 8;
                 }
-#   else
-                /* TODO: Fix alignment for DEPTH_NO_TILE_STATUS! */
-                gcmONERROR(
-                    gcoHARDWARE_AlignToTileCompatible(Type & ~gcvSURF_NO_VIDMEM,
-                                                      Format,
-                                                      &Surface->info.alignedWidth,
-                                                      &Surface->info.alignedHeight,
-                                                      &Surface->info.tiling,
-                                                      &Surface->info.superTiled));
 #   endif
             }
 #else
-                gcmONERROR(
-                    gcoHARDWARE_AlignToTileCompatible(Surface->info.type,
-                                                      Format,
-                                                      &Surface->info.alignedWidth,
-                                                      &Surface->info.alignedHeight,
-                                                      &Surface->info.tiling,
-                                                      gcvNULL));
-#endif /* VIVANTE_NO_3D */
-        }
-
-        if (!(Type & gcvSURF_NO_VIDMEM))
-        {
-#if gcdENABLE_BANK_ALIGNMENT
-            gctUINT32 topBufferSize = gcmALIGN(Surface->info.alignedHeight / 2,
-                                         Surface->info.superTiled ? 64 : 4)
-                                    * (Surface->info.alignedWidth * bitsPerPixel / 8);
-
             gcmONERROR(
-                gcoSURF_GetBankOffsetBytes(gcvNULL,
-                                           Surface->info.type,
-                                           topBufferSize,
-                                           &bankOffsetBytes
-                                           ));
-#endif
-
-            iface.command     = gcvHAL_ALLOCATE_LINEAR_VIDEO_MEMORY;
-            gcmALVM.bytes     = Surface->info.alignedWidth * bitsPerPixel / 8
-                              * Surface->info.alignedHeight
-                              * Depth;
-            gcmALVM.bytes    += bankOffsetBytes;
-
-#if gcdANDROID_UNALIGNED_LINEAR_COMPOSITION_ADJUST
-            gcmALVM.bytes    += flipOffsetBytes;
-#endif
-            gcmALVM.alignment = 64;
-            gcmALVM.pool      = Pool;
-            gcmALVM.type      = Surface->info.type;
-
-            /* Call kernel API. */
-            gcmONERROR(gcoHAL_Call(gcvNULL, &iface));
-
-            /* Get allocated node in video memory. */
-            Surface->info.node.u.normal.node = gcmALVM.node;
-            Surface->info.node.pool          = gcmALVM.pool;
-            Surface->info.node.size          = gcmALVM.bytes;
+                gcoHARDWARE_AlignToTileCompatible(gcvNULL,
+                                                  Surface->info.type,
+                                                  Format,
+                                                  &Surface->info.alignedWidth,
+                                                  &Surface->info.alignedHeight,
+                                                  Depth,
+                                                  &Surface->info.tiling,
+                                                  gcvNULL));
+#endif /* gcdENABLE_3D */
         }
-    }
 
-    /* Determine the surface placement parameters. */
-    switch (Format)
-    {
-    case gcvSURF_YV12:
-#if defined(ANDROID)
-        /* Per google's requirement, we need u/v plane align to 16, and there is no gap between YV plane */
-        Surface->info.vOffset
-            = Surface->info.alignedWidth
-            * Height;
-
-        Surface->info.stride
-            = Surface->info.alignedWidth;
-
-        Surface->info.uStride =
-        Surface->info.vStride
-            = (Surface->info.alignedWidth / 2 + 0xf) & ~0xf;
-
-        Surface->info.uOffset
-            = Surface->info.vOffset
-            + Surface->info.vStride * Height / 2;
-
-        Surface->info.size
-            = Surface->info.vOffset
-            + Surface->info.vStride * Height;
-#else
-        /*  WxH Y plane followed by (W/2)x(H/2) V and U planes. */
-        Surface->info.vOffset
-            = Surface->info.alignedWidth
-            * Surface->info.alignedHeight;
-
-        Surface->info.uOffset
-            = Surface->info.vOffset
-            + Surface->info.vOffset / 4;
-
-        Surface->info.stride
-            = Surface->info.alignedWidth;
-
-        Surface->info.uStride =
-        Surface->info.vStride
-            = Surface->info.alignedWidth / 2;
-
-        Surface->info.size
-            = Surface->info.vOffset
-            + Surface->info.vOffset / 2;
-#endif
-        break;
-
-    case gcvSURF_I420:
-#if defined(ANDROID)
-        /* Per google's requirement, we need u/v plane align to 16, and there is no gap between YV plane */
-        Surface->info.uOffset
-            = Surface->info.alignedWidth
-            * Height;
-
-        Surface->info.stride
-            = Surface->info.alignedWidth;
-
-        Surface->info.uStride =
-        Surface->info.vStride
-            = (Surface->info.alignedWidth / 2 + 0xf) & ~0xf;
-
-        Surface->info.vOffset
-            = Surface->info.vOffset
-            + Surface->info.vStride * Height / 2;
-
-        Surface->info.size
-            = Surface->info.vOffset
-            + Surface->info.vStride * Height;
-#else
-        /*  WxH Y plane followed by (W/2)x(H/2) U and V planes. */
-        Surface->info.uOffset
-            = Surface->info.alignedWidth
-            * Surface->info.alignedHeight;
-
-        Surface->info.vOffset
-            = Surface->info.uOffset
-            + Surface->info.uOffset / 4;
-
-        Surface->info.stride
-            = Surface->info.alignedWidth;
-
-        Surface->info.uStride
-            = Surface->info.vStride
-            = Surface->info.alignedWidth / 2;
-
-        Surface->info.size
-            = Surface->info.uOffset
-            + Surface->info.uOffset / 2;
-#endif
-        break;
-
-    case gcvSURF_NV12:
-    case gcvSURF_NV21:
-        /*  WxH Y plane followed by (W)x(H/2) interleaved U/V plane. */
-        Surface->info.uOffset
-            = Surface->info.vOffset
-            = Surface->info.alignedWidth
-            * Surface->info.alignedHeight;
-
-        Surface->info.stride
-            = Surface->info.uStride
-            = Surface->info.vStride
-            = Surface->info.alignedWidth;
-
-        Surface->info.size
-            = Surface->info.uOffset
-            + Surface->info.uOffset / 2;
-        break;
-
-    case gcvSURF_NV16:
-    case gcvSURF_NV61:
-        Surface->info.uOffset
-            = Surface->info.vOffset
-            = Surface->info.alignedWidth
-            * Surface->info.alignedHeight;
-
-        Surface->info.stride
-            = Surface->info.uStride
-            = Surface->info.vStride
-            = Surface->info.alignedWidth;
-
-        Surface->info.size
-            = Surface->info.uOffset
-            + Surface->info.uOffset;
-        break;
-
-    default:
-        Surface->info.uOffset = Surface->info.vOffset = 0;
-        Surface->info.uStride = Surface->info.vStride = 0;
-
-        Surface->info.stride
-            = Surface->info.alignedWidth
-            * bitsPerPixel / 8;
-
-        Surface->info.size
-            = Surface->info.stride
-            * Surface->info.alignedHeight;
-    }
-
-    /* Add any offset bytes added between sub-buffers. */
-    Surface->info.size += bankOffsetBytes;
-
-#if gcdANDROID_UNALIGNED_LINEAR_COMPOSITION_ADJUST
-    Surface->info.size += flipOffsetBytes;
-#endif
-
-    gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
-                  "Allocated surface 0x%x: pool=%d size=%dx%d bytes=%u",
-                  &Surface->info.node,
-                  Surface->info.node.pool,
-                  Surface->info.alignedWidth,
-                  Surface->info.alignedHeight,
-                  Surface->info.size);
-
-#ifndef VIVANTE_NO_3D
-    /* No Hierarchical Z buffer allocated. */
-    Surface->info.hzNode.pool           = gcvPOOL_UNKNOWN;
-    Surface->info.hzNode.valid          = gcvFALSE;
-    Surface->info.hzNode.lockCount      = 0;
-    Surface->info.hzNode.lockedInKernel = 0;
-    Surface->info.hzNode.count          = 0;
-    Surface->info.hzNode.size           = 0;
-
-    /* Check if this is a depth buffer and the GPU supports hierarchical Z. */
-    if ((Type == gcvSURF_DEPTH)
-    &&  (gcoHAL_IsFeatureAvailable(gcvNULL,
-                                   gcvFEATURE_HZ) == gcvSTATUS_TRUE)
-    )
-    {
-        gctSIZE_T bytes;
-
-        /* Compute the hierarchical Z buffer size.  Allocate enough for
-        ** 16-bit min/max values. */
-        bytes = gcmALIGN((Surface->info.size + 63) / 64 * 4, 256);
-
-        /* Allocate the hierarchical Z buffer. */
-        iface.command     = gcvHAL_ALLOCATE_LINEAR_VIDEO_MEMORY;
-        gcmALVM.bytes     = bytes;
-        gcmALVM.alignment = 64;
-        gcmALVM.type      = gcvSURF_HIERARCHICAL_DEPTH;
-        gcmALVM.pool      = Pool;
-
-        if (gcmIS_SUCCESS(gcoHAL_Call(gcvNULL, &iface)))
+        /*
+        ** We cannot use multi tiled/supertiled to create 3D surface, this surface cannot be recognized
+        ** by texture unit now.
+        */
+        if ((Depth > 1) &&
+            (Surface->info.tiling & gcvTILING_SPLIT_BUFFER))
         {
-            /* Save hierarchical Z buffer info. */
-            Surface->info.hzNode.pool          = gcmALVM.pool;
-            Surface->info.hzNode.size          = gcmALVM.bytes;
-            Surface->info.hzNode.u.normal.node = gcmALVM.node;
-            Surface->info.hzNode.firstLock     = gcvTRUE;
-            Surface->info.hzNode.u.normal.cacheable  = gcvFALSE;
-
-            gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
-                          "Allocated HZ surface 0x%x: pool=%d size=%u",
-                          &Surface->info.hzNode,
-                          Surface->info.hzNode.pool,
-                          Surface->info.hzNode.size);
+            gcmONERROR(gcvSTATUS_NOT_SUPPORTED);
         }
-    }
+        /* Determine bank offset bytes. */
+#if gcdENABLE_3D
+        /* If HW need to be programmed as multi pipe with 2 addresses,
+         * bottom addresses need to calculated now, no matter the surface itself
+         * was split or not.
+         */
+        if (gcoHARDWARE_IsMultiPipes(gcvNULL) == gcvTRUE)
+        {
+            gctUINT halfHeight = gcmALIGN(Surface->info.alignedHeight / 2,
+                                          Surface->info.superTiled ? 64 : 4);
 
-    /* No tile status buffer allocated. */
-    Surface->info.tileStatusNode.pool             = gcvPOOL_UNKNOWN;
-    Surface->info.tileStatusNode.valid            = gcvFALSE;
-    Surface->info.tileStatusNode.lockCount        = 0;
-    Surface->info.tileStatusNode.lockedInKernel   = 0;
-    Surface->info.tileStatusNode.count            = 0;
-    Surface->info.hzTileStatusNode.pool           = gcvPOOL_UNKNOWN;
-    Surface->info.hzTileStatusNode.valid          = gcvFALSE;
-    Surface->info.hzTileStatusNode.lockCount      = 0;
-    Surface->info.hzTileStatusNode.lockedInKernel = 0;
-    Surface->info.hzTileStatusNode.count          = 0;
+            gctUINT32 topBufferSize = ((Surface->info.alignedWidth/ formatInfo->blockWidth)
+                                    *  (halfHeight/ formatInfo->blockHeight)
+                                    *  blockSize) / 8;
 
-    /* Default state of tileStatusDisabled. */
-    Surface->info.tileStatusDisabled = gcvFALSE;
-
-    /* Set default fill color. */
-    switch (Format)
-    {
-    case gcvSURF_D16:
-        Surface->info.clearValue   = 0xFFFFFFFF;
-        gcmONERROR(gcoHARDWARE_HzClearValueControl(Format,
-                                                   Surface->info.clearValue,
-                                                   &Surface->info.clearValueHz,
-                                                   gcvNULL));
-        break;
-
-    case gcvSURF_D24X8:
-    case gcvSURF_D24S8:
-        Surface->info.clearValue   = 0xFFFFFF00;
-        gcmONERROR(gcoHARDWARE_HzClearValueControl(Format,
-                                                   Surface->info.clearValue,
-                                                   &Surface->info.clearValueHz,
-                                                   gcvNULL));
-        break;
-
-    default:
-        Surface->info.clearValue = 0x00000000;
-        break;
-    }
-
-    tileStatusInVirtual = gcoHARDWARE_IsFeatureAvailable(gcvFEATURE_MC20);
-
-    /* Verify if the type requires a tile status buffer:
-    ** - do not turn on fast clear if the surface is virtual;
-    ** - for user pools we don't have the address of the surface yet,
-    **   delay tile status determination until we map the surface. */
-    if ((Surface->info.node.pool != gcvPOOL_USER) &&
-        (Surface->info.node.pool != gcvPOOL_VIRTUAL || tileStatusInVirtual) &&
-        (((Type & ~gcvSURF_NO_VIDMEM) == gcvSURF_RENDER_TARGET) ||
-        (Type == gcvSURF_DEPTH)
-        )
-    )
-    {
-#if gcdENABLE_VG
-        gcmASSERT(CurrentType != gcvHARDWARE_VG);
+#if gcdENABLE_BUFFER_ALIGNMENT
+            if (Surface->info.tiling & gcvTILING_SPLIT_BUFFER)
+            {
+                gcmONERROR(
+                    _GetBankOffsetBytes(Surface,
+                                        Surface->info.type,
+                                        topBufferSize,
+                                        &bankOffsetBytes));
+            }
 #endif
-        _AllocateTileStatus(Surface);
+            Surface->info.bottomBufferOffset = topBufferSize + bankOffsetBytes;
+        }
+        else
+#endif
+        {
+            Surface->info.bottomBufferOffset = 0;
+        }
+
+        /* Compute the surface placement parameters. */
+        _ComputeSurfacePlacement(Surface);
+
+        /* Append bank offset bytes. */
+        Surface->info.sliceSize += bankOffsetBytes;
+
+        Surface->info.layerSize = Surface->info.sliceSize * Surface->depth;
+
+        Surface->info.size = Surface->info.layerSize * layers;
     }
-#endif /* VIVANTE_NO_3D */
+
+    if (!(Type & gcvSURF_NO_VIDMEM) && (Pool != gcvPOOL_USER))
+    {
+        gctUINT bytes = Surface->info.size;
+        gctUINT alignment;
+        gctUINT32 allocFlags = gcvALLOC_FLAG_NONE;
+
+#if gcdENABLE_3D
+#if defined(ANDROID) && gcdANDROID_UNALIGNED_LINEAR_COMPOSITION_ADJUST
+        /*
+         * May need more bytes for flip bitmap.
+         * Offset is '0' for non-flip bitmap.
+         */
+        bytes += Surface->info.flipBitmapOffset;
+#endif
+
+        if ((gcoHARDWARE_QuerySurfaceRenderable(gcvNULL, &Surface->info) == gcvSTATUS_OK) &&
+            (gcoHARDWARE_IsFeatureAvailable(gcvNULL, gcvFEATURE_TILE_FILLER))             &&
+            Depth == 1 )
+        {
+            /* 256 tile alignment for fast clear fill feature. */
+            bytes = gcmALIGN(bytes, 256 * 64);
+        }
+
+        if (gcoHARDWARE_IsFeatureAvailable(gcvNULL, gcvFEATURE_NEW_RA) ||
+            gcoHARDWARE_IsFeatureAvailable(gcvNULL, gcvFEATURE_COLOR_COMPRESSION))
+        {
+            /* - Depth surfaces need 256 byte alignment.
+             * - Color compression need 256 byte alignment(same in all versions?)
+             *   Doing this generically.
+             */
+            alignment = 256;
+        }
+        else if (Surface->info.samples.x > 1 || Surface->info.samples.y > 1)
+        {
+            /* 256 byte alignment for MSAA surface */
+            alignment = 256;
+        }
+        else
+#endif
+        {
+            /* alignment should be 16(pixels) * byte per pixels for tiled surface*/
+            alignment = (formatInfo->bitsPerPixel >= 64) ? (4*4*formatInfo->bitsPerPixel/8) : 64;
+        }
+
+#if gcdENABLE_2D
+        if ((Surface->info.type == gcvSURF_BITMAP) && gcoHARDWARE_Is2DAvailable(gcvNULL))
+        {
+            gcoHARDWARE_Query2DSurfaceAllocationInfo(gcvNULL, &Surface->info, &bytes, &alignment);
+        }
+#endif
+
+        if (Surface->info.flags & gcvSURF_FLAG_CONTENT_PROTECTED)
+        {
+            allocFlags |= gcvALLOC_FLAG_SECURITY;
+        }
+
+        if (Surface->info.flags & gcvSURF_FLAG_CONTIGUOUS)
+        {
+            allocFlags |= gcvALLOC_FLAG_CONTIGUOUS;
+        }
+
+        if (Format & gcvSURF_FORMAT_OCL)
+        {
+            bytes = gcmALIGN(bytes + 64,  64);
+        }
+
+        gcmONERROR(gcsSURF_NODE_Construct(
+            &Surface->info.node,
+            bytes,
+            alignment,
+            Surface->info.type,
+            allocFlags,
+            Pool
+            ));
+
+        gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
+                      "Allocated surface 0x%x: pool=%d size=%dx%dx%d bytes=%u",
+                      &Surface->info.node,
+                      Surface->info.node.pool,
+                      Surface->info.alignedWidth,
+                      Surface->info.alignedHeight,
+                      Surface->depth,
+                      Surface->info.size);
+    }
+
+#if gcdENABLE_3D
+    /* No Hierarchical Z buffer allocated. */
+    gcmONERROR(gcoSURF_AllocateHzBuffer(Surface));
+
+    /* Allocate tile status buffer after HZ buffer
+    ** b/c we need allocat HZ tile status if HZ exist.
+    */
+    gcmONERROR(gcoSURF_AllocateTileStatus(Surface));
+
+    Surface->info.hasStencilComponent = (format == gcvSURF_D24S8             ||
+                                         format == gcvSURF_S8D32F            ||
+                                         format == gcvSURF_S8D32F_2_A8R8G8B8 ||
+                                         format == gcvSURF_S8D32F_1_G32R32F  ||
+                                         format == gcvSURF_D24S8_1_A8R8G8B8  ||
+                                         format == gcvSURF_S8);
+
+    Surface->info.canDropStencilPlane = gcvTRUE;
+#endif
 
     if (Pool != gcvPOOL_USER)
     {
@@ -1108,7 +1511,7 @@ _AllocateSurface(
         {
 #if gcdENABLE_VG
             /* Lock the surface. */
-            gcmONERROR(_Lock(Surface, CurrentType));
+            gcmONERROR(_Lock(Surface, currentType));
 #else
             /* Lock the surface. */
             gcmONERROR(_Lock(Surface));
@@ -1120,13 +1523,9 @@ _AllocateSurface(
     return gcvSTATUS_OK;
 
 OnError:
-
-#if gcdENABLE_VG
-    _FreeSurface(Surface, CurrentType);
-#else
     /* Free the memory allocated to the surface. */
     _FreeSurface(Surface);
-#endif
+
     /* Return the status. */
     return status;
 }
@@ -1157,7 +1556,7 @@ _UnmapUserBuffer(
             break;
         }
 
-        /* Make sure the reference couner is proper. */
+        /* Make sure the reference counter is proper. */
         if (Surface->info.node.lockCount > 1)
         {
             /* Forced unmap? */
@@ -1194,7 +1593,7 @@ _UnmapUserBuffer(
         /* Unmap the physical memory. */
         if (Surface->info.node.u.wrapped.mappingInfo != gcvNULL)
         {
-            gceHARDWARE_TYPE currentType;
+            gceHARDWARE_TYPE currentType = gcvHARDWARE_INVALID;
 
             /* Save the current hardware type */
             gcmVERIFY_OK(gcoHAL_GetHardwareType(gcvNULL, &currentType));
@@ -1243,6 +1642,7 @@ _UnmapUserBuffer(
     gcmFOOTER();
     return status;
 }
+
 
 /******************************************************************************\
 ******************************** gcoSURF API Code *******************************
@@ -1298,10 +1698,6 @@ gcoSURF_Construct(
     gceSTATUS status;
     gctPOINTER pointer = gcvNULL;
 
-#if gcdENABLE_VG
-    gceHARDWARE_TYPE currentType;
-#endif
-
     gcmHEADER_ARG("Width=%u Height=%u Depth=%u Type=%d Format=%d Pool=%d",
                   Width, Height, Depth, Type, Format, Pool);
 
@@ -1314,34 +1710,60 @@ gcoSURF_Construct(
                        gcmSIZEOF(struct _gcoSURF),
                        &pointer));
 
-    gcmONERROR(
-        gcoOS_ZeroMemory(pointer, gcmSIZEOF(struct _gcoSURF)));
+    gcoOS_ZeroMemory(pointer, gcmSIZEOF(struct _gcoSURF));
 
     surface = pointer;
 
     /* Initialize the gcoSURF object.*/
     surface->object.type    = gcvOBJ_SURF;
-
-    surface->info.dither    = gcvFALSE;
-
     surface->info.offset    = 0;
 
-#ifndef VIVANTE_NO_3D
+    surface->info.dither2D      = gcvFALSE;
+    surface->info.deferDither3D = gcvFALSE;
+    surface->info.paddingFormat = (Format == gcvSURF_R8_1_X8R8G8B8 || Format == gcvSURF_G8R8_1_X8R8G8B8)
+                                ? gcvTRUE : gcvFALSE;
+    surface->info.garbagePadded = gcvTRUE;
+
+#if gcdENABLE_3D
     /* 1 sample per pixel, no VAA. */
+
+#if defined(ANDROID)
+    surface->info.flags = 0;
+#endif
     surface->info.samples.x = 1;
     surface->info.samples.y = 1;
     surface->info.vaa       = gcvFALSE;
-    surface->info.dirty     = gcvTRUE;
 
     surface->info.colorType = gcvSURF_COLOR_UNKNOWN;
+
+    surface->info.flags = gcvSURF_FLAG_NONE;
+    if (Type & gcvSURF_PROTECTED_CONTENT)
+    {
+        surface->info.flags |= gcvSURF_FLAG_CONTENT_PROTECTED;
+    }
+
+    if (Type & gcvSURF_CONTIGUOUS)
+    {
+        surface->info.flags |= gcvSURF_FLAG_CONTIGUOUS;
+        Type &= ~gcvSURF_CONTIGUOUS;
+    }
+
+    /* set color space */
+    if ((Format == gcvSURF_A8_SBGR8) ||
+        (Format == gcvSURF_SBGR8) ||
+        (Format == gcvSURF_X8_SBGR8))
+    {
+        surface->info.colorSpace = gcvSURF_COLOR_SPACE_NONLINEAR;
+    }
+    else
+    {
+        surface->info.colorSpace = gcvSURF_COLOR_SPACE_LINEAR;
+    }
 
     surface->info.hzNode.pool = gcvPOOL_UNKNOWN;
     surface->info.tileStatusNode.pool = gcvPOOL_UNKNOWN;
     surface->info.hzTileStatusNode.pool = gcvPOOL_UNKNOWN;
-    surface->info.node.physical = ~0U;
-    surface->info.node.physical2 = ~0U;
-    surface->info.node.physical3 = ~0U;
-#endif /* VIVANTE_NO_3D */
+#endif /* gcdENABLE_3D */
 
     if (Type & gcvSURF_CACHEABLE)
     {
@@ -1354,38 +1776,34 @@ gcoSURF_Construct(
         surface->info.node.u.normal.cacheable = gcvFALSE;
     }
 
-#if gcdENABLE_VG
-    gcmGETCURRENTHARDWARE(currentType);
-    /* Allocate surface. */
-    gcmONERROR(
-        _AllocateSurface(surface,
-                         currentType,
-                         Width, Height, Depth,
-                         Type,
-                         Format,
-                         Pool));
-#else
-    /* Allocate surface. */
-    gcmONERROR(
-        _AllocateSurface(surface,
-                         Width, Height, Depth,
-                         Type,
-                         Format,
-                         Pool));
+#if gcdENABLE_3D
+    if (Type & gcvSURF_TILE_STATUS_DIRTY)
+    {
+        surface->info.TSDirty = gcvTRUE;
+        Type &= ~gcvSURF_TILE_STATUS_DIRTY;
+    }
 #endif
+
+    if (Depth < 1)
+    {
+        /* One plane. */
+        Depth = 1;
+    }
+
+    /* Allocate surface. */
+    gcmONERROR(
+        _AllocateSurface(surface,
+                         Width, Height, Depth,
+                         Type,
+                         Format,
+                         Pool));
 
     surface->referenceCount = 1;
 
-#if defined(ANDROID) && gcdDEFER_RESOLVES
-    /* Create a signal for SF-app synchronization. */
-    if (Type & gcvSURF_RENDER_TARGET)
-    {
-        gcmONERROR(gcoOS_CreateSignal(
-                    gcvNULL,
-                    gcvFALSE,
-                    &surface->resolveSubmittedSignal
-                    ));
-    }
+#if gcdSYNC
+    surface->info.fenceStatus = gcvFENCE_DISABLE;
+    surface->info.fenceCtx    = gcvNULL;
+    surface->info.sharedLock  = gcvNULL;
 #endif
 
     gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
@@ -1431,10 +1849,9 @@ gcoSURF_Destroy(
     IN gcoSURF Surface
     )
 {
-#if gcdENABLE_VG
-    gceHARDWARE_TYPE currentType;
-#endif
+#if gcdENABLE_3D
     gcsTLS_PTR tls;
+#endif
 
     gcmHEADER_ARG("Surface=0x%x", Surface);
 
@@ -1449,19 +1866,28 @@ gcoSURF_Destroy(
         return gcvSTATUS_OK;
     }
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
 
-    gcmVERIFY_OK(gcoOS_GetTLS(&tls));
+    if (gcmIS_ERROR(gcoOS_GetTLS(&tls)))
+    {
+        gcmFOOTER_NO();
+        return gcvSTATUS_NOT_SUPPORTED;
+    }
 
 #if gcdENABLE_VG
-    currentType = tls->currentType;
-
     /* Unset VG target. */
     if (tls->engineVG != gcvNULL)
     {
+#if GC355_PROFILER
+        gcmVERIFY_OK(
+            gcoVG_UnsetTarget(tls->engineVG,
+            gcvNULL,0,0,0,
+            Surface));
+#else
         gcmVERIFY_OK(
             gcoVG_UnsetTarget(tls->engineVG,
             Surface));
+#endif
     }
 #endif
 
@@ -1473,8 +1899,12 @@ gcoSURF_Destroy(
         ||  (Surface->info.type == gcvSURF_TEXTURE)
         )
         {
-            gcmVERIFY_OK(
-                gco3D_UnsetTarget(tls->engine3D, Surface));
+            gctUINT32 rtIdx;
+
+            for (rtIdx = 0; rtIdx < 4; ++rtIdx)
+            {
+                gcmVERIFY_OK(gco3D_UnsetTargetEx(tls->engine3D, rtIdx, Surface));
+            }
         }
 
         /* If this is a depth buffer, unset it. */
@@ -1500,24 +1930,14 @@ gcoSURF_Destroy(
             _UnmapUserBuffer(Surface, gcvTRUE));
     }
 
-#if defined(ANDROID) && gcdDEFER_RESOLVES
-    /* Destroy signal used for SF-app synchronization. */
-    if (Surface->info.type & gcvSURF_RENDER_TARGET)
-    {
-        gcmVERIFY_OK(gcoOS_DestroySignal(
-                        gcvNULL,
-                        Surface->resolveSubmittedSignal
-                        ));
-    }
+#if gcdGC355_MEM_PRINT
+#ifdef LINUX
+    gcoOS_AddRecordAllocation(-(gctINT32)Surface->info.node.size);
+#endif
 #endif
 
-#if gcdENABLE_VG
-    /* Free the video memory. */
-    gcmVERIFY_OK(_FreeSurface(Surface, currentType));
-#else
     /* Free the video memory. */
     gcmVERIFY_OK(_FreeSurface(Surface));
-#endif
 
     /* Mark gcoSURF object as unknown. */
     Surface->object.type = gcvOBJ_UNKNOWN;
@@ -1547,7 +1967,7 @@ gcoSURF_Destroy(
 **
 **  OUTPUT:
 **
-**      gcuVIDMEM_NODE_PTR * Node
+**      gctUINT32 * Node
 **          Pointer to a variable receiving the video memory node.
 **
 **      gcePOOL * Pool
@@ -1560,9 +1980,9 @@ gcoSURF_Destroy(
 gceSTATUS
 gcoSURF_QueryVidMemNode(
     IN gcoSURF Surface,
-    OUT gcuVIDMEM_NODE_PTR * Node,
+    OUT gctUINT32 * Node,
     OUT gcePOOL * Pool,
-    OUT gctUINT_PTR Bytes
+    OUT gctSIZE_T_PTR Bytes
     )
 {
     gcmHEADER_ARG("Surface=0x%x", Surface);
@@ -1583,70 +2003,12 @@ gcoSURF_QueryVidMemNode(
     return gcvSTATUS_OK;
 }
 
-/*******************************************************************************
-**
-**  gcoSURF_SetUsage
-**
-**  Set usage attribute of a surface.
-**
-**  INPUT:
-**
-**      gcoSURF Surface
-**          Pointer to the surface.
-**
-**      gceSURF_USAGE Usage
-**          Usage purpose for the surface.
-**
-**  OUTPUT:
-**      None
-**
-*/
-gceSTATUS
-gcoSURF_SetUsage(
-    IN gcoSURF Surface,
-    IN gceSURF_USAGE Usage
-    )
-{
-    Surface->info.usage = Usage;
-    return gcvSTATUS_OK;
-}
 
 /*******************************************************************************
 **
-**  gcoSURF_QueryUsage
+**  gcoSURF_WrapSurface
 **
-**  Return usage attribute of a surface.
-**
-**  INPUT:
-**
-**      gcoSURF Surface
-**          Pointer to the surface.
-**
-**  OUTPUT:
-**      gceSURF_USAGE *Usage
-**          Usage purpose for the surface.
-**
-*/
-gceSTATUS
-gcoSURF_QueryUsage(
-    IN gcoSURF Surface,
-    OUT gceSURF_USAGE *Usage
-    )
-{
-    if (Usage)
-    {
-        *Usage = Surface->info.usage;
-    }
-
-    return gcvSTATUS_OK;
-}
-
-/*******************************************************************************
-**
-**  gcoSURF_MapUserSurface
-**
-**  Store the logical and physical pointers to the user-allocated surface in
-**  the gcoSURF object and map the pointers as necessary.
+**  Wrap gcoSURF_Object with known logica address (CPU) and physical address(GPU)
 **
 **  INPUT:
 **
@@ -1661,15 +2023,14 @@ gcoSURF_QueryUsage(
 **          logical pointer has been provided.
 **
 **      gctUINT32 Physical
-**          Physical pointer to the user allocated surface or ~0 if no
-**          physical pointer has been provided.
+**          Physical pointer(GPU address) to the user allocated surface.
 **
 **  OUTPUT:
 **
 **      Nothing.
 */
 gceSTATUS
-gcoSURF_MapUserSurface(
+gcoSURF_WrapSurface(
     IN gcoSURF Surface,
     IN gctUINT Alignment,
     IN gctPOINTER Logical,
@@ -1678,14 +2039,8 @@ gcoSURF_MapUserSurface(
 {
     gceSTATUS status = gcvSTATUS_OK;
 
-    gctBOOL logicalMapped = gcvFALSE;
-    gctPOINTER mappingInfo = gcvNULL;
-
-    gctPOINTER logical = gcvNULL;
-    gctUINT32 physical = 0;
-    gctUINT32 bitsPerPixel;
 #if gcdENABLE_VG
-    gceHARDWARE_TYPE currentType;
+    gceHARDWARE_TYPE currentType = gcvHARDWARE_INVALID;
 #endif
 
     gcmHEADER_ARG("Surface=0x%x Alignment=%u Logical=0x%x Physical=%08x",
@@ -1713,7 +2068,7 @@ gcoSURF_MapUserSurface(
                 break;
             }
 
-            if ((Physical != ~0U) &&
+            if ((Physical != gcvINVALID_ADDRESS) &&
                 (Physical != Surface->info.node.physical))
             {
                 status = gcvSTATUS_INVALID_ARGUMENT;
@@ -1729,94 +2084,60 @@ gcoSURF_MapUserSurface(
         /* Set new alignment. */
         if (Alignment != 0)
         {
-            gctUINT32 stride;
-#if gcdENABLE_VG
-            if (currentType == gcvHARDWARE_VG)
-            {
-                gcmERR_BREAK(gcoVGHARDWARE_ConvertFormat(
-                    gcvNULL,
-                    Surface->info.format,
-                    &bitsPerPixel,
-                    gcvNULL
-                    ));
-            }
-            else
-#endif
-            {
-                /* Compute bits per pixel. */
-                gcmERR_BREAK(gcoHARDWARE_ConvertFormat(
-                    Surface->info.format,
-                    &bitsPerPixel,
-                    gcvNULL
-                    ));
-            }
-
             /* Compute the unaligned stride. */
-            stride = Surface->info.alignedWidth * bitsPerPixel / 8;
+            gctUINT32 stride;
+            gctUINT32 bytesPerPixel;
+            gcsSURF_FORMAT_INFO_PTR formatInfo = &Surface->info.formatInfo;
 
-            /* Align the stide (Alignment can be not a power of number). */
+            switch (Surface->info.format)
+            {
+            case gcvSURF_YV12:
+            case gcvSURF_I420:
+            case gcvSURF_NV12:
+            case gcvSURF_NV21:
+            case gcvSURF_NV16:
+            case gcvSURF_NV61:
+                bytesPerPixel = 1;
+                stride = Surface->info.alignedWidth;
+                break;
+
+            default:
+                bytesPerPixel = Surface->info.bitsPerPixel / 8;
+                stride = Surface->info.alignedWidth * Surface->info.bitsPerPixel / 8;
+                break;
+            }
+
+            /* Align the stride (Alignment can be not a power of number). */
             if (gcoMATH_ModuloUInt(stride, Alignment) != 0)
             {
                 stride = gcoMATH_DivideUInt(stride, Alignment)  * Alignment
                        + Alignment;
+
+                Surface->info.alignedWidth = stride / bytesPerPixel;
             }
 
-            /* Set the new stride. */
-            Surface->info.stride = stride;
+            /* Compute the new surface placement parameters. */
+            _ComputeSurfacePlacement(Surface);
+
+            if (stride != Surface->info.stride)
+            {
+                /*
+                 * Still not equal, which means user stride is not pixel aligned, ie,
+                 * stride != alignedWidth(user) * bytesPerPixel
+                 */
+                Surface->info.stride = stride;
+
+                /* Re-calculate slice size. */
+                Surface->info.sliceSize = stride * (Surface->info.alignedHeight / formatInfo->blockHeight);
+            }
+
+            Surface->info.layerSize = Surface->info.sliceSize * Surface->depth;
+
+            /* We won't map multi-layer surface. */
+            gcmASSERT(formatInfo->layers == 1);
 
             /* Compute the new size. */
-            Surface->info.size
-                = stride * Surface->info.alignedHeight;
-        }
-
-        /* Map logical pointer if not specified. */
-        if (Logical == gcvNULL)
-        {
-            if (Physical == ~0U)
-            {
-                status = gcvSTATUS_INVALID_ARGUMENT;
-                break;
-            }
-
-            /* Map the logical pointer. */
-            gcmERR_BREAK(gcoHAL_MapMemory(
-                gcvNULL,
-                gcmINT2PTR(Physical),
-                Surface->info.size,
-                &logical
-                ));
-
-            /* Mark as mapped. */
-            logicalMapped = gcvTRUE;
-        }
-        else
-        {
-            /* Set the logical pointer. */
-            logical = Logical;
-        }
-
-        /* Map physical pointer if not specified. */
-        if (Physical == ~0U)
-        {
-            if (Logical == gcvNULL)
-            {
-                status = gcvSTATUS_INVALID_ARGUMENT;
-                break;
-            }
-
-            /* Map the physical pointer. */
-            gcmERR_BREAK(gcoOS_MapUserMemory(
-                gcvNULL,
-                Logical,
-                Surface->info.size,
-                &mappingInfo,
-                &physical
-                ));
-        }
-        else
-        {
-            /* Set the physical pointer. */
-            physical = Physical;
+            Surface->info.size = Surface->info.layerSize * formatInfo->layers;
         }
 
         /* Validate the surface. */
@@ -1825,27 +2146,192 @@ gcoSURF_MapUserSurface(
         /* Set the lock count. */
         Surface->info.node.lockCount++;
 
+        /* Set the node parameters. */
+        Surface->info.node.u.wrapped.logicalMapped = gcvFALSE;
+        Surface->info.node.u.wrapped.mappingInfo   = gcvNULL;
+
+        Surface->info.node.logical                 = Logical;
+        Surface->info.node.physical                = Physical;
+        Surface->info.node.count                   = 1;
+    }
+    while (gcvFALSE);
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+
+/*******************************************************************************
+**
+**  gcoSURF_MapUserSurface
+**
+**  Store the logical and physical pointers to the user-allocated surface in
+**  the gcoSURF object and map the pointers as necessary.
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to an gcoSURF object to be destroyed.
+**
+**      gctUINT Alignment
+**          Alignment of each pixel row in bytes.
+**
+**      gctPOINTER Logical
+**          Logical pointer to the user allocated surface or gcvNULL if no
+**          logical pointer has been provided.
+**
+**      gctUINT32 Physical
+**          Physical pointer to the user allocated surface or gcvINVALID_ADDRESS if no
+**          physical pointer has been provided.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoSURF_MapUserSurface(
+    IN gcoSURF Surface,
+    IN gctUINT Alignment,
+    IN gctPOINTER Logical,
+    IN gctUINT32 Physical
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+
+    gctBOOL logicalMapped = gcvFALSE;
+    gctPOINTER mappingInfo = gcvNULL;
+
+    gctPOINTER logical = gcvNULL;
+    gctUINT32 physical = 0;
 #if gcdENABLE_VG
-        if (currentType == gcvHARDWARE_VG)
+    gceHARDWARE_TYPE currentType = gcvHARDWARE_INVALID;
+#endif
+
+    gcmHEADER_ARG("Surface=0x%x Alignment=%u Logical=0x%x Physical=%08x",
+              Surface, Alignment, Logical, Physical);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+
+    do
+    {
+        /* Has to be user-allocated surface. */
+        if (Surface->info.node.pool != gcvPOOL_USER)
         {
-            /* Compute bits per pixel. */
-            gcmERR_BREAK(gcoVGHARDWARE_ConvertFormat(
-                gcvNULL,
-                Surface->info.format,
-                &bitsPerPixel,
-                gcvNULL
-                ));
+            status = gcvSTATUS_NOT_SUPPORTED;
+            break;
+        }
+
+        /* Already mapped? */
+        if (Surface->info.node.lockCount > 0)
+        {
+            if ((Logical != gcvNULL) &&
+                (Logical != Surface->info.node.logical))
+            {
+                status = gcvSTATUS_INVALID_ARGUMENT;
+                break;
+            }
+
+            if ((Physical != gcvINVALID_ADDRESS) &&
+                (Physical != Surface->info.node.physical))
+            {
+                status = gcvSTATUS_INVALID_ARGUMENT;
+                break;
+            }
+
+            /* Success. */
+            break;
+        }
+#if gcdENABLE_VG
+        gcmGETCURRENTHARDWARE(currentType);
+#endif
+        /* Set new alignment. */
+        if (Alignment != 0)
+        {
+            /* Compute the unaligned stride. */
+            gctUINT32 stride;
+            gctUINT32 bytesPerPixel;
+            gcsSURF_FORMAT_INFO_PTR formatInfo = &Surface->info.formatInfo;
+
+            switch (Surface->info.format)
+            {
+            case gcvSURF_YV12:
+            case gcvSURF_I420:
+            case gcvSURF_NV12:
+            case gcvSURF_NV21:
+            case gcvSURF_NV16:
+            case gcvSURF_NV61:
+                bytesPerPixel = 1;
+                stride = Surface->info.alignedWidth;
+                break;
+
+            default:
+                bytesPerPixel = Surface->info.bitsPerPixel / 8;
+                stride = Surface->info.alignedWidth * Surface->info.bitsPerPixel / 8;
+                break;
+            }
+
+            /* Align the stride (Alignment can be not a power of number). */
+            if (gcoMATH_ModuloUInt(stride, Alignment) != 0)
+            {
+                stride = gcoMATH_DivideUInt(stride, Alignment)  * Alignment
+                       + Alignment;
+
+                Surface->info.alignedWidth = stride / bytesPerPixel;
+            }
+
+            /* Compute the new surface placement parameters. */
+            _ComputeSurfacePlacement(Surface);
+
+            if (stride != Surface->info.stride)
+            {
+                /*
+                 * Still not equal, which means user stride is not pixel aligned, ie,
+                 * stride != alignedWidth(user) * bytesPerPixel
+                 */
+                Surface->info.stride = stride;
+
+                /* Re-calculate slice size. */
+                Surface->info.sliceSize = stride * (Surface->info.alignedHeight / formatInfo->blockHeight);
+            }
+
+            Surface->info.layerSize = Surface->info.sliceSize * Surface->depth;
+
+            /* We won't map multi-layer surface. */
+            gcmASSERT(formatInfo->layers == 1);
+
+            /* Compute the new size. */
+            Surface->info.size = Surface->info.layerSize * formatInfo->layers;
+        }
+
+        /* Map logical pointer if not specified. */
+        if (Logical == gcvNULL)
+        {
+            status = gcvSTATUS_NOT_SUPPORTED;
+            break;
         }
         else
-#endif
         {
-            /* Compute bits per pixel. */
-            gcmERR_BREAK(gcoHARDWARE_ConvertFormat(
-                Surface->info.format,
-                &bitsPerPixel,
-                gcvNULL
-                ));
+            /* Set the logical pointer. */
+            logical = Logical;
         }
+
+        /* Map physical pointer to GPU address. */
+        gcmERR_BREAK(gcoHAL_MapUserMemory(
+                Logical,
+                Physical,
+                Surface->info.size,
+                &mappingInfo,
+                &physical
+                ));
+
+        /* Validate the surface. */
+        Surface->info.node.valid = gcvTRUE;
+
+        /* Set the lock count. */
+        Surface->info.node.lockCount++;
+
         /* Set the node parameters. */
         Surface->info.node.u.wrapped.logicalMapped = logicalMapped;
         Surface->info.node.u.wrapped.mappingInfo   = mappingInfo;
@@ -1926,7 +2412,7 @@ gcoSURF_IsValid(
     return status;
 }
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
 /*******************************************************************************
 **
 **  gcoSURF_IsTileStatusSupported
@@ -1967,21 +2453,22 @@ gcoSURF_IsTileStatusSupported(
 
 /*******************************************************************************
 **
-**  gcoSURF_SetTileStatus
+**  gcoSURF_IsTileStatusEnabled
 **
-**  Set tile status for the specified surface.
+**  Verify whether the tile status is enabled on this surface.
 **
 **  INPUT:
 **
 **      gcoSURF Surface
-**          Pointer to an gcoSURF object.
+**          Pointer to a gcoSURF object.
 **
-**  OUTPUT:
+**  RETURNS:
 **
-**      Nothing.
+**      The return value of the function is set to gcvSTATUS_TRUE if the
+**      tile status is enabled.
 */
 gceSTATUS
-gcoSURF_SetTileStatus(
+gcoSURF_IsTileStatusEnabled(
     IN gcoSURF Surface
     )
 {
@@ -1992,16 +2479,108 @@ gcoSURF_SetTileStatus(
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
 
+    /* Check whether the surface has enabled tile status. */
+    if ((Surface->info.tileStatusNode.pool != gcvPOOL_UNKNOWN) &&
+        (Surface->info.tileStatusDisabled == gcvFALSE))
+    {
+        status = gcvSTATUS_TRUE;
+    }
+    else
+    {
+        status = gcvSTATUS_FALSE;
+    }
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoSURF_IsCompressed
+**
+**  Verify whether the surface is compressed.
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to a gcoSURF object.
+**
+**  RETURNS:
+**
+**      The return value of the function is set to gcvSTATUS_TRUE if the
+**      tile status is supported.
+*/
+gceSTATUS
+gcoSURF_IsCompressed(
+    IN gcoSURF Surface
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Surface=0x%x", Surface);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+
+    /* Check whether the surface is compressed. */
+    if ((Surface->info.tileStatusNode.pool != gcvPOOL_UNKNOWN) &&
+        (Surface->info.tileStatusDisabled == gcvFALSE) &&
+        Surface->info.compressed)
+    {
+        status = gcvSTATUS_TRUE;
+    }
+    else
+    {
+        status = gcvSTATUS_FALSE;
+    }
+
+    /* Return status. */
+    gcmFOOTER_NO();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoSURF_EnableTileStatusEx
+**
+**  Enable tile status for the specified surface.
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to an gcoSURF object.
+**
+**      gctUINT RtIndex
+**          Which RT slot will be bound for this surface
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoSURF_EnableTileStatusEx(
+    IN gcoSURF Surface,
+    IN gctUINT RtIndex
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Surface=0x%x RtIndex=%d", Surface, RtIndex);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+
     do
     {
-        if (Surface->info.tileStatusNode.pool != gcvPOOL_UNKNOWN)
-        {
-            /* Enable tile status. */
-            gcmERR_BREAK(
-                gcoHARDWARE_SetTileStatus(&Surface->info,
-                                          Surface->info.tileStatusNode.physical,
-                                          &Surface->info.hzTileStatusNode));
-        }
+        /* Enable tile status. */
+        gcmERR_BREAK(
+            gcoHARDWARE_EnableTileStatus(gcvNULL,
+                                         &Surface->info,
+                                         (Surface->info.tileStatusNode.pool != gcvPOOL_UNKNOWN) ?
+                                         Surface->info.tileStatusNode.physical : 0,
+                                         &Surface->info.hzTileStatusNode,
+                                         RtIndex));
 
         /* Success. */
         gcmFOOTER_NO();
@@ -2041,25 +2620,13 @@ gcoSURF_EnableTileStatus(
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
 
-    do
-    {
-        /* Enable tile status. */
-        gcmERR_BREAK(
-            gcoHARDWARE_EnableTileStatus(&Surface->info,
-										 (Surface->info.tileStatusNode.pool != gcvPOOL_UNKNOWN) ?
-                                         Surface->info.tileStatusNode.physical : 0,
-                                         &Surface->info.hzTileStatusNode));
-
-        /* Success. */
-        gcmFOOTER_NO();
-        return gcvSTATUS_OK;
-    }
-    while (gcvFALSE);
+    status = gcoSURF_EnableTileStatusEx(Surface, 0);
 
     /* Return the status. */
     gcmFOOTER();
     return status;
 }
+
 
 /*******************************************************************************
 **
@@ -2099,7 +2666,7 @@ gcoSURF_DisableTileStatus(
         {
             /* Disable tile status. */
             gcmERR_BREAK(
-                gcoHARDWARE_DisableTileStatus(&Surface->info,
+                gcoHARDWARE_DisableTileStatus(gcvNULL, &Surface->info,
                                               Decompress));
         }
 
@@ -2117,58 +2684,55 @@ gcoSURF_DisableTileStatus(
 
 /*******************************************************************************
 **
-**  gcoSURF_SetLinearResolveAddress
+**  gcoSURF_FlushTileStatus
 **
-**  Set the new resolve Address for linear surface, this should only
-**  for 3D composition.
+**  Flush tile status for the specified surface.
 **
 **  INPUT:
 **
 **      gcoSURF Surface
-**          Pointer to a gcoSURF object.
+**          Pointer to an gcoSURF object.
 **
-**      gctUINT32 Address
-**          Physicali Address
+**      gctBOOL Decompress
+**          Set if the render target needs to decompressed by issuing a resolve
+**          onto itself.
 **
-**      gctPOINTER  Memory
-**          Logical Address
+**  OUTPUT:
 **
-**  RETURNS:
-**
-**      The return value of the function is set to gcvSTATUS_TRUE if the
-**      surface is valid.
+**      Nothing.
 */
-
 gceSTATUS
-gcoSURF_SetLinearResolveAddress(
+gcoSURF_FlushTileStatus(
     IN gcoSURF Surface,
-    IN gctUINT32 Address,
-    IN gctPOINTER Memory
+    IN gctBOOL Decompress
     )
 {
-#if gcdANDROID_UNALIGNED_LINEAR_COMPOSITION_ADJUST
     gceSTATUS status;
 
-    gcmHEADER_ARG("Surface=0x%x, Address=0x%x, Memory=0x%x",
-                  Surface,Address,Memory);
+    gcmHEADER_ARG("Surface=0x%x", Surface);
 
+    /* Verify the arguments. */
     gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
 
-    Surface->info.linearResolvePhysical  = Address;
+    if (Surface->info.tileStatusNode.pool != gcvPOOL_UNKNOWN)
+    {
+        /* Disable tile status. */
+        gcmONERROR(
+            gcoHARDWARE_FlushTileStatus(gcvNULL, &Surface->info,
+                                        Decompress));
+    }
 
-    Surface->info.linearResolveLogical  = Memory;
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
 
-    status = gcvSTATUS_TRUE;
-
+OnError:
+    /* Return the status. */
     gcmFOOTER();
-
     return status;
-#else
-    return gcvSTATUS_TRUE;
-#endif
 }
 
-#endif /* VIVANTE_NO_3D */
+#endif /* gcdENABLE_3D */
 
 /*******************************************************************************
 **
@@ -2212,7 +2776,7 @@ gcoSURF_GetSize(
     {
         /* Return the width. */
         *Width =
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
             gcoMATH_DivideUInt(Surface->info.rect.right,
                                     Surface->info.samples.x);
 #else
@@ -2224,7 +2788,7 @@ gcoSURF_GetSize(
     {
         /* Return the height. */
         *Height =
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
             gcoMATH_DivideUInt(Surface->info.rect.bottom,
                                      Surface->info.samples.y);
 #else
@@ -2349,7 +2913,7 @@ gcoSURF_GetAlignment(
     gctUINT xAlign = (gcvSURF_TEXTURE == Type) ? 4 : 16;
     gctUINT yAlign = 4;
 #if gcdENABLE_VG
-    gceHARDWARE_TYPE currentType;
+    gceHARDWARE_TYPE currentType = gcvHARDWARE_INVALID;
 #endif
 
     gcmHEADER_ARG("Type=%d Format=%d", Type, Format);
@@ -2389,7 +2953,7 @@ gcoSURF_GetAlignment(
     }
 
     gcmFOOTER_ARG("*XAlignment=0x%x  *YAlignment=0x%x *AddressAlignment=0x%x",
-		gcmOPT_VALUE(XAlignment), gcmOPT_VALUE(YAlignment), gcmOPT_VALUE(AddressAlignment));
+        gcmOPT_VALUE(XAlignment), gcmOPT_VALUE(YAlignment), gcmOPT_VALUE(AddressAlignment));
     return gcvSTATUS_OK;
 
 OnError:
@@ -2398,6 +2962,54 @@ OnError:
     return status;
 }
 
+#if gcdENABLE_3D
+/*******************************************************************************
+**
+**  gcoSURF_AlignResolveRect (need to modify)
+**
+**  INPUT:
+**
+**      gcoHAL Hal
+**          Pointer to an gcoHAL object.
+**
+**      gceSURF_TYPE Type
+**          Type of surface.
+**
+**      gceSURF_FORMAT Format
+**          Format of surface.
+**
+**  OUTPUT:
+**
+**      gctUINT * addressAlignment
+**          Pointer to the variable of address alignment.
+**      gctUINT * xAlignmenet
+**          Pointer to the variable of x Alignment.
+**      gctUINT * yAlignment
+**          Pointer to the variable of y Alignment.
+*/
+gceSTATUS
+gcoSURF_AlignResolveRect(
+    IN gcoSURF Surf,
+    IN gcsPOINT_PTR RectOrigin,
+    IN gcsPOINT_PTR RectSize,
+    OUT gcsPOINT_PTR AlignedOrigin,
+    OUT gcsPOINT_PTR AlignedSize
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Surf=0x%x RectOrigin=0x%x RectSize=0x%x",
+        Surf, RectOrigin, RectSize);
+
+    status = gcoHARDWARE_AlignResolveRect(&Surf->info, RectOrigin, RectSize,
+                                         AlignedOrigin, AlignedSize);
+
+    /* Success. */
+    gcmFOOTER();
+
+    return status;
+}
+#endif
 
 /*******************************************************************************
 **
@@ -2453,6 +3065,314 @@ gcoSURF_GetFormat(
 
 /*******************************************************************************
 **
+**  gcoSURF_GetFormatInfo
+**
+**  Get surface format information.
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to an gcoSURF object.
+**
+**  OUTPUT:
+**
+**      gcsSURF_FORMAT_INFO_PTR * formatInfo
+**          Pointer to variable that receives the format informationof the gcoSURF object.
+**          If 'formatInfo' is gcvNULL, no format information shall be returned.
+*/
+gceSTATUS
+gcoSURF_GetFormatInfo(
+    IN gcoSURF Surface,
+    OUT gcsSURF_FORMAT_INFO_PTR * formatInfo
+    )
+{
+    gcmHEADER_ARG("Surface=0x%x", Surface);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+
+    if (formatInfo != gcvNULL)
+    {
+        /* Return the surface format. */
+        *formatInfo = &Surface->info.formatInfo;
+    }
+
+    /* Success. */
+    gcmFOOTER_ARG("*Format=0x%x",
+                  (formatInfo == gcvNULL) ? 0 : *formatInfo);
+    return gcvSTATUS_OK;
+}
+
+
+
+/*******************************************************************************
+**
+**  gcoSURF_GetPackedFormat
+**
+**  Get surface packed format for multiple-layer surface
+**  gcvSURF_A32B32G32R32UI_2 ->gcvSURF_A32B32G32R32UI
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to an gcoSURF object.
+**
+**  OUTPUT:
+**
+**
+**      gceSURF_FORMAT * Format
+**          Pointer to variable that receives the format of the gcoSURF object.
+**          If 'Format' is gcvNULL, no format information shall be returned.
+*/
+gceSTATUS
+gcoSURF_GetPackedFormat(
+    IN gcoSURF Surface,
+    OUT gceSURF_FORMAT * Format
+    )
+{
+    gceSURF_FORMAT format;
+    gcmHEADER_ARG("Surface=0x%x", Surface);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+
+    switch (Surface->info.format)
+    {
+    case gcvSURF_X16R16G16B16_2_A8R8G8B8:
+        format = gcvSURF_X16R16G16B16;
+        break;
+
+    case gcvSURF_A16R16G16B16_2_A8R8G8B8:
+        format = gcvSURF_A16R16G16B16;
+        break;
+
+    case gcvSURF_A32R32G32B32_2_G32R32F:
+    case gcvSURF_A32R32G32B32_4_A8R8G8B8:
+        format = gcvSURF_A32R32G32B32;
+        break;
+
+    case gcvSURF_S8D32F_1_G32R32F:
+    case gcvSURF_S8D32F_2_A8R8G8B8:
+        format = gcvSURF_S8D32F;
+        break;
+
+    case gcvSURF_X16B16G16R16F_2_A8R8G8B8:
+        format = gcvSURF_X16B16G16R16F;
+        break;
+
+    case gcvSURF_A16B16G16R16F_2_A8R8G8B8:
+        format = gcvSURF_A16B16G16R16F;
+        break;
+
+    case gcvSURF_G32R32F_2_A8R8G8B8:
+        format = gcvSURF_G32R32F;
+        break;
+
+    case gcvSURF_X32B32G32R32F_2_G32R32F:
+    case gcvSURF_X32B32G32R32F_4_A8R8G8B8:
+        format = gcvSURF_X32B32G32R32F;
+        break;
+
+    case gcvSURF_A32B32G32R32F_2_G32R32F:
+    case gcvSURF_A32B32G32R32F_4_A8R8G8B8:
+        format = gcvSURF_A32B32G32R32F;
+        break;
+
+    case gcvSURF_R16F_1_A4R4G4B4:
+        format = gcvSURF_R16F;
+        break;
+
+    case gcvSURF_G16R16F_1_A8R8G8B8:
+        format = gcvSURF_G16R16F;
+        break;
+
+    case gcvSURF_B16G16R16F_2_A8R8G8B8:
+        format = gcvSURF_B16G16R16F;
+        break;
+
+    case gcvSURF_R32F_1_A8R8G8B8:
+        format = gcvSURF_R32F;
+        break;
+
+    case gcvSURF_B32G32R32F_3_A8R8G8B8:
+        format = gcvSURF_B32G32R32F;
+        break;
+
+    case gcvSURF_B10G11R11F_1_A8R8G8B8:
+        format = gcvSURF_B10G11R11F;
+        break;
+
+    case gcvSURF_G32R32I_2_A8R8G8B8:
+        format = gcvSURF_G32R32I;
+        break;
+
+    case gcvSURF_G32R32UI_2_A8R8G8B8:
+        format = gcvSURF_G32R32UI;
+        break;
+
+    case gcvSURF_X16B16G16R16I_2_A8R8G8B8:
+        format = gcvSURF_X16B16G16R16I;
+        break;
+
+    case gcvSURF_A16B16G16R16I_2_A8R8G8B8:
+        format = gcvSURF_A16B16G16R16I;
+        break;
+
+    case gcvSURF_X16B16G16R16UI_2_A8R8G8B8:
+        format = gcvSURF_X16B16G16R16UI;
+        break;
+
+    case gcvSURF_A16B16G16R16UI_2_A8R8G8B8:
+        format = gcvSURF_A16B16G16R16UI;
+        break;
+
+    case gcvSURF_X32B32G32R32I_2_G32R32I:
+    case gcvSURF_X32B32G32R32I_3_A8R8G8B8:
+        format = gcvSURF_X32B32G32R32I;
+        break;
+
+    case gcvSURF_A32B32G32R32I_2_G32R32I:
+    case gcvSURF_A32B32G32R32I_4_A8R8G8B8:
+        format = gcvSURF_A32B32G32R32I;
+        break;
+
+    case gcvSURF_X32B32G32R32UI_2_G32R32UI:
+    case gcvSURF_X32B32G32R32UI_3_A8R8G8B8:
+        format = gcvSURF_X32B32G32R32UI;
+        break;
+
+    case gcvSURF_A32B32G32R32UI_2_G32R32UI:
+    case gcvSURF_A32B32G32R32UI_4_A8R8G8B8:
+        format = gcvSURF_A32B32G32R32UI;
+        break;
+
+    case gcvSURF_A2B10G10R10UI_1_A8R8G8B8:
+        format = gcvSURF_A2B10G10R10UI;
+        break;
+
+    case gcvSURF_A8B8G8R8I_1_A8R8G8B8:
+        format = gcvSURF_A8B8G8R8I;
+        break;
+
+    case gcvSURF_A8B8G8R8UI_1_A8R8G8B8:
+        format = gcvSURF_A8B8G8R8UI;
+        break;
+
+    case gcvSURF_R8I_1_A4R4G4B4:
+        format = gcvSURF_R8I;
+        break;
+
+    case gcvSURF_R8UI_1_A4R4G4B4:
+        format = gcvSURF_R8UI;
+        break;
+
+    case gcvSURF_R16I_1_A4R4G4B4:
+        format = gcvSURF_R16I;
+        break;
+
+    case gcvSURF_R16UI_1_A4R4G4B4:
+        format = gcvSURF_R16UI;
+        break;
+
+    case gcvSURF_R32I_1_A8R8G8B8:
+        format = gcvSURF_R32I;
+        break;
+
+    case gcvSURF_R32UI_1_A8R8G8B8:
+        format = gcvSURF_R32UI;
+        break;
+
+    case gcvSURF_X8R8I_1_A4R4G4B4:
+        format = gcvSURF_X8R8I;
+        break;
+
+    case gcvSURF_X8R8UI_1_A4R4G4B4:
+        format = gcvSURF_X8R8UI;
+        break;
+
+    case gcvSURF_G8R8I_1_A4R4G4B4:
+        format = gcvSURF_G8R8I;
+        break;
+
+    case gcvSURF_G8R8UI_1_A4R4G4B4:
+        format = gcvSURF_G8R8UI;
+        break;
+
+    case gcvSURF_X16R16I_1_A4R4G4B4:
+        format = gcvSURF_X16R16I;
+        break;
+
+    case gcvSURF_X16R16UI_1_A4R4G4B4:
+        format = gcvSURF_X16R16UI;
+        break;
+
+    case gcvSURF_G16R16I_1_A8R8G8B8:
+        format = gcvSURF_G16R16I;
+        break;
+
+    case gcvSURF_G16R16UI_1_A8R8G8B8:
+        format = gcvSURF_G16R16UI;
+        break;
+    case gcvSURF_X32R32I_1_A8R8G8B8:
+        format = gcvSURF_X32R32I;
+        break;
+
+    case gcvSURF_X32R32UI_1_A8R8G8B8:
+        format = gcvSURF_X32R32UI;
+        break;
+
+    case gcvSURF_X8G8R8I_1_A4R4G4B4:
+        format = gcvSURF_X8G8R8I;
+        break;
+
+    case gcvSURF_X8G8R8UI_1_A4R4G4B4:
+        format = gcvSURF_X8G8R8UI;
+        break;
+
+    case gcvSURF_B8G8R8I_1_A8R8G8B8:
+        format = gcvSURF_B8G8R8I;
+        break;
+
+    case gcvSURF_B8G8R8UI_1_A8R8G8B8:
+        format = gcvSURF_B8G8R8UI;
+        break;
+
+    case gcvSURF_B16G16R16I_2_A8R8G8B8:
+        format = gcvSURF_B16G16R16I;
+        break;
+
+    case gcvSURF_B16G16R16UI_2_A8R8G8B8:
+        format = gcvSURF_B16G16R16UI;
+        break;
+
+    case gcvSURF_B32G32R32I_3_A8R8G8B8:
+        format = gcvSURF_B32G32R32I;
+        break;
+
+    case gcvSURF_B32G32R32UI_3_A8R8G8B8:
+        format = gcvSURF_B32G32R32UI;
+        break;
+
+    default:
+        format = Surface->info.format;
+        break;
+    }
+
+    if (Format != gcvNULL)
+    {
+        /* Return the surface format. */
+        *Format = format;
+    }
+
+    /* Success. */
+    gcmFOOTER_ARG("*Format=%d",
+                  (Format == gcvNULL) ? 0 : *Format);
+    return gcvSTATUS_OK;
+}
+
+
+/*******************************************************************************
+**
 **  gcoSURF_GetTiling
 **
 **  Get surface tiling.
@@ -2493,6 +3413,159 @@ gcoSURF_GetTiling(
 
 /*******************************************************************************
 **
+**  gcoSURF_GetBottomBufferOffset
+**
+**  Get bottom buffer offset for split tiled surface.
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to an gcoSURF object.
+**
+**  OUTPUT:
+**
+**      gctUINT_PTR BottomBufferOffset
+**          Pointer to variable that receives the offset value.
+*/
+gceSTATUS
+gcoSURF_GetBottomBufferOffset(
+    IN gcoSURF Surface,
+    OUT gctUINT_PTR BottomBufferOffset
+    )
+{
+    gcmHEADER_ARG("Surface=0x%x", Surface);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+
+    if (BottomBufferOffset != gcvNULL)
+    {
+        /* Return the surface tiling. */
+        *BottomBufferOffset = Surface->info.bottomBufferOffset;
+    }
+
+    /* Success. */
+    gcmFOOTER_ARG("*BottomBufferOffset=%d",
+                  (BottomBufferOffset == gcvNULL) ? 0 : *BottomBufferOffset);
+    return gcvSTATUS_OK;
+}
+
+
+#if gcdENABLE_3D
+#if defined(ANDROID) && gcdANDROID_UNALIGNED_LINEAR_COMPOSITION_ADJUST
+/*******************************************************************************
+**
+**  gcoSURF_GetFlipBitmapOffset
+**
+**  Get real pixel address offset for flip bitmap.
+**  Flip bitmap means the bitmap is RS target of a tile surface.
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to an gcoSURF object.
+**
+**  OUTPUT:
+**
+**      gctUINT_PTR FlipBitmapOffset
+**          Pointer to variable that receives the offset value.
+*/
+gceSTATUS
+gcoSURF_GetFlipBitmapOffset(
+    IN gcoSURF Surface,
+    OUT gctUINT_PTR FlipBitmapOffset
+    )
+{
+    gcmHEADER_ARG("Surface=0x%x", Surface);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+
+    if (FlipBitmapOffset != gcvNULL)
+    {
+        /* Return the surface tiling. */
+        *FlipBitmapOffset = Surface->info.flipBitmapOffset;
+    }
+
+    /* Success. */
+    gcmFOOTER_ARG("*FlipBitmapOffset=%d",
+                  (FlipBitmapOffset == gcvNULL) ? 0 : *FlipBitmapOffset);
+    return gcvSTATUS_OK;
+}
+#endif
+
+gceSTATUS
+gcoSURF_SetSharedLock(
+    IN gcoSURF Surface,
+    IN gctPOINTER sharedLock
+    )
+{
+    if(Surface)
+    {
+        Surface->info.sharedLock = sharedLock;
+    }
+
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoSURF_GetFence(
+    IN gcoSURF surf
+    )
+{
+#if gcdSYNC
+    if (surf)
+    {
+        gctBOOL fenceEnable;
+        gcoHARDWARE_GetFenceEnabled(gcvNULL, &fenceEnable);
+        if(fenceEnable)
+        {
+            gcmLOCK_SHARE_OBJ((&surf->info));
+            gcoHARDWARE_GetFence(gcvNULL, &surf->info.fenceCtx);
+            gcmUNLOCK_SHARE_OBJ((&surf->info));
+        }
+        else
+        {
+            surf->info.fenceStatus = gcvFENCE_GET;
+        }
+    }
+#endif
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoSURF_WaitFence(
+    IN gcoSURF surf
+    )
+{
+#if gcdSYNC
+    if (surf)
+    {
+        gctBOOL fenceEnable;
+        gcoHARDWARE_GetFenceEnabled(gcvNULL, &fenceEnable);
+        if(fenceEnable)
+        {
+            gcmLOCK_SHARE_OBJ((&surf->info));
+            gcoHARDWARE_WaitFence(gcvNULL, surf->info.fenceCtx);
+            gcmUNLOCK_SHARE_OBJ((&surf->info));
+        }
+        else
+        {
+            if(surf->info.fenceStatus == gcvFENCE_GET)
+            {
+                surf->info.fenceStatus = gcvFENCE_ENABLE;
+                gcoHARDWARE_SetFenceEnabled(gcvNULL, gcvTRUE);
+                gcoHAL_Commit(gcvNULL, gcvTRUE);
+            }
+        }
+    }
+#endif
+    return gcvSTATUS_OK;
+}
+#endif
+
+/*******************************************************************************
+**
 **  gcoSURF_Lock
 **
 **  Lock the surface.
@@ -2507,8 +3580,8 @@ gcoSURF_GetTiling(
 **      gctUINT32 * Address
 **          Physical address array of the surface:
 **          For YV12, Address[0] is for Y channel,
-**                    Address[1] is for V channel and
-**                    Address[2] is for U channel;
+**                    Address[1] is for U channel and
+**                    Address[2] is for V channel;
 **          For I420, Address[0] is for Y channel,
 **                    Address[1] is for U channel and
 **                    Address[2] is for V channel;
@@ -2538,8 +3611,9 @@ gcoSURF_Lock(
     )
 {
     gceSTATUS status;
+    gctUINT8_PTR logical2 = gcvNULL, logical3 = gcvNULL;
 #if gcdENABLE_VG
-    gceHARDWARE_TYPE currentType;
+    gceHARDWARE_TYPE currentType = gcvHARDWARE_INVALID;
 #endif
     gcmHEADER_ARG("Surface=0x%x", Surface);
 
@@ -2561,13 +3635,13 @@ gcoSURF_Lock(
     case gcvSURF_I420:
         Surface->info.node.count = 3;
 
-        Surface->info.node.logical2  = Surface->info.node.logical
+        logical2                     = Surface->info.node.logical
                                      + Surface->info.uOffset;
 
         Surface->info.node.physical2 = Surface->info.node.physical
                                      + Surface->info.uOffset;
 
-        Surface->info.node.logical3  = Surface->info.node.logical
+        logical3                     = Surface->info.node.logical
                                      + Surface->info.vOffset;
 
         Surface->info.node.physical3 = Surface->info.node.physical
@@ -2580,7 +3654,7 @@ gcoSURF_Lock(
     case gcvSURF_NV61:
         Surface->info.node.count = 2;
 
-        Surface->info.node.logical2  = Surface->info.node.logical
+        logical2                     = Surface->info.node.logical
                                      + Surface->info.uOffset;
 
         Surface->info.node.physical2 = Surface->info.node.physical
@@ -2594,61 +3668,43 @@ gcoSURF_Lock(
     /* Set result. */
     if (Address != gcvNULL)
     {
-        if (Surface->info.format == gcvSURF_YV12)
+        switch (Surface->info.node.count)
         {
-            Address[2] = Surface->info.node.physical2;
-            Address[1] = Surface->info.node.physical3;
+        case 3:
+            Address[2] = Surface->info.node.physical3;
+
+            /* FALLTHROUGH */
+        case 2:
+            Address[1] = Surface->info.node.physical2;
+
+            /* FALLTHROUGH */
+        case 1:
             Address[0] = Surface->info.node.physical;
-        }
-        else
-        {
-            switch (Surface->info.node.count)
-            {
-            case 3:
-                Address[2] = Surface->info.node.physical3;
 
-                /* FALLTHROUGH */
-            case 2:
-                Address[1] = Surface->info.node.physical2;
-
-                /* FALLTHROUGH */
-            case 1:
-                Address[0] = Surface->info.node.physical;
-
-                /* FALLTHROUGH */
-            default:
-                break;
-            }
+            /* FALLTHROUGH */
+        default:
+            break;
         }
     }
 
     if (Memory != gcvNULL)
     {
-        if (Surface->info.format == gcvSURF_YV12)
+        switch (Surface->info.node.count)
         {
-            Memory[2] = Surface->info.node.logical2;
-            Memory[1] = Surface->info.node.logical3;
+        case 3:
+            Memory[2] = logical3;
+
+            /* FALLTHROUGH */
+        case 2:
+            Memory[1] = logical2;
+
+            /* FALLTHROUGH */
+        case 1:
             Memory[0] = Surface->info.node.logical;
-        }
-        else
-        {
-            switch (Surface->info.node.count)
-            {
-            case 3:
-                Memory[2] = Surface->info.node.logical3;
 
-                /* FALLTHROUGH */
-            case 2:
-                Memory[1] = Surface->info.node.logical2;
-
-                /* FALLTHROUGH */
-            case 1:
-                Memory[0] = Surface->info.node.logical;
-
-                /* FALLTHROUGH */
-            default:
-                break;
-            }
+            /* FALLTHROUGH */
+        default:
+            break;
         }
     }
 
@@ -2690,7 +3746,7 @@ gcoSURF_Unlock(
 {
     gceSTATUS status;
 #if gcdENABLE_VG
-    gceHARDWARE_TYPE currentType;
+    gceHARDWARE_TYPE currentType = gcvHARDWARE_INVALID;
 #endif
     gcmHEADER_ARG("Surface=0x%x Memory=0x%x", Surface, Memory);
 
@@ -2801,149 +3857,1362 @@ gcoSURF_Blend(
     return gcvSTATUS_NOT_SUPPORTED;
 }
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
+/******************************************************************************\
+********************************* Support Code *********************************
+\******************************************************************************/
+
 /*******************************************************************************
 **
-**  gcoSURF_ClearRect
+**  _ConvertValue
 **
-**  Clear a rectangular surface.
+**  Convert a value to a 32-bit color or depth value.
 **
 **  INPUT:
 **
-**      gcoSURF Surface
-**          Pointer to an gcoSURF object.
+**      gceVALUE_TYPE ValueType
+**          Type of value.
 **
-**      gctINT Left
-**          Left coordinate of rectangle to clear.
+**      gcuVALUE Value
+**          Value data.
 **
-**      gctINT Top
-**          Top coordinate of rectangle to clear.
-**
-**      gctINT Right
-**          Right coordinate of rectangle to clear.
-**
-**      gctINT Bottom
-**          Bottom coordinate of rectangle to clear.
-**
-**      gctUINT Flags
-**          Flags to determine what should be cleared:
-**
-**              gcvCLEAR_COLOR   - Clear color.
-**              gcvCLEAR_DEPTH   - Clear depth.
-**              gcvCLEAR_STENCIL - Clear stencil.
+**      gctUINT Bits
+**          Number of bits used in output.
 **
 **  OUTPUT:
 **
 **      Nothing.
+**
+**  RETURNS:
+**
+**      gctUINT32
+**          Converted or casted value.
 */
-gceSTATUS
-gcoSURF_ClearRect(
-    IN gcoSURF Surface,
-    IN gctINT Left,
-    IN gctINT Top,
-    IN gctINT Right,
-    IN gctINT Bottom,
-    IN gctUINT Flags
+extern gctFLOAT _LinearToNonLinearConv(gctFLOAT lFloat);
+
+static gctUINT32
+_ConvertValue(
+    IN gceVALUE_TYPE ValueType,
+    IN gcuVALUE Value,
+    IN gctUINT Bits
+    )
+{
+    /* Setup maximum value. */
+    gctUINT uMaxValue = (Bits == 32) ? ~0 : ((1 << Bits) - 1);
+    gctUINT32 tmpRet = 0;
+    gcmASSERT(Bits <= 32);
+
+    /*
+    ** Data conversion clear path:
+    ** Here we need handle clamp here coz client driver just pass clear value down.
+    ** Now we plan to support INT/UINT RT, floating depth or floating RT later, we need set gcvVALUE_FLAG_NEED_CLAMP
+    ** base on surface format.
+    */
+    switch (ValueType & ~gcvVALUE_FLAG_MASK)
+    {
+    case gcvVALUE_UINT:
+        return ((Value.uintValue > uMaxValue) ? uMaxValue : Value.uintValue);
+
+    case gcvVALUE_INT:
+        {
+            gctUINT32 mask = (Bits == 32) ? ~0 : ((1 << Bits) - 1);
+            gctINT iMinValue = (Bits == 32)? (1 << (Bits-1))   :((~( 1 << (Bits -1))) + 1);
+            gctINT iMaxValue = (Bits == 32)? (~(1 << (Bits-1))): ((1 << (Bits - 1)) - 1);
+            return gcmCLAMP(Value.intValue, iMinValue, iMaxValue) & mask;
+        }
+
+    case gcvVALUE_FIXED:
+        {
+            gctFIXED_POINT tmpFixedValue = Value.fixedValue;
+            if (ValueType & gcvVALUE_FLAG_UNSIGNED_DENORM)
+            {
+                tmpFixedValue = gcmFIXEDCLAMP_0_TO_1(tmpFixedValue);
+                /* Convert fixed point (0.0 - 1.0) into color value. */
+                return (gctUINT32) (((gctUINT64)uMaxValue * tmpFixedValue) >> 16);
+            }
+            else if (ValueType & gcvVALUE_FLAG_SIGNED_DENORM)
+            {
+                gcmASSERT(0);
+                return 0;
+            }
+            else
+            {
+                gcmASSERT(0);
+                return 0;
+            }
+        }
+        break;
+
+    case gcvVALUE_FLOAT:
+        {
+            gctFLOAT tmpFloat = Value.floatValue;
+            gctFLOAT sFloat = tmpFloat;
+
+            if (ValueType & gcvVALUE_FLAG_GAMMAR)
+            {
+                gcmASSERT ((ValueType & gcvVALUE_FLAG_FLOAT_TO_FLOAT16) == 0);
+
+                sFloat = _LinearToNonLinearConv(tmpFloat);
+            }
+
+            if (ValueType & gcvVALUE_FLAG_FLOAT_TO_FLOAT16)
+            {
+                gcmASSERT ((ValueType & gcvVALUE_FLAG_GAMMAR) == 0);
+                tmpRet = (gctUINT32)gcoMATH_FloatToFloat16(*(gctUINT32*)&tmpFloat);
+                return tmpRet;
+            }
+            else if (ValueType & gcvVALUE_FLAG_UNSIGNED_DENORM)
+            {
+                sFloat = gcmFLOATCLAMP_0_TO_1(sFloat);
+                /* Convert floating point (0.0 - 1.0) into color value. */
+                tmpRet = gcoMATH_Float2UInt(gcoMATH_Multiply(gcoMATH_UInt2Float(uMaxValue), sFloat));
+                return tmpRet > uMaxValue ? uMaxValue : tmpRet;
+            }
+            else if (ValueType & gcvVALUE_FLAG_SIGNED_DENORM)
+            {
+                gcmASSERT(0);
+                return 0;
+            }
+            else
+            {
+                tmpRet = *(gctUINT32*)&sFloat;
+                return tmpRet > uMaxValue ? uMaxValue : tmpRet;
+            }
+        }
+        break;
+
+    default:
+        return 0;
+        break;
+    }
+}
+gctUINT32
+_ByteMaskToBitMask(
+    gctUINT32 ClearMask
+    )
+{
+    gctUINT32 clearMask = 0;
+
+    /* Byte mask to bit mask. */
+    if (ClearMask & 0x1)
+    {
+        clearMask |= 0xFF;
+    }
+
+    if (ClearMask & 0x2)
+    {
+        clearMask |= (0xFF << 8);
+    }
+
+    if (ClearMask & 0x4)
+    {
+        clearMask |= (0xFF << 16);
+    }
+
+    if (ClearMask & 0x8)
+    {
+        clearMask |= (0xFF << 24);
+    }
+
+    return clearMask;
+}
+
+
+static gceSTATUS
+_ComputeClear(
+    IN gcsSURF_INFO_PTR Surface,
+    IN gcsSURF_CLEAR_ARGS_PTR ClearArgs,
+    IN gctUINT32 LayerIndex
     )
 {
     gceSTATUS status;
-    gco3D engine;
-    gctUINT32 address[3] = {0};
-    gctPOINTER memory[3] = {gcvNULL};
-    gctUINT flags = Flags;
+    gctUINT32 maskRed, maskGreen, maskBlue, maskAlpha;
+    gcsSURF_FORMAT_INFO_PTR info = &Surface->formatInfo;
 
-    gcmHEADER_ARG("Surface=0x%x Left=%d Top=%d Right=%d Bottom=%d Flags=%u",
-              Surface, Left, Top, Right, Bottom, Flags);
+    gceVALUE_TYPE clearValueType;
+
+    gcmHEADER_ARG("Surface=0x%x ClearArgs=0x%x LayerIndex=0x%d", Surface, ClearArgs, LayerIndex);
+
+    /* Verify the arguments. */
+    gcmDEBUG_VERIFY_ARGUMENT(Surface != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(ClearArgs != gcvNULL);
+
+    /* Test for clearing render target. */
+    if (ClearArgs->flags & gcvCLEAR_COLOR)
+    {
+        Surface->clearMask[LayerIndex] = ((ClearArgs->colorMask & 0x1) << 2) | /* Red   */
+                                          (ClearArgs->colorMask & 0x2)       | /* Green */
+                                         ((ClearArgs->colorMask & 0x4) >> 2) | /* Blue  */
+                                          (ClearArgs->colorMask & 0x8);        /* Alpha */
+        maskRed   = (ClearArgs->colorMask & 0x1) ? 0xFFFFFFFF: 0;
+        maskGreen = (ClearArgs->colorMask & 0x2) ? 0xFFFFFFFF: 0;
+        maskBlue  = (ClearArgs->colorMask & 0x4) ? 0xFFFFFFFF: 0;
+        maskAlpha = (ClearArgs->colorMask & 0x8) ? 0xFFFFFFFF: 0;
+
+        Surface->clearBitMask[LayerIndex] =
+           ((maskRed & ((1 << info->u.rgba.red.width) - 1)) << info->u.rgba.red.start)       |
+           ((maskGreen & ((1 << info->u.rgba.green.width) - 1)) << info->u.rgba.green.start) |
+           ((maskBlue & ((1 << info->u.rgba.blue.width) - 1)) << info->u.rgba.blue.start)    |
+           ((maskAlpha & ((1 << info->u.rgba.alpha.width) - 1)) << info->u.rgba.alpha.start) ;
+
+        Surface->clearBitMask[LayerIndex] |= (0xFFFFFFFF << info->bitsPerPixel);
+        /* Dispatch on render target format. */
+        switch (Surface->format)
+        {
+        case gcvSURF_X4R4G4B4: /* 12-bit RGB color without alpha channel. */
+        case gcvSURF_A4R4G4B4: /* 12-bit RGB color with alpha channel. */
+            gcmASSERT(LayerIndex == 0);
+            clearValueType = (ClearArgs->color.valueType | gcvVALUE_FLAG_UNSIGNED_DENORM);
+
+            Surface->clearValue[0]
+                /* Convert red into 4-bit. */
+                = (_ConvertValue(clearValueType,
+                                 ClearArgs->color.r, 4) << 8)
+                /* Convert green into 4-bit. */
+                | (_ConvertValue(clearValueType,
+                                 ClearArgs->color.g, 4) << 4)
+                /* Convert blue into 4-bit. */
+                | _ConvertValue(clearValueType,
+                                ClearArgs->color.b, 4)
+                /* Convert alpha into 4-bit. */
+                | (_ConvertValue(clearValueType,
+                                 ClearArgs->color.a, 4) << 12);
+
+            /* Expand 16-bit color into 32-bit color. */
+            Surface->clearValue[0] |= Surface->clearValue[0] << 16;
+            Surface->clearValueUpper[0] = Surface->clearValue[0];
+
+            break;
+
+        case gcvSURF_X1R5G5B5: /* 15-bit RGB color without alpha channel. */
+        case gcvSURF_A1R5G5B5: /* 15-bit RGB color with alpha channel. */
+            gcmASSERT(LayerIndex == 0);
+            clearValueType = (ClearArgs->color.valueType | gcvVALUE_FLAG_UNSIGNED_DENORM);
+
+            Surface->clearValue[0]
+                /* Convert red into 5-bit. */
+                = (_ConvertValue(clearValueType,
+                                 ClearArgs->color.r, 5) << 10)
+                /* Convert green into 5-bit. */
+                | (_ConvertValue(clearValueType,
+                                 ClearArgs->color.g, 5) << 5)
+                /* Convert blue into 5-bit. */
+                | _ConvertValue(clearValueType,
+                                ClearArgs->color.b, 5)
+                /* Convert alpha into 1-bit. */
+                | (_ConvertValue(clearValueType,
+                                 ClearArgs->color.a, 1) << 15);
+
+            /* Expand 16-bit color into 32-bit color. */
+            Surface->clearValue[0] |= Surface->clearValue[0] << 16;
+            Surface->clearValueUpper[0] = Surface->clearValue[0];
+
+            break;
+
+        case gcvSURF_R5G6B5: /* 16-bit RGB color without alpha channel. */
+            gcmASSERT(LayerIndex == 0);
+            clearValueType = (ClearArgs->color.valueType | gcvVALUE_FLAG_UNSIGNED_DENORM);
+
+            Surface->clearValue[0]
+                /* Convert red into 5-bit. */
+                = (_ConvertValue(clearValueType,
+                                 ClearArgs->color.r, 5) << 11)
+                /* Convert green into 6-bit. */
+                | (_ConvertValue(clearValueType,
+                                 ClearArgs->color.g, 6) << 5)
+                /* Convert blue into 5-bit. */
+                | _ConvertValue(clearValueType,
+                                ClearArgs->color.b, 5);
+
+            /* Expand 16-bit color into 32-bit color. */
+            Surface->clearValue[0] |= Surface->clearValue[0] << 16;
+            Surface->clearValueUpper[0] = Surface->clearValue[0];
+
+            break;
+
+        case gcvSURF_YUY2:
+            {
+                gctUINT8 r, g, b;
+                gctUINT8 y, u, v;
+                gcmASSERT(LayerIndex == 0);
+                /* Query YUY2 render target support. */
+                if (gcoHAL_IsFeatureAvailable(gcvNULL,
+                                              gcvFEATURE_YUY2_RENDER_TARGET)
+                    != gcvSTATUS_TRUE)
+                {
+                    /* No, reject. */
+                    gcmFOOTER_NO();
+                    return gcvSTATUS_INVALID_ARGUMENT;
+                }
+                clearValueType = (ClearArgs->color.valueType | gcvVALUE_FLAG_UNSIGNED_DENORM);
+
+                /* Get 8-bit RGB values. */
+                r = (gctUINT8) _ConvertValue(clearValueType,
+                                  ClearArgs->color.r, 8);
+
+                g = (gctUINT8) _ConvertValue(clearValueType,
+                                  ClearArgs->color.g, 8);
+
+                b = (gctUINT8) _ConvertValue(clearValueType,
+                                  ClearArgs->color.b, 8);
+
+                /* Convert to YUV. */
+                gcoHARDWARE_RGB2YUV(r, g, b, &y, &u, &v);
+
+                /* Set the clear value. */
+                Surface->clearValueUpper[0] =
+                Surface->clearValue[0] =  ((gctUINT32) y)
+                                     | (((gctUINT32) u) <<  8)
+                                     | (((gctUINT32) y) << 16)
+                                     | (((gctUINT32) v) << 24);
+
+            }
+            break;
+
+        case gcvSURF_X8R8G8B8: /* 24-bit RGB without alpha channel. */
+        case gcvSURF_A8R8G8B8: /* 24-bit RGB with alpha channel. */
+            gcmASSERT(LayerIndex == 0);
+            clearValueType = (ClearArgs->color.valueType | gcvVALUE_FLAG_UNSIGNED_DENORM);
+
+            Surface->clearValue[0]
+                /* Convert red to 8-bit. */
+                = (_ConvertValue(clearValueType,
+                                 ClearArgs->color.r, 8) << 16)
+                /* Convert green to 8-bit. */
+                | (_ConvertValue(clearValueType,
+                                 ClearArgs->color.g, 8) << 8)
+                /* Convert blue to 8-bit. */
+                |  _ConvertValue(clearValueType,
+                                ClearArgs->color.b, 8)
+                    /* Convert alpha to 8-bit. */
+                | (_ConvertValue(clearValueType,
+                                 ClearArgs->color.a, 8) << 24);
+
+            /* Test for VAA. */
+            if (ClearArgs->flags & gcvCLEAR_HAS_VAA)
+            {
+                if (Surface->format == gcvSURF_X8R8G8B8)
+                {
+                    /* Convert to C4R4G4B4C4R4G4B4. */
+                    Surface->clearValue[0]
+                        = ((Surface->clearValue[0] & 0x00000F)      )
+                        | ((Surface->clearValue[0] & 0x0000F0) << 12)
+                        | ((Surface->clearValue[0] & 0x000F00) >>  4)
+                        | ((Surface->clearValue[0] & 0x00F000) <<  8)
+                        | ((Surface->clearValue[0] & 0x0F0000) >>  8)
+                        | ((Surface->clearValue[0] & 0xF00000) <<  4);
+                }
+            }
+
+            Surface->clearValueUpper[0] = Surface->clearValue[0];
+
+            break;
+        case gcvSURF_R8_1_X8R8G8B8: /* 32-bit R8 without bga channel. */
+            gcmASSERT(LayerIndex == 0);
+            clearValueType = (ClearArgs->color.valueType | gcvVALUE_FLAG_UNSIGNED_DENORM);
+
+            Surface->clearValue[0]
+                /* Convert red to 8-bit. */
+                = (_ConvertValue(clearValueType,
+                                 ClearArgs->color.r, 8) << 16)
+                /* Convert green to 8-bit. */
+                | 0xFF000000;
+
+            Surface->clearValueUpper[0] = Surface->clearValue[0];
+
+            break;
+
+        case gcvSURF_G8R8_1_X8R8G8B8: /* 32-bit R8 without bga channel. */
+            gcmASSERT(LayerIndex == 0);
+            clearValueType = (ClearArgs->color.valueType | gcvVALUE_FLAG_UNSIGNED_DENORM);
+
+            Surface->clearValue[0]
+                /* Convert red to 8-bit. */
+                = (_ConvertValue(clearValueType,
+                                 ClearArgs->color.r, 8) << 16)
+                /* Convert green to 8-bit. */
+                | (_ConvertValue(clearValueType,
+                                 ClearArgs->color.g, 8) << 8)
+                /* Convert green to 8-bit. */
+                | 0xFF000000;
+
+            Surface->clearValueUpper[0] = Surface->clearValue[0];
+
+            break;
+
+         case gcvSURF_G8R8:
+             /* 16-bit RG color without alpha channel. */
+             gcmASSERT(LayerIndex == 0);
+             clearValueType = (ClearArgs->color.valueType | gcvVALUE_FLAG_UNSIGNED_DENORM);
+             Surface->clearValue[0]
+                 /* Convert red to 8-bit. */
+                 = (_ConvertValue(clearValueType,
+                                  ClearArgs->color.r, 8))
+                 /* Convert green to 8-bit. */
+                 | (_ConvertValue(clearValueType,
+                                  ClearArgs->color.g, 8) << 8);
+
+             /* Expand 16-bit color into 32-bit color. */
+             Surface->clearValue[0] |= Surface->clearValue[0] << 16;
+
+             Surface->clearValueUpper[0] = Surface->clearValue[0];
+
+             break;
+
+         case gcvSURF_A8_SBGR8: /* 24-bit RGB with alpha channel. */
+             gcmASSERT(LayerIndex == 0);
+             clearValueType = (ClearArgs->color.valueType    |
+                               gcvVALUE_FLAG_UNSIGNED_DENORM |
+                               gcvVALUE_FLAG_GAMMAR);
+             Surface->clearValue[0]
+                 /* Convert red to 8-bit. */
+                 = (_ConvertValue(clearValueType,
+                                  ClearArgs->color.r, 8))
+                 /* Convert green to 8-bit. */
+                 | (_ConvertValue(clearValueType,
+                                  ClearArgs->color.g, 8) << 8)
+                 /* Convert blue to 8-bit. */
+                 | (_ConvertValue(clearValueType,
+                                 ClearArgs->color.b, 8) << 16);
+
+             clearValueType &= ~gcvVALUE_FLAG_GAMMAR;
+             Surface->clearValue[0] |= (_ConvertValue(clearValueType,
+                                                    ClearArgs->color.a, 8) << 24);
+
+             Surface->clearValueUpper[0] = Surface->clearValue[0];
+
+             break;
+
+         case gcvSURF_X2R10G10B10:
+         case gcvSURF_A2R10G10B10:
+             gcmASSERT(LayerIndex == 0);
+             clearValueType = (ClearArgs->color.valueType | gcvVALUE_FLAG_UNSIGNED_DENORM);
+             Surface->clearValueUpper[0] =
+             Surface->clearValue[0]
+                 /* Convert red to 10-bit. */
+                 = (_ConvertValue(clearValueType,
+                                  ClearArgs->color.r, 10) << 20)
+                 /* Convert green to 10-bit. */
+                 | (_ConvertValue(clearValueType,
+                                  ClearArgs->color.g, 10) << 10)
+                 /* Convert blue to 10-bit. */
+                 | _ConvertValue(clearValueType,
+                                 ClearArgs->color.b, 10)
+                 /* Convert alpha to 2-bit. */
+                 | (_ConvertValue(clearValueType,
+                                  ClearArgs->color.a, 2) << 30);
+
+             break;
+
+         case gcvSURF_X2B10G10R10:
+         case gcvSURF_A2B10G10R10:
+             gcmASSERT(LayerIndex == 0);
+             clearValueType = (ClearArgs->color.valueType| gcvVALUE_FLAG_UNSIGNED_DENORM);
+             Surface->clearValueUpper[0] =
+             Surface->clearValue[0]
+                 /* Convert red to 10-bit. */
+                 = _ConvertValue(clearValueType,
+                                 ClearArgs->color.r, 10)
+                 /* Convert green to 10-bit. */
+                 | (_ConvertValue(clearValueType,
+                                  ClearArgs->color.g, 10) << 10)
+                 /* Convert blue to 10-bit. */
+                 | (_ConvertValue(clearValueType,
+                                  ClearArgs->color.b, 10) << 20)
+                 /* Convert alpha to 2-bit. */
+                 | (_ConvertValue(clearValueType,
+                                  ClearArgs->color.a, 2) << 30);
+
+             break;
+
+          case gcvSURF_A8B12G12R12_2_A8R8G8B8:
+             clearValueType = (ClearArgs->color.valueType| gcvVALUE_FLAG_UNSIGNED_DENORM);
+             switch (LayerIndex)
+             {
+             case 0:
+                 Surface->clearValueUpper[0] =
+                 Surface->clearValue[0] =
+                    /* Convert red upper 4 bits to 8-bit*/
+                    ( ((_ConvertValue(clearValueType,
+                                     ClearArgs->color.r, 12) & 0xf00) >> 4) << 16)
+                    /* Convert green upper 4 bits to 8-bit*/
+                    | (((_ConvertValue(clearValueType,
+                                     ClearArgs->color.g, 12) & 0xf00) >> 4) << 8)
+                    /* Convert blue upper 4 bits to 8-bit*/
+                    | ((_ConvertValue(clearValueType,
+                                    ClearArgs->color.b, 12) & 0xf00) >> 4)
+                        /* Convert alpha to 8-bit. */
+                    | (_ConvertValue(clearValueType,
+                                     ClearArgs->color.a, 8) << 24);
+
+                 break;
+
+             case 1:
+                 Surface->clearValueUpper[1] =
+                 Surface->clearValue[1] =
+                    /* Convert red lower 8 bits to 8-bit. */
+                    ( (_ConvertValue(clearValueType,
+                                     ClearArgs->color.r, 12) & 0xff) << 16)
+                    /* Convert green lower 8 bits to 8-bit. */
+                    | ((_ConvertValue(clearValueType,
+                                     ClearArgs->color.g, 12) & 0xff) << 8)
+                    /* Convert blue lower 8 bits to 8-bit. */
+                    | (_ConvertValue(clearValueType,
+                                    ClearArgs->color.b, 12) & 0xff)
+                        /* Convert alpha to 8-bit. */
+                    | (_ConvertValue(clearValueType,
+                                     ClearArgs->color.a, 8) << 24);
+                 break;
+
+             default:
+                 gcmASSERT(0);
+                 break;
+             }
+             break;
+
+         case gcvSURF_R5G5B5A1:
+             gcmASSERT(LayerIndex == 0);
+             clearValueType = (ClearArgs->color.valueType| gcvVALUE_FLAG_UNSIGNED_DENORM);
+             Surface->clearValue[0]
+                 /* Convert red into 5-bit. */
+                 = (_ConvertValue(clearValueType,
+                                  ClearArgs->color.r, 5) << 11)
+                 /* Convert green into 5-bit. */
+                 | (_ConvertValue(clearValueType,
+                                  ClearArgs->color.g, 5) << 6)
+                 /* Convert blue into 5-bit. */
+                 | (_ConvertValue(clearValueType,
+                                 ClearArgs->color.b, 5) << 1)
+                 /* Convert alpha into 1-bit. */
+                 | _ConvertValue(clearValueType,
+                                  ClearArgs->color.a, 1);
+
+             /* Expand 16-bit color into 32-bit color. */
+             Surface->clearValue[0] |= Surface->clearValue[0] << 16;
+             Surface->clearValueUpper[0] = Surface->clearValue[0];
+
+             break;
+
+         case gcvSURF_A2B10G10R10UI:
+         case gcvSURF_A2B10G10R10UI_1_A8R8G8B8:
+             gcmASSERT(LayerIndex == 0);
+             clearValueType = ClearArgs->color.valueType;
+
+             Surface->clearValueUpper[0] =
+             Surface->clearValue[0]
+                 /* Convert red to 10-bit. */
+                 = _ConvertValue(clearValueType,
+                                 ClearArgs->color.r, 10)
+                 /* Convert green to 10-bit. */
+                 | (_ConvertValue(clearValueType,
+                                  ClearArgs->color.g, 10) << 10)
+                 /* Convert blue to 10-bit. */
+                 | (_ConvertValue(clearValueType,
+                                  ClearArgs->color.b, 10) << 20)
+                 /* Convert alpha to 2-bit. */
+                 | (_ConvertValue(clearValueType,
+                                  ClearArgs->color.a, 2) << 30);
+
+             break;
+
+         case gcvSURF_A8B8G8R8I:
+         case gcvSURF_A8B8G8R8UI:
+         case gcvSURF_A8B8G8R8I_1_A8R8G8B8:
+         case gcvSURF_A8B8G8R8UI_1_A8R8G8B8:
+             gcmASSERT(LayerIndex == 0);
+             clearValueType = ClearArgs->color.valueType;
+
+             Surface->clearValueUpper[0] =
+             Surface->clearValue[0]
+                 /* Convert red to 8-bit. */
+                 = (_ConvertValue(clearValueType,
+                                  ClearArgs->color.r, 8))
+                 /* Convert green to 8-bit. */
+                 | (_ConvertValue(clearValueType,
+                                  ClearArgs->color.g, 8) << 8)
+                 /* Convert blue to 8-bit. */
+                 | (_ConvertValue(clearValueType,
+                                 ClearArgs->color.b, 8) << 16)
+                 /* Convert alpha to 8-bit. */
+                 | (_ConvertValue(clearValueType,
+                                  ClearArgs->color.a, 8) << 24);
+
+             break;
+
+
+         case gcvSURF_R16F:
+             gcmASSERT(LayerIndex == 0);
+             clearValueType = (ClearArgs->color.valueType | gcvVALUE_FLAG_FLOAT_TO_FLOAT16);
+
+             Surface->clearValue[0] = _ConvertValue(clearValueType,
+                                                  ClearArgs->color.r, 16);
+             Surface->clearValue[0] |= Surface->clearValue[0] << 16;
+
+             Surface->clearValueUpper[0] = Surface->clearValue[0];
+             break;
+
+         case gcvSURF_R16I:
+         case gcvSURF_R16UI:
+             gcmASSERT(LayerIndex == 0);
+             clearValueType = ClearArgs->color.valueType;
+
+             Surface->clearValue[0] = _ConvertValue(clearValueType,
+                                                  ClearArgs->color.r, 16);
+             Surface->clearValue[0] |= Surface->clearValue[0] << 16;
+
+             Surface->clearValueUpper[0] = Surface->clearValue[0];
+             break;
+
+         case gcvSURF_G16R16F:
+             gcmASSERT(LayerIndex == 0);
+             clearValueType = (ClearArgs->color.valueType | gcvVALUE_FLAG_FLOAT_TO_FLOAT16);
+
+             Surface->clearValueUpper[0] =
+             Surface->clearValue[0]
+                 = (_ConvertValue(clearValueType,
+                                  ClearArgs->color.r, 16)
+                 | (_ConvertValue(clearValueType,
+                                  ClearArgs->color.g, 16) << 16));
+
+             break;
+
+         case gcvSURF_G16R16I:
+         case gcvSURF_G16R16UI:
+             gcmASSERT(LayerIndex == 0);
+             clearValueType = ClearArgs->color.valueType;
+
+             Surface->clearValueUpper[0] =
+             Surface->clearValue[0]
+                 = (_ConvertValue(clearValueType,
+                                  ClearArgs->color.r, 16)
+                 | (_ConvertValue(clearValueType,
+                                  ClearArgs->color.g, 16) << 16));
+
+             break;
+
+         case gcvSURF_A16B16G16R16F:
+         case gcvSURF_X16B16G16R16F:
+             gcmASSERT(LayerIndex == 0);
+             clearValueType = (ClearArgs->color.valueType | gcvVALUE_FLAG_FLOAT_TO_FLOAT16);
+
+             Surface->clearValue[0]
+                 = (_ConvertValue(clearValueType,
+                                  ClearArgs->color.r, 16)
+                 | (_ConvertValue(clearValueType,
+                                  ClearArgs->color.g, 16) << 16));
+             Surface->clearValueUpper[0]
+                 = (_ConvertValue(clearValueType,
+                                  ClearArgs->color.b, 16)
+                 | (_ConvertValue(clearValueType,
+                                  ClearArgs->color.a, 16) << 16));
+             break;
+
+         case gcvSURF_A16B16G16R16F_2_A8R8G8B8:
+             clearValueType = (ClearArgs->color.valueType | gcvVALUE_FLAG_FLOAT_TO_FLOAT16);
+
+             switch (LayerIndex)
+             {
+             case 0:
+                 Surface->clearValueUpper[0] =
+                 Surface->clearValue[0]
+                     = (_ConvertValue(clearValueType,
+                                      ClearArgs->color.r, 16)
+                     | (_ConvertValue(clearValueType,
+                                      ClearArgs->color.g, 16) << 16));
+
+                 break;
+             case 1:
+                 Surface->clearValueUpper[1] =
+                 Surface->clearValue[1]
+                     = (_ConvertValue(clearValueType,
+                                      ClearArgs->color.b, 16)
+                     | (_ConvertValue(clearValueType,
+                                      ClearArgs->color.a, 16) << 16));
+
+                 break;
+             default:
+                 gcmASSERT(0);
+                 break;
+             }
+             break;
+
+         case gcvSURF_A16B16G16R16I:
+         case gcvSURF_X16B16G16R16I:
+         case gcvSURF_A16B16G16R16UI:
+         case gcvSURF_X16B16G16R16UI:
+             gcmASSERT(LayerIndex == 0);
+             clearValueType = ClearArgs->color.valueType;
+
+             Surface->clearValue[0]
+                 = (_ConvertValue(clearValueType,
+                                  ClearArgs->color.r, 16)
+                 | (_ConvertValue(clearValueType,
+                                  ClearArgs->color.g, 16) << 16));
+             Surface->clearValueUpper[0]
+                 = (_ConvertValue(clearValueType,
+                                  ClearArgs->color.b, 16)
+                 | (_ConvertValue(clearValueType,
+                                  ClearArgs->color.a, 16) << 16));
+             break;
+
+         case gcvSURF_A16B16G16R16I_2_A8R8G8B8:
+         case gcvSURF_A16B16G16R16UI_2_A8R8G8B8:
+             clearValueType = ClearArgs->color.valueType;
+
+             switch (LayerIndex)
+             {
+             case 0:
+                 Surface->clearValueUpper[0] =
+                 Surface->clearValue[0]
+                     = (_ConvertValue(clearValueType,
+                                      ClearArgs->color.r, 16)
+                     | (_ConvertValue(clearValueType,
+                                      ClearArgs->color.g, 16) << 16));
+                 break;
+
+             case 1:
+                 Surface->clearValueUpper[1] =
+                 Surface->clearValue[1]
+                     = (_ConvertValue(clearValueType,
+                                      ClearArgs->color.b, 16)
+                     | (_ConvertValue(clearValueType,
+                                      ClearArgs->color.a, 16) << 16));
+                 break;
+
+             default:
+                 gcmASSERT(0);
+                 break;
+             }
+             break;
+
+
+         case gcvSURF_R32F:
+         case gcvSURF_R32I:
+         case gcvSURF_R32UI:
+         case gcvSURF_R32UI_1_A8R8G8B8:
+             gcmASSERT(LayerIndex == 0);
+             clearValueType = ClearArgs->color.valueType;
+
+             Surface->clearValueUpper[0] =
+             Surface->clearValue[0]
+                 = (_ConvertValue(clearValueType,
+                                  ClearArgs->color.r, 32));
+             break;
+
+         case gcvSURF_G32R32F:
+         case gcvSURF_G32R32I:
+         case gcvSURF_G32R32UI:
+             gcmASSERT(LayerIndex == 0);
+             clearValueType = ClearArgs->color.valueType;
+
+             Surface->clearValue[0]
+                 = (_ConvertValue(clearValueType,
+                                  ClearArgs->color.r, 32));
+             Surface->clearValueUpper[0]
+                 = (_ConvertValue(clearValueType,
+                                  ClearArgs->color.g, 32));
+             break;
+
+         case gcvSURF_A32B32G32R32F_2_G32R32F:
+         case gcvSURF_X32B32G32R32F_2_G32R32F:
+         case gcvSURF_A32B32G32R32I_2_G32R32I:
+         case gcvSURF_X32B32G32R32I_2_G32R32I:
+         case gcvSURF_A32B32G32R32UI_2_G32R32UI:
+         case gcvSURF_X32B32G32R32UI_2_G32R32UI:
+             clearValueType = ClearArgs->color.valueType;
+
+             switch (LayerIndex)
+             {
+             case 0:
+                 Surface->clearValue[0]
+                     = (_ConvertValue(clearValueType,
+                                      ClearArgs->color.r, 32));
+                 Surface->clearValueUpper[0]
+                     = (_ConvertValue(clearValueType,
+                                      ClearArgs->color.g, 32));
+
+                 break;
+             case 1:
+                 Surface->clearValue[1]
+                     = (_ConvertValue(clearValueType,
+                                      ClearArgs->color.b, 32));
+                 Surface->clearValueUpper[1]
+                     = (_ConvertValue(clearValueType,
+                                      ClearArgs->color.a, 32));
+
+                 break;
+             default:
+                 gcmASSERT(0);
+                 break;
+             }
+             break;
+
+
+         case gcvSURF_A32B32G32R32I_4_A8R8G8B8:
+         case gcvSURF_A32B32G32R32UI_4_A8R8G8B8:
+             clearValueType = ClearArgs->color.valueType;
+
+             switch (LayerIndex)
+             {
+             case 0:
+                 Surface->clearValueUpper[0] =
+                 Surface->clearValue[0]
+                     = (_ConvertValue(clearValueType,
+                                      ClearArgs->color.r, 32));
+                 break;
+             case 1:
+                 Surface->clearValueUpper[1] =
+                 Surface->clearValue[1]
+                     = (_ConvertValue(clearValueType,
+                                      ClearArgs->color.g, 32));
+
+                 break;
+             case 2:
+                 Surface->clearValueUpper[2] =
+                 Surface->clearValue[2]
+                     = (_ConvertValue(clearValueType,
+                                      ClearArgs->color.b, 32));
+                 break;
+
+             case 3:
+                 Surface->clearValueUpper[3] =
+                 Surface->clearValue[3]
+                     = (_ConvertValue(clearValueType,
+                                      ClearArgs->color.a, 32));
+
+                 break;
+             default:
+                 gcmASSERT(0);
+                 break;
+             }
+
+             break;
+
+
+
+         default:
+            gcmTRACE(
+                gcvLEVEL_ERROR,
+                "%s(%d): Unknown format=%d",
+                __FUNCTION__, __LINE__, Surface->format
+                );
+
+            /* Invalid surface format. */
+            gcmONERROR(gcvSTATUS_INVALID_ARGUMENT);
+         }
+    }
+
+    /* Test for clearing depth or stencil buffer. */
+    if (ClearArgs->flags & (gcvCLEAR_DEPTH | gcvCLEAR_STENCIL))
+    {
+        gctBOOL  clearDepth   = (ClearArgs->flags & gcvCLEAR_DEPTH) && ClearArgs->depthMask;
+        gctBOOL  clearStencil = (ClearArgs->flags & gcvCLEAR_STENCIL) && ClearArgs->stencilMask;
+
+        gcmASSERT(LayerIndex == 0);
+        switch (Surface->format)
+        {
+        case gcvSURF_D16: /* 16-bit depth without stencil. */
+            /* Write to all bytes for depth, no bytes for stencil. */
+            Surface->clearMask[0]   = clearDepth ? 0xF : 0x0;
+            break;
+
+        case gcvSURF_D24S8: /* 24-bit depth with 8-bit stencil. */
+            /* Write to upper 3 bytes for depth, lower byte for stencil. */
+            Surface->clearMask[0] = clearDepth   ? 0xE : 0x0;
+            Surface->clearMask[0] |= clearStencil ? 0x1 : 0x0;
+            break;
+
+        case gcvSURF_D24X8: /* 24-bit depth with no stencil. */
+            /* Write all bytes for depth. */
+            Surface->clearMask[0] = clearDepth ? 0xF : 0x0;
+            break;
+
+        case gcvSURF_S8:
+            Surface->clearMask[0] = clearStencil ? 0x1: 0x0;
+            break;
+
+        default:
+            /* Invalid depth buffer format. */
+            break;
+        }
+        Surface->clearBitMask[0] = _ByteMaskToBitMask(Surface->clearMask[0]);
+
+            /* Dispatch on depth format. */
+        switch (Surface->format)
+        {
+        case gcvSURF_D16: /* 16-bit depth without stencil. */
+            /* Convert depth value to 16-bit. */
+            clearValueType = (gcvVALUE_FLOAT | gcvVALUE_FLAG_UNSIGNED_DENORM);
+            Surface->clearValue[0] = _ConvertValue(clearValueType,
+                                                   ClearArgs->depth,
+                                                   16);
+
+            /* Expand 16-bit depth value into 32-bit. */
+            Surface->clearValue[0] |= (Surface->clearValue[0] << 16);
+            Surface->clearValueUpper[0] = Surface->clearValue[0];
+
+            break;
+
+        case gcvSURF_D24S8: /* 24-bit depth with 8-bit stencil. */
+            /* Convert depth value to 24-bit. */
+            clearValueType = (gcvVALUE_FLOAT | gcvVALUE_FLAG_UNSIGNED_DENORM);
+            Surface->clearValue[0] = _ConvertValue(clearValueType,
+                                                   ClearArgs->depth,
+                                                   24) << 8;
+
+            /* Combine with masked stencil value. */
+            Surface->clearValue[0] |= (ClearArgs->stencil & 0xFF);
+            Surface->clearValueUpper[0] = Surface->clearValue[0];
+            break;
+
+        case gcvSURF_D24X8: /* 24-bit depth with no stencil. */
+            /* Convert depth value to 24-bit. */
+            clearValueType = (gcvVALUE_FLOAT | gcvVALUE_FLAG_UNSIGNED_DENORM);
+            Surface->clearValue[0] = _ConvertValue(clearValueType,
+                                                   ClearArgs->depth,
+                                                   24) << 8;
+            Surface->clearValueUpper[0] = Surface->clearValue[0];
+            break;
+
+        case gcvSURF_S8:
+            Surface->clearValue[0] = (ClearArgs->stencil & 0xFF);
+            Surface->clearValue[0] |= (Surface->clearValue[0] << 8);
+            Surface->clearValue[0] |= (Surface->clearValue[0] << 16);
+            Surface->clearValueUpper[0] = Surface->clearValue[0];
+            break;
+
+        default:
+            /* Invalid depth buffer format. */
+            gcmONERROR(gcvSTATUS_INVALID_ARGUMENT);
+        }
+
+        /* Compute HZ clear value. */
+        gcmONERROR(gcoHARDWARE_HzClearValueControl(Surface->format,
+                                                   Surface->clearValue[0],
+                                                   &Surface->clearValueHz,
+                                                   gcvNULL));
+
+    }
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    /* Return the error. */
+    gcmFOOTER();
+    return status;
+}
+
+static gceSTATUS
+_ClearRectEx(
+    IN gcsSURF_INFO_PTR Surface,
+    IN gcsSURF_CLEAR_ARGS_PTR ClearArgs,
+    IN gctUINT32 LayerIndex
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gcsRECT_PTR rect;
+    gcmHEADER_ARG("Surface=0x%08x ClearArgs=0x%x, LayerIndex=%d",
+                  Surface, ClearArgs, LayerIndex);
+
+    /* Verify the arguments. */
+    gcmDEBUG_VERIFY_ARGUMENT(Surface != gcvNULL);
+    gcmDEBUG_VERIFY_ARGUMENT(ClearArgs != gcvNULL);
+
+    rect = ClearArgs->clearRect;
+
+    /* Clamp the coordinates to surface dimensions. */
+    rect->left   = gcmMAX(rect->left,   0);
+    rect->top    = gcmMAX(rect->top,    0);
+    rect->right  = gcmMIN(rect->right,  (gctINT32) Surface->alignedWidth);
+    rect->bottom = gcmMIN(rect->bottom, (gctINT32) Surface->alignedHeight);
+
+    /* Test for a valid rectangle. */
+    if ((rect->left < rect->right) && (rect->top < rect->bottom))
+    {
+        /* Compute clear values. */
+        gcmONERROR(_ComputeClear(Surface, ClearArgs, LayerIndex));
+
+        /* Test for clearing render target. */
+        if ((ClearArgs->flags & gcvCLEAR_COLOR)
+          && (Surface->clearMask[LayerIndex] != 0x0))
+        {
+            status = gcvSTATUS_NOT_SUPPORTED;
+
+            /* Try hardware clear if requested or default. */
+            if (!(ClearArgs->flags & gcvCLEAR_WITH_CPU_ONLY))
+            {
+                status = gcoHARDWARE_Clear(gcvNULL,
+                                           Surface,
+                                           rect->left, rect->top, rect->right, rect->bottom,
+                                           Surface->clearValue[LayerIndex],
+                                           Surface->clearValueUpper[LayerIndex],
+                                           Surface->clearMask[LayerIndex]);
+            }
+
+            /* Try software clear if requested or default. */
+            if (!(ClearArgs->flags & gcvCLEAR_WITH_GPU_ONLY)
+                && gcmIS_ERROR(status))
+            {
+                status = gcoHARDWARE_ClearSoftware(gcvNULL,
+                                                   Surface,
+                                                   rect->left, rect->top, rect->right, rect->bottom,
+                                                   Surface->clearValue[LayerIndex],
+                                                   Surface->clearValueUpper[LayerIndex],
+                                                   Surface->clearMask[LayerIndex],
+                                                   0xFF);
+            }
+        }
+
+        if (status == gcvSTATUS_NOT_ALIGNED)
+        {
+            goto OnError;
+        }
+
+        /* Break now if status is error. */
+        gcmONERROR(status);
+
+        /* Test for clearing depth or stencil buffer. */
+        if (ClearArgs->flags & (gcvCLEAR_DEPTH | gcvCLEAR_STENCIL))
+        {
+            gcmASSERT(LayerIndex == 0);
+            if (Surface->clearMask[0] != 0)
+            {
+                status = gcvSTATUS_NOT_SUPPORTED;
+
+                /* Try hardware clear if requested or default. */
+                if (!(ClearArgs->flags & gcvCLEAR_WITH_CPU_ONLY))
+                {
+                    if (!(ClearArgs->flags & gcvCLEAR_STENCIL) || (ClearArgs->stencilMask == 0xff))
+                    {
+                        status = gcoHARDWARE_Clear(gcvNULL,
+                                                   Surface,
+                                                   rect->left, rect->top,
+                                                   rect->right, rect->bottom,
+                                                   Surface->clearValue[0],
+                                                   Surface->clearValueUpper[0],
+                                                   Surface->clearMask[0]);
+                    }
+                }
+
+                /* Try software clear if requested or default. */
+                if (!(ClearArgs->flags & gcvCLEAR_WITH_GPU_ONLY)
+                    && gcmIS_ERROR(status))
+                {
+                    status = gcoHARDWARE_ClearSoftware(gcvNULL,
+                                                       Surface,
+                                                       rect->left, rect->top, rect->right, rect->bottom,
+                                                       Surface->clearValue[0],
+                                                       Surface->clearValueUpper[0],
+                                                       Surface->clearMask[0],
+                                                       ClearArgs->stencilMask);
+                }
+            }
+        }
+
+        if (ClearArgs->flags & gcvCLEAR_HZ)
+        {
+            gctUINT width = 0, height = 0;
+            gcsSURF_INFO hzSurf = {0};
+            gcsSURF_FORMAT_INFO_PTR formatInfo = gcvNULL;
+
+            /* Compute the hw specific clear window. */
+            gcmONERROR(
+                gcoHARDWARE_ComputeClearWindow(gcvNULL,
+                                               Surface->stride,
+                                               &width,
+                                               &height));
+
+            hzSurf.alignedWidth  = width;
+            hzSurf.alignedHeight = height;
+            hzSurf.rect.left     = 0;
+            hzSurf.rect.top      = 0;
+            hzSurf.rect.right    = width;
+            hzSurf.rect.bottom   = height;
+            hzSurf.format        = gcvSURF_A8R8G8B8;
+            hzSurf.node          = Surface->hzNode;
+            hzSurf.tiling        = Surface->tiling;
+            hzSurf.stride        = width * 4;
+            hzSurf.bottomBufferOffset = Surface->bottomBufferOffset;
+
+            gcoSURF_QueryFormat(gcvSURF_A8R8G8B8, &formatInfo);
+
+            hzSurf.formatInfo = *formatInfo;
+
+            /* Send clear command to hardware. */
+            gcmONERROR(
+                gcoHARDWARE_Clear(gcvNULL,
+                                  &hzSurf,
+                                  0, 0, width, height,
+                                  Surface->clearValueHz,
+                                  Surface->clearValueHz,
+                                  0xF));
+        }
+    }
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+
+static gceSTATUS
+_ClearRect(
+    IN gcoSURF Surface,
+    IN gcsSURF_CLEAR_ARGS_PTR ClearArgs,
+    IN gctUINT32 LayerIndex
+    )
+{
+    gceSTATUS status;
+    gcsRECT_PTR rect;
+
+    gcmHEADER_ARG("Surface=0x%x ClearArgs=0x%x, LayerIndex=%d",
+                   Surface, ClearArgs, LayerIndex);
 
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
-    gcmVERIFY_ARGUMENT(Flags != 0);
+    gcmDEBUG_VERIFY_ARGUMENT(ClearArgs != gcvNULL);
 
-    if (Surface->info.vaa)
-    {
-        /* Add VAA to flags. */
-        flags |= gcvCLEAR_HAS_VAA;
-    }
+    rect = ClearArgs->clearRect;
 
     /* Adjust the rect according to the msaa sample. */
-    Left   *= Surface->info.samples.x;
-    Right  *= Surface->info.samples.x;
-    Top    *= Surface->info.samples.y;
-    Bottom *= Surface->info.samples.y;
-
-    /* Test for entire surface clear. */
-    if ((Left == 0)
-    &&  (Top == 0)
-    &&  (Right >= Surface->info.rect.right)
-    &&  (Bottom >= Surface->info.rect.bottom)
-    )
-    {
-        /* It is an entire surface clear. */
-        status = gcoSURF_Clear(Surface, flags);
-        gcmFOOTER();
-        return status;
-    }
+    rect->left   *= Surface->info.samples.x;
+    rect->right  *= Surface->info.samples.x;
+    rect->top    *= Surface->info.samples.y;
+    rect->bottom *= Surface->info.samples.y;
 
     do
     {
-        /* Extract the gco3D object pointer. */
-        gcmERR_BREAK(gcoHAL_Get3DEngine(gcvNULL, &engine));
+        gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
+                      "gcoSURF_Clear: Clearing surface 0x%x @ 0x%08X",
+                      Surface,
+                      Surface->info.node.physical);
 
-        /* Lock the surface. */
-        gcmERR_BREAK(gcoSURF_Lock(Surface, address, memory));
-
-        do
+        if (!(ClearArgs->flags & gcvCLEAR_WITH_CPU_ONLY)
+            && ((Surface->info.samples.x > 1)
+                || (Surface->info.samples.y > 1))
+            && ((gcoHARDWARE_IsFeatureAvailable(gcvNULL, gcvFEATURE_FAST_MSAA) == gcvTRUE) ||
+                (gcoHARDWARE_IsFeatureAvailable(gcvNULL, gcvFEATURE_SMALL_MSAA) == gcvTRUE)))
         {
-            gctUINT32 stride = Surface->info.stride;
-
-            gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
-                          "gcoSURF_Clear: Clearing surface 0x%x @ 0x%08X",
-                          Surface,
-                          Surface->info.node.physical);
-
-            /* Flush the tile status and decompress the buffers. */
-            gcmERR_BREAK(gcoSURF_DisableTileStatus(Surface, gcvTRUE));
-
-            if (Surface->info.superTiled)
-            {
-                /* Set super-tiled flag. */
-                stride |= (1U << 31);
-            }
-
-            if ((Surface->info.type == gcvSURF_RENDER_TARGET)
-            ||  (Surface->info.type == gcvSURF_DEPTH)
-            )
-            {
-                /* Set multi-tiled flag. */
-                stride |= (1U << 30);
-            }
-
-            /* Clear the surface. */
-            gcmERR_BREAK(
-                gco3D_ClearRect(engine,
-                                Surface->info.node.physical,
-                                memory[0],
-                                stride,
-                                Surface->info.format,
-                                Left, Top,
-                                Right, Bottom,
-                                Surface->info.alignedWidth,
-                                Surface->info.alignedHeight,
-                                flags));
-
-            /* Flush the CPU cache. */
-            status = gcoSURF_NODE_Cache(&Surface->info.node,
-                                      memory[0],
-                                      Surface->info.size,
-                                      gcvCACHE_CLEAN);
+            status = gcvSTATUS_NOT_ALIGNED;
+            break;
         }
-        while (gcvFALSE);
 
-        /* Unlock the surface. */
-        gcmVERIFY_OK(gcoSURF_Unlock(Surface, memory[0]));
+        if (ClearArgs->flags & gcvCLEAR_WITH_GPU_ONLY)
+        {
+            gctUINT originX, originY;
+            gctUINT sizeX,   sizeY;
+            gcsRECT_PTR clearRect;
+
+            /* Get shortcurt. */
+            clearRect = ClearArgs->clearRect;
+
+            /* Query resolve clear alignment for this surface. */
+            gcmVERIFY_OK(
+                gcoHARDWARE_GetSurfaceResolveAlignment(gcvNULL,
+                                                       &Surface->info,
+                                                       &originX,
+                                                       &originY,
+                                                       &sizeX,
+                                                       &sizeY));
+
+            if ((clearRect->left & (originX - 1)) ||
+                (clearRect->top  & (originY - 1)) ||
+                (   (rect->right  < Surface->info.rect.right) &&
+                    ((clearRect->right  - clearRect->left) & (sizeX - 1))) ||
+                (   (rect->bottom < Surface->info.rect.bottom) &&
+                    ((clearRect->bottom - clearRect->top ) & (sizeY - 1))))
+            {
+                /*
+                 * Quickly reject if not resolve aligned.
+                 * Avoid decompress and disable tile status below.
+                 */
+                status = gcvSTATUS_NOT_ALIGNED;
+                break;
+            }
+        }
+
+        /* Flush the tile status and decompress the buffers. */
+        gcmERR_BREAK(gcoSURF_DisableTileStatus(Surface, gcvTRUE));
+
+        status =_ClearRectEx(&Surface->info, ClearArgs, LayerIndex);
+
+        if (status == gcvSTATUS_NOT_ALIGNED)
+        {
+            break;
+        }
+
+        gcmERR_BREAK(status);
     }
     while (gcvFALSE);
 
+    if ((ClearArgs->flags & gcvCLEAR_DEPTH)
+        && (Surface->info.hzNode.size > 0))
+    {
+        gcsSURF_INFO hzSurf = {0};
+        gcsSURF_CLEAR_ARGS clearArgs;
+        gcsRECT hzRect;
+
+        gcoOS_MemCopy(&clearArgs, ClearArgs, sizeof(gcsSURF_CLEAR_ARGS));
+
+        hzRect.left =
+        hzRect.top  = 0;
+        hzRect.right =
+        hzRect.bottom = gcvHZCLEAR_RECT;
+
+        hzSurf.hzNode = Surface->info.hzNode;
+        hzSurf.format = gcvSURF_UNKNOWN;
+        hzSurf.rect.left   =
+        hzSurf.rect.right  = 0;
+
+        hzSurf.rect.bottom   =
+        hzSurf.rect.top      =
+        hzSurf.alignedHeight =
+        hzSurf.alignedWidth  = gcvHZCLEAR_RECT;
+        gcmSAFECASTSIZET(hzSurf.stride, Surface->info.hzNode.size);
+
+        /* If full clear, clear HZ to clear value*/
+        if (rect->left == 0 && rect->right >= Surface->info.rect.right &&
+            rect->top == 0 && rect->bottom >= Surface->info.rect.bottom)
+        {
+            hzSurf.clearValueHz  = Surface->info.clearValueHz;
+        }
+        else
+        {
+            hzSurf.clearValueHz  = 0xffffffff;
+        }
+
+        if (Surface->info.tiling & gcvTILING_SPLIT_BUFFER)
+        {
+            hzSurf.tiling    = gcvMULTI_TILED;
+            hzSurf.bottomBufferOffset = hzSurf.stride / 2;
+        }
+        else
+        {
+            hzSurf.tiling    = gcvTILED;
+        }
+
+        clearArgs.clearRect = &hzRect;
+        clearArgs.flags = gcvCLEAR_HZ;
+
+        _ClearRectEx(&hzSurf, &clearArgs, 0);
+
+        Surface->info.hzDisabled = gcvFALSE;
+    }
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+
+static gceSTATUS
+_DoClearTileStatus(
+    IN gcsSURF_INFO_PTR Surface,
+    IN gctUINT32 TileStatusAddress,
+    IN gcsSURF_CLEAR_ARGS_PTR ClearArgs,
+    IN gctINT32 LayerIndex
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Surface=0x%x TileStatusAddress=0x%08x ClearArgs=0x%x, LayerIndex=%d",
+                  Surface, TileStatusAddress, ClearArgs, LayerIndex);
+
+    /* Verify the arguments. */
+    gcmDEBUG_VERIFY_ARGUMENT(Surface != 0);
+    gcmDEBUG_VERIFY_ARGUMENT(TileStatusAddress != 0);
+
+    /* Compute clear values. */
+    gcmONERROR(
+        _ComputeClear(Surface, ClearArgs, LayerIndex));
+
+    /* Always flush (and invalidate) the tile status cache. */
+    gcmONERROR(
+        gcoHARDWARE_FlushTileStatus(gcvNULL,
+                                    Surface,
+                                    gcvFALSE));
+
+    gcmASSERT(LayerIndex == 0);
+
+    /* Test for clearing render target. */
+    if (ClearArgs->flags & gcvCLEAR_COLOR)
+    {
+        if (Surface->clearMask[0] != 0)
+        {
+            /* Send the clear command to the hardware. */
+            status =
+                gcoHARDWARE_ClearTileStatus(gcvNULL,
+                                            Surface,
+                                            TileStatusAddress,
+                                            0,
+                                            gcvSURF_RENDER_TARGET,
+                                            Surface->clearValue[0],
+                                            Surface->clearValueUpper[0],
+                                            Surface->clearMask[0]);
+
+            if (status == gcvSTATUS_NOT_SUPPORTED)
+            {
+                goto OnError;
+            }
+
+            gcmONERROR(status);
+        }
+        else
+        {
+            gcmFOOTER_ARG("%s", "gcvSTATUS_SKIP");
+            return gcvSTATUS_SKIP;
+        }
+    }
+
+    /* Test for clearing depth or stencil buffer. */
+    if (ClearArgs->flags & (gcvCLEAR_DEPTH | gcvCLEAR_STENCIL))
+    {
+        if (Surface->clearMask[0] != 0)
+        {
+            status = gcvSTATUS_NOT_SUPPORTED;
+
+            if (!(ClearArgs->flags & gcvCLEAR_STENCIL) || (ClearArgs->stencilMask == 0xff))
+            {
+                /* Send clear command to hardware. */
+                status = gcoHARDWARE_ClearTileStatus(gcvNULL,
+                                                     Surface,
+                                                     TileStatusAddress,
+                                                     0,
+                                                     gcvSURF_DEPTH,
+                                                     Surface->clearValue[0],
+                                                     Surface->clearValueUpper[0],
+                                                     Surface->clearMask[0]);
+            }
+
+            if (status == gcvSTATUS_NOT_SUPPORTED)
+            {
+                goto OnError;
+            }
+            gcmONERROR(status);
+
+            /* Send semaphore from RASTER to PIXEL. */
+            gcmONERROR(
+                gcoHARDWARE_Semaphore(gcvNULL,
+                                      gcvWHERE_RASTER,
+                                      gcvWHERE_PIXEL,
+                                      gcvHOW_SEMAPHORE,
+                                      gcvNULL));
+        }
+        else
+        {
+            gcmFOOTER_ARG("%s", "gcvSTATUS_SKIP");
+            return gcvSTATUS_SKIP;
+        }
+    }
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
     /* Return the status. */
     gcmFOOTER();
     return status;
@@ -2951,200 +5220,728 @@ gcoSURF_ClearRect(
 
 /*******************************************************************************
 **
-**  gcoSURF_Clear
+**  _ClearHzTileStatus
 **
-**  Clear the surface.
+**  Perform a hierarchical Z tile status clear with the current depth values.
+**  Note that this function does not recompute the clear colors, since it must
+**  be called after gco3D_ClearTileStatus has cleared the depth tile status.
 **
 **  INPUT:
 **
-**      gcoSURF Surface
-**          Pointer to an gcoSURF object.
+**      gco3D Engine
+**          Pointer to an gco3D object.
 **
-**      gctUINT Flags
-**          Flags to determine what should be cleared:
+**      gcsSURF_INFO_PTR Surface
+**          Pointer of the depth surface to clear.
 **
-**              gcvCLEAR_COLOR   - Clear color.
-**              gcvCLEAR_DEPTH   - Clear depth.
-**              gcvCLEAR_STENCIL - Clear stencil.
+**      gcsSURF_NODE_PTR TileStatusAddress
+**          Pointer to the hierarhical Z tile status node toclear.
 **
 **  OUTPUT:
 **
 **      Nothing.
 */
-gceSTATUS
-gcoSURF_Clear(
-    IN gcoSURF Surface,
-    IN gctUINT Flags
+static gceSTATUS
+_ClearHzTileStatus(
+    IN gcsSURF_INFO_PTR Surface,
+    IN gcsSURF_NODE_PTR TileStatus
     )
 {
     gceSTATUS status;
-    gco3D engine;
-    gctPOINTER memory[3] = {gcvNULL};
-    gctUINT flags = Flags;
-    gctUINT32 stride;
 
-    gcmHEADER_ARG("Surface=0x%x Flags=%u", Surface, Flags);
+    gcmHEADER_ARG("Surface=0x%x TileStatus=0x%x",
+                   Surface, TileStatus);
+
+    /* Send clear command to hardware. */
+    gcmONERROR(
+        gcoHARDWARE_ClearTileStatus(gcvNULL,
+                                    Surface,
+                                    TileStatus->physical,
+                                    TileStatus->size,
+                                    gcvSURF_HIERARCHICAL_DEPTH,
+                                    Surface->clearValueHz,
+                                    Surface->clearValueHz,
+                                    0xF));
+
+    /* Send semaphore from RASTER to PIXEL. */
+    gcmONERROR(
+        gcoHARDWARE_Semaphore(gcvNULL,
+                              gcvWHERE_RASTER,
+                              gcvWHERE_PIXEL,
+                              gcvHOW_SEMAPHORE,
+                              gcvNULL));
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+
+/* Attempt to clear using tile status. */
+static gceSTATUS
+_ClearTileStatus(
+    IN gcoSURF Surface,
+    IN gcsSURF_CLEAR_ARGS_PTR ClearArgs,
+    IN gctINT32 LayerIndex
+    )
+{
+    gceSTATUS status = gcvSTATUS_NOT_SUPPORTED;
+
+    gcmHEADER_ARG("Surface=0x%x ClearArgs=0x%x LayerIndex=%d", Surface, ClearArgs, LayerIndex);
 
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
-    gcmVERIFY_ARGUMENT(Flags != 0);
+    gcmDEBUG_VERIFY_ARGUMENT(ClearArgs != gcvNULL);
 
-    do
+    if (Surface->info.tileStatusNode.pool != gcvPOOL_UNKNOWN)
     {
-        if (Surface->info.vaa)
+        gctBOOL saved = Surface->info.tileStatusDisabled;
+
+        do
         {
-            /* Add VAA to flags. */
-            flags |= gcvCLEAR_HAS_VAA;
-        }
+            gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
+                          "_ClearTileStatus: Clearing tile status 0x%x @ 0x%08X for"
+                          "surface 0x%x",
+                          Surface->info.tileStatusNode,
+                          Surface->info.tileStatusNode.physical,
+                          Surface);
+            /* Turn on the tile status on in the beginning,
+            ** So the later invalidate ts cache will not be skipped. */
+            Surface->info.tileStatusDisabled = gcvFALSE;
 
-        /* Extract the gco3D object pointer. */
-        gcmERR_BREAK(
-            gcoHAL_Get3DEngine(gcvNULL, &engine));
+            /* Clear the tile status. */
+            status = _DoClearTileStatus(&Surface->info,
+                                        Surface->info.tileStatusNode.physical,
+                                        ClearArgs,
+                                        LayerIndex);
 
-        /* Lock the surface. */
-        gcmERR_BREAK(
-            gcoSURF_Lock(Surface, gcvNULL, memory));
-
-        /* Flush the tile status before a clear. */
-        gcmERR_BREAK(
-            gcoHARDWARE_FlushTileStatus(&Surface->info,
-                                        gcvFALSE));
-
-        /* Attempt to clear using tile status. */
-        if (Surface->info.tileStatusNode.pool != gcvPOOL_UNKNOWN)
-        {
-            do
+            if (status == gcvSTATUS_SKIP)
             {
-                gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
-                              "gcoSURF_Clear: Clearing tile status 0x%x @ 0x%08X for"
-                              "surface 0x%x",
-                              Surface->info.tileStatusNode,
-                              Surface->info.tileStatusNode.physical,
-                              Surface);
+                /* Should restore the tile status when skip the clear. */
+                Surface->info.tileStatusDisabled = saved;
 
-                /* Clear the tile status. */
-                status = gco3D_ClearTileStatus(engine,
-                                               &Surface->info,
-                                               Surface->info.tileStatusNode.physical,
-                                               flags);
+                /* Nothing needed clearing, and no error has occurred. */
+                status = gcvSTATUS_OK;
+                break;
+            }
 
-                if (gcmIS_ERROR(status))
+            if (status == gcvSTATUS_NOT_SUPPORTED)
+            {
+                break;
+            }
+
+            gcmERR_BREAK(status);
+
+            if ((ClearArgs->flags & gcvCLEAR_DEPTH) &&
+                (Surface->info.hzTileStatusNode.pool != gcvPOOL_UNKNOWN))
+            {
+                /* Clear the hierarchical Z tile status. */
+                status = _ClearHzTileStatus(&Surface->info,
+                                            &Surface->info.hzTileStatusNode);
+
+                if (status == gcvSTATUS_NOT_SUPPORTED)
                 {
-                    /* Print error only if it's really an error. */
-                    if (status != gcvSTATUS_NOT_SUPPORTED)
-                    {
-                        gcmERR_BREAK(status);
-                    }
-
-                    /* Otherwise just quietly return. */
                     break;
                 }
 
-                if (gcmIS_SUCCESS(status)
-                &&  (flags & gcvCLEAR_DEPTH)
-                &&  (Surface->info.hzTileStatusNode.pool != gcvPOOL_UNKNOWN)
-                )
-                {
-                    /* Clear the hierarchical Z tile status. */
-                    gcmERR_BREAK(
-                        gco3D_ClearHzTileStatus(engine,
-                                                &Surface->info,
-                                                &Surface->info.hzTileStatusNode));
-                }
+                gcmERR_BREAK(status);
 
-                if (status == gcvSTATUS_SKIP)
-                {
-                    /* Nothing needed clearing, and no error has occurred. */
-                    status = gcvSTATUS_OK;
-                }
-                else
-                {
-                    /* Turn the tile status on again. */
-                    Surface->info.tileStatusDisabled = gcvFALSE;
-
-                    /* Reset the tile status. */
-                    gcmERR_BREAK(
-                        gcoSURF_EnableTileStatus(Surface));
-                }
+                Surface->info.hzDisabled = gcvFALSE;
             }
-            while (gcvFALSE);
 
-            /* Success? */
+            Surface->info.dirty = gcvTRUE;
+
+            /* Reset the tile status. */
+            gcmERR_BREAK(
+                gcoSURF_EnableTileStatus(Surface));
+        }
+        while (gcvFALSE);
+
+        /* Restore if failed. */
+        if (gcmIS_ERROR(status))
+        {
+            Surface->info.tileStatusDisabled = saved;
+        }
+    }
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+#if gcdPARTIAL_FAST_CLEAR
+static gceSTATUS
+_ClearTileStatusWindowAligned(
+    IN gcsSURF_INFO_PTR Surface,
+    IN gcsSURF_CLEAR_ARGS_PTR ClearArgs,
+    IN gctINT32 LayerIndex,
+    OUT gcsRECT_PTR AlignedRect
+    )
+{
+    gceSTATUS status;
+    gcmHEADER_ARG("Surface=0x%x ClearArgs=0x%x LayerIndex=%d",
+                  Surface, ClearArgs, LayerIndex);
+
+    /* Verify the arguments. */
+    gcmDEBUG_VERIFY_ARGUMENT(ClearArgs != 0);
+
+    /* No MRT support when tile status enabled for now. */
+    gcmASSERT(LayerIndex == 0);
+
+    /* Compute clear values. */
+    gcmONERROR(_ComputeClear(Surface, ClearArgs, LayerIndex));
+
+    /* Check clear masks. */
+    if (Surface->clearMask[0] == 0)
+    {
+        /* Nothing to clear. */
+        gcmFOOTER_ARG("%s", "gcvSTATUS_SKIP");
+        return gcvSTATUS_SKIP;
+    }
+
+    /* Check clearValue changes. */
+    if ((Surface->tileStatusDisabled == gcvFALSE)
+    &&  (   (Surface->fcValue != Surface->clearValue[0])
+        ||  (Surface->fcValueUpper != Surface->clearValueUpper[0]))
+    )
+    {
+        /*
+         * Tile status is on but clear value changed.
+         * Fail back to 3D draw clear or disable tile status and continue
+         * partial fast clear.
+         */
+#if gcdHAL_3D_DRAWBLIT
+        status = gcvSTATUS_NOT_SUPPORTED;
+        gcmFOOTER();
+        return status;
+#else
+        gcmONERROR(gcoHARDWARE_DisableTileStatus(gcvNULL, Surface, gcvTRUE));
+#endif
+    }
+
+    /* Flush the tile status cache. */
+    gcmONERROR(gcoHARDWARE_FlushTileStatus(gcvNULL, Surface, gcvFALSE));
+
+    /* Test for clearing render target. */
+    if (ClearArgs->flags & gcvCLEAR_COLOR)
+    {
+        /* Send the clear command to the hardware. */
+        status =
+            gcoHARDWARE_ClearTileStatusWindowAligned(gcvNULL,
+                                                     Surface,
+                                                     gcvSURF_RENDER_TARGET,
+                                                     Surface->clearValue[0],
+                                                     Surface->clearValueUpper[0],
+                                                     Surface->clearMask[0],
+                                                     ClearArgs->clearRect,
+                                                     AlignedRect);
+
+        if (status == gcvSTATUS_NOT_SUPPORTED)
+        {
+            goto OnError;
+        }
+
+        gcmONERROR(status);
+    }
+
+    /* Test for clearing depth or stencil buffer. */
+    if (ClearArgs->flags & (gcvCLEAR_DEPTH | gcvCLEAR_STENCIL))
+    {
+        if (Surface->hzNode.pool != gcvPOOL_UNKNOWN)
+        {
+            /* Can not support clear depth when HZ buffer exists. */
+            status = gcvSTATUS_NOT_SUPPORTED;
+            goto OnError;
+        }
+
+        /* Send the clear command to the hardware. */
+        status =
+            gcoHARDWARE_ClearTileStatusWindowAligned(gcvNULL,
+                                                     Surface,
+                                                     gcvSURF_DEPTH,
+                                                     Surface->clearValue[0],
+                                                     Surface->clearValueUpper[0],
+                                                     Surface->clearMask[0],
+                                                     ClearArgs->clearRect,
+                                                     AlignedRect);
+
+        if (status == gcvSTATUS_NOT_SUPPORTED)
+        {
+            goto OnError;
+        }
+
+        gcmONERROR(status);
+
+        /* Send semaphore from RASTER to PIXEL. */
+        gcmONERROR(
+            gcoHARDWARE_Semaphore(gcvNULL,
+                                  gcvWHERE_RASTER,
+                                  gcvWHERE_PIXEL,
+                                  gcvHOW_SEMAPHORE_STALL,
+                                  gcvNULL));
+    }
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+static gceSTATUS
+_PartialFastClear(
+    IN gcoSURF Surface,
+    IN gcsSURF_CLEAR_ARGS_PTR ClearArgs,
+    IN gctINT32 LayerIndex
+    )
+{
+    gceSTATUS status;
+    gcsRECT alignedRect;
+    gctBOOL saved;
+
+    gcmHEADER_ARG("Surface=0x%x ClearArgs=0x%x LayerIndex=%d",
+                  Surface, ClearArgs, LayerIndex);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+    gcmVERIFY_ARGUMENT(ClearArgs != gcvNULL);
+
+    if ((Surface->info.tileStatusNode.pool == gcvPOOL_UNKNOWN) ||
+        (Surface->info.samples.x > 1) ||
+        (Surface->info.samples.y > 1))
+    {
+        /* No tile status buffer or AA. */
+        status = gcvSTATUS_NOT_SUPPORTED;
+        goto OnError;
+    }
+
+    /* Backup previous tile status is state. */
+    saved = Surface->info.tileStatusDisabled;
+
+    /* Do the partial fast clear. */
+    status = _ClearTileStatusWindowAligned(&Surface->info,
+                                           ClearArgs,
+                                           LayerIndex,
+                                           &alignedRect);
+
+    if (gcmIS_SUCCESS(status))
+    {
+#if gcdHAL_3D_DRAWBLIT
+        gcsSURF_BLITDRAW_ARGS blitDrawArgs;
+        gcsRECT_PTR clearRect;
+        gcsRECT rect[4];
+        gctINT count;
+        gctINT i;
+#endif
+
+        /* Tile status is enabled if success, turn it on. */
+        Surface->info.tileStatusDisabled = gcvFALSE;
+
+        Surface->info.dirty = gcvTRUE;
+
+        /* Reset the tile status. */
+        gcmONERROR(gcoSURF_EnableTileStatus(Surface));
+
+        if (saved)
+        {
+            /*
+             * Invalidate tile status cache.
+             * A case is that tile status is decompressed and disabled but still
+             * cached. Tile status memory is changed in above clear, we need
+             * invalidate tile status cache here.
+             * Decompressing by resolve onto self will only read tile status,
+             * hardware will drop tile status cache without write back in that
+             * case. So here only 'invalidate' is done in 'flush'.
+             */
+            gcmONERROR(gcoSURF_FlushTileStatus(Surface, gcvFALSE));
+        }
+
+#if gcdHAL_3D_DRAWBLIT
+        /* Now Use 3D drawblit to clear areas left. */
+        gcoOS_ZeroMemory(&blitDrawArgs, gcmSIZEOF(blitDrawArgs));
+
+        blitDrawArgs.version = gcvHAL_ARG_VERSION_V1;
+        blitDrawArgs.uArgs.v1.type = gcvBLITDRAW_CLEAR;
+
+        gcoOS_MemCopy(&blitDrawArgs.uArgs.v1.u.clear.clearArgs,
+                      ClearArgs,
+                      gcmSIZEOF(gcsSURF_CLEAR_ARGS));
+
+        if (ClearArgs->flags & gcvCLEAR_COLOR)
+        {
+            blitDrawArgs.uArgs.v1.u.clear.rtSurface = Surface;
+        }
+        else
+        {
+            blitDrawArgs.uArgs.v1.u.clear.dsSurface = Surface;
+        }
+
+        /* Get not cleared area count. */
+        clearRect = ClearArgs->clearRect;
+        count = 0;
+
+        if (alignedRect.left > clearRect->left)
+        {
+            rect[count].left   = clearRect->left;
+            rect[count].top    = alignedRect.top;
+            rect[count].right  = alignedRect.left;
+            rect[count].bottom = alignedRect.bottom;
+            count++;
+        }
+
+        if (alignedRect.top > clearRect->top)
+        {
+            rect[count].left   = clearRect->left;
+            rect[count].top    = clearRect->top;
+            rect[count].right  = clearRect->right;
+            rect[count].bottom = alignedRect.top;
+            count++;
+        }
+
+        if (alignedRect.right < clearRect->right)
+        {
+            rect[count].left   = alignedRect.right;
+            rect[count].top    = alignedRect.top;
+            rect[count].right  = clearRect->right;
+            rect[count].bottom = alignedRect.bottom;
+            count++;
+        }
+
+        if (alignedRect.bottom < clearRect->bottom)
+        {
+            rect[count].left   = clearRect->left;
+            rect[count].top    = alignedRect.bottom;
+            rect[count].right  = clearRect->right;
+            rect[count].bottom = clearRect->bottom;
+            count++;
+        }
+
+        for (i = 0; i < count; i++)
+        {
+            /* Call blit draw to clear. */
+            blitDrawArgs.uArgs.v1.u.clear.clearArgs.clearRect = &rect[i];
+            gcmERR_BREAK(gcoHARDWARE_BlitDraw(&blitDrawArgs));
+        }
+#endif
+    }
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+#endif
+
+static gceSTATUS
+_Clear(
+    IN gcoSURF Surface,
+    IN gcsSURF_CLEAR_ARGS_PTR ClearArgs,
+    IN gctINT32 LayerIndex,
+    OUT gctBOOL * BlitDraw
+    )
+{
+    gceSTATUS status;
+    gcsRECT_PTR rect;
+    gctBOOL fullSize = gcvFALSE;
+    gctPOINTER memory[3] = {gcvNULL};
+
+    gcmHEADER_ARG("Surface=0x%x ClearArg=0x%x LayerIndex=%d",
+              Surface, ClearArgs, LayerIndex);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+    gcmVERIFY_ARGUMENT(ClearArgs != gcvNULL);
+
+    rect = ClearArgs->clearRect;
+
+    /* Lock the surface. */
+    gcmONERROR(gcoSURF_Lock(Surface, gcvNULL, memory));
+
+    if (ClearArgs->flags & gcvCLEAR_WITH_CPU_ONLY)
+    {
+        /* Software clear only. */
+        status = _ClearRect(Surface, ClearArgs, LayerIndex);
+
+        /* Unlock the surface. */
+        gcmVERIFY_OK(gcoSURF_Unlock(Surface, gcvNULL));
+
+        /* Return the status. */
+        gcmFOOTER();
+        return status;
+    }
+
+    if ((ClearArgs->flags & gcvCLEAR_STENCIL)
+    &&  Surface->info.hasStencilComponent
+    )
+    {
+        Surface->info.canDropStencilPlane = gcvFALSE;
+    }
+
+    do
+    {
+        /* Hardware clear path. */
+        status = gcvSTATUS_NOT_SUPPORTED;
+
+        /* Test for entire surface clear. */
+        if ((rect->left == 0)  &&  (rect->top == 0)
+        &&  (rect->right  >= (Surface->info.rect.right  / Surface->info.samples.x))
+        &&  (rect->bottom >= (Surface->info.rect.bottom / Surface->info.samples.x))
+        )
+        {
+            fullSize = gcvTRUE;
+
+            /*
+             * 1. Best way: Fast clear.
+             * Full fast clear when it is an entire surface clear.
+             */
+            status = _ClearTileStatus(Surface, ClearArgs, LayerIndex);
+        }
+#if gcdPARTIAL_FAST_CLEAR
+        else
+        {
+            /*
+             * 2. Partial fast clear + 3D draw clear.
+             * Clear tile status window and than draw clear for not aligned parts.
+             */
+            status = _PartialFastClear(Surface, ClearArgs, LayerIndex);
+        }
+#endif
+
+        if (gcmIS_SUCCESS(status))
+        {
+            /* Done. */
+            break;
+        }
+
+#if gcdHAL_3D_DRAWBLIT
+        {
+            /*
+             * 3. Try resolve clear if tile status is disabled.
+             * resolve clear is better than below draw clear when no tile status.
+             */
+            gcsRECT tempRect;
+
+            /* Save rect. Because the func will modify the parameter.*/
+            gcoOS_MemCopy(&tempRect,
+                          ClearArgs->clearRect,
+                          gcmSIZEOF(gcsRECT));
+
+            status = _ClearRect(Surface, ClearArgs, LayerIndex);
+
+            /* Reset rect. Because the func will modify the parameter.*/
+            if (gcmIS_ERROR(status))
+            {
+                gcoOS_MemCopy(ClearArgs->clearRect,
+                              &tempRect,
+                              gcmSIZEOF(gcsRECT));
+            }
+
             if (gcmIS_SUCCESS(status))
             {
+                /* Done. */
                 break;
             }
         }
 
-        /* Clear using conventional means. */
-        gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_SURFACE,
-                      "gcoSURF_Clear: Clearing surface 0x%x @ 0x%08X",
-                      Surface,
-                      Surface->info.node.physical);
-
-        /* Disable the tile status. */
-        gcmERR_BREAK(
-            gcoHARDWARE_DisableTileStatus(&Surface->info,
-                                          gcvTRUE));
-
-        stride = Surface->info.stride;
-
-        if (Surface->info.superTiled)
+        if (gcoSURF_IsRenderable(Surface) == gcvSTATUS_OK)
         {
-            /* Set super tiled flag. */
-            stride |= (1U << 31);
+            /*
+             * 4. Try 3D draw clear.
+             * Resolve clear will need to decompress and disable tile status
+             * before the actual clear. So 3D draw clear is bettern if tile
+             * status is currently enabled.
+             *
+             * Another thing is that when draw clear succeeds, all layers of the
+             * surface are cleared at the same time.
+             */
+            gcsSURF_BLITDRAW_ARGS blitDrawArgs;
+
+            gcoOS_ZeroMemory(&blitDrawArgs, gcmSIZEOF(blitDrawArgs));
+            blitDrawArgs.version = gcvHAL_ARG_VERSION_V1;
+            blitDrawArgs.uArgs.v1.type = gcvBLITDRAW_CLEAR;
+
+            gcoOS_MemCopy(&blitDrawArgs.uArgs.v1.u.clear.clearArgs,
+                          ClearArgs,
+                          gcmSIZEOF(gcsSURF_CLEAR_ARGS));
+
+            if (ClearArgs->flags & gcvCLEAR_COLOR)
+            {
+                blitDrawArgs.uArgs.v1.u.clear.rtSurface = Surface;
+            }
+            else
+            {
+                blitDrawArgs.uArgs.v1.u.clear.dsSurface = Surface;
+            }
+
+            status = gcoHARDWARE_BlitDraw(&blitDrawArgs);
+
+            if (gcmIS_SUCCESS(status))
+            {
+                /*
+                 * Report the flag to caller, which means all layers of the
+                 * surface are cleared.
+                 */
+                *BlitDraw = gcvTRUE;
+
+                /* Done. */
+                break;
+            }
         }
 
-        if ((Surface->info.type == gcvSURF_RENDER_TARGET)
-        ||  (Surface->info.type == gcvSURF_DEPTH)
-        )
+#else
+        /* Try resolve clear. */
+        status = _ClearRect(Surface, ClearArgs, LayerIndex);
+
+        if (gcmIS_SUCCESS(status))
         {
-            /* Set multi-tiled flag. */
-            stride |= (1U << 30);
+            /* Done. */
+            break;
         }
+#endif
 
-        /* Clear the surface. */
-        gcmERR_BREAK(
-            gco3D_ClearRect(engine,
-                            Surface->info.node.physical,
-                            memory[0],
-                            stride,
-                            Surface->info.format,
-                            0,
-                            0,
-                            Surface->info.alignedWidth,
-                            Surface->info.alignedHeight,
-                            Surface->info.alignedWidth,
-                            Surface->info.alignedHeight,
-                            flags));
-
-        if ((flags & gcvCLEAR_DEPTH)
-        &&  (Surface->info.hzNode.size > 0)
-        )
+#if !gcdHAL_3D_DRAWBLIT
+        if (!(ClearArgs->flags & gcvCLEAR_WITH_GPU_ONLY))
+#endif
         {
-            gcmERR_BREAK(
-                gco3D_ClearRect(engine,
-                                Surface->info.hzNode.physical,
-                                Surface->info.hzNode.logical,
-                                Surface->info.hzNode.size,
-                                gcvSURF_UNKNOWN,
-                                0,
-                                0,
-                                1,
-                                1,
-                                1,
-                                1,
-                                gcvCLEAR_HZ));
+            /*
+             * 6. Last, use software clear.
+             * If no GPU-ONLY requested, try software clear.
+             */
+            gceCLEAR savedFlags = ClearArgs->flags;
+            ClearArgs->flags &= ~gcvCLEAR_WITH_GPU_ONLY;
+            ClearArgs->flags |= gcvCLEAR_WITH_CPU_ONLY;
+
+            status = _ClearRect(Surface, ClearArgs, LayerIndex);
+
+            /* Restore flags. */
+            ClearArgs->flags = savedFlags;
         }
     }
     while (gcvFALSE);
 
-    /* Unlock the surface. */
-    if (memory[0] != gcvNULL)
+    if (gcmIS_SUCCESS(status) &&  fullSize)
     {
-        status = gcoSURF_Unlock(Surface, memory[0]);
+        /* Set garbagePadded=0 if full clear */
+        if (Surface->info.paddingFormat)
+        {
+            Surface->info.garbagePadded = gcvFALSE;
+        }
+
+        if (gcoHAL_IsFeatureAvailable(gcvNULL, gcvFEATURE_PE_DITHER_FIX) == gcvFALSE)
+        {
+            gctUINT8 clearMask = Surface->info.clearMask[LayerIndex];
+
+            /* Full mask clear can reset the deferDither3D flag */
+            if ((clearMask == 0xF)
+
+                ||  (   (clearMask == 0x7)
+                &&  (   (Surface->info.format == gcvSURF_X8R8G8B8)
+                ||  (Surface->info.format == gcvSURF_R5G6B5)))
+
+                ||  (   (clearMask == 0xE)
+                &&  Surface->info.hasStencilComponent
+                &&  Surface->info.canDropStencilPlane)
+                )
+            {
+                Surface->info.deferDither3D = gcvFALSE;
+            }
+        }
     }
 
+    /* Unlock the surface. */
+    gcmVERIFY_OK(gcoSURF_Unlock(Surface, gcvNULL));
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+
+gceSTATUS
+gcoSURF_Clear(
+    IN gcoSURF Surface,
+    IN gcsSURF_CLEAR_ARGS_PTR  ClearArgs)
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gcsSURF_CLEAR_ARGS clearArgs;
+    gctUINT originalOffset;
+    gctUINT layerIndex;
+    gcsRECT clearRect;
+    gctINT  width;
+    gctINT  height;
+
+    gcmHEADER_ARG("Surface=0x%x ClearArgs=0x%x", Surface, ClearArgs);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+    gcmVERIFY_ARGUMENT(ClearArgs != 0);
+
+    gcoOS_MemCopy(&clearArgs, ClearArgs, sizeof(gcsSURF_CLEAR_ARGS));
+
+    if (Surface->info.vaa)
+    {
+        /* Add VAA to flags. */
+        clearArgs.flags |= gcvCLEAR_HAS_VAA;
+    }
+
+    width  = Surface->info.rect.right  / Surface->info.samples.x;
+    height = Surface->info.rect.bottom / Surface->info.samples.y;
+
+    if (ClearArgs->clearRect == gcvNULL)
+    {
+        /* Full screen. */
+        clearRect.left = 0;
+        clearRect.top  = 0;
+        clearRect.right  = width;
+        clearRect.bottom = height;
+    }
+    else
+    {
+        /* Intersect with surface size. */
+        clearRect.left   = gcmMAX(0, ClearArgs->clearRect->left);
+        clearRect.top    = gcmMAX(0, ClearArgs->clearRect->top);
+        clearRect.right  = gcmMIN(width,  ClearArgs->clearRect->right);
+        clearRect.bottom = gcmMIN(height, ClearArgs->clearRect->bottom);
+    }
+
+    clearArgs.clearRect = &clearRect;
+
+    originalOffset = Surface->info.offset;
+
+    for (layerIndex = 0; layerIndex < Surface->info.formatInfo.layers; layerIndex++)
+    {
+        gctBOOL blitDraw = gcvFALSE;
+        gctSIZE_T offset = clearArgs.offset + Surface->info.layerSize * layerIndex;
+
+        gcmONERROR(gcoSURF_SetOffset(Surface, offset));
+
+        status = _Clear(Surface, &clearArgs, layerIndex, &blitDraw);
+
+        if (status == gcvSTATUS_NOT_ALIGNED)
+        {
+            goto OnError;
+        }
+
+        gcmONERROR(status);
+
+        if (blitDraw)
+        {
+            break;
+        }
+    }
+
+    gcmONERROR(gcoSURF_SetOffset(Surface, originalOffset));
+
+OnError:
     /* Return the status. */
     gcmFOOTER();
     return status;
@@ -3256,7 +6053,7 @@ depr_gcoSURF_Resolve(
 **
 **  depr_gcoSURF_ResolveRect
 **
-**  Resolve a rectangluar area of a surface to another surface.
+**  Resolve a rectangular area of a surface to another surface.
 **
 **  INPUT:
 **
@@ -3388,10 +6185,12 @@ depr_gcoSURF_ResolveRect(
             destInfo = &_destInfo;
 
             gcmERR_BREAK(
-                gcoHARDWARE_AlignToTileCompatible(DestType,
+                gcoHARDWARE_AlignToTileCompatible(gcvNULL,
+                                                  DestType,
                                                   DestFormat,
                                                   &_destInfo.alignedWidth,
                                                   &_destInfo.alignedHeight,
+                                                  1,
                                                   &_destInfo.tiling,
                                                   &_destInfo.superTiled));
 
@@ -3426,11 +6225,13 @@ depr_gcoSURF_ResolveRect(
 
         /* Perform resolve. */
         gcmERR_BREAK(
-            gcoHARDWARE_ResolveRect(&SrcSurface->info,
+            gcoHARDWARE_ResolveRect(gcvNULL,
+                                    &SrcSurface->info,
                                     destInfo,
                                     SrcOrigin,
                                     DestOrigin,
-                                    &rectSize));
+                                    &rectSize,
+                                    gcvFALSE));
     }
     while (gcvFALSE);
 
@@ -3460,6 +6261,180 @@ depr_gcoSURF_ResolveRect(
     return status;
 }
 
+#define gcdCOLOR_SPACE_CONVERSION_NONE         0
+#define gcdCOLOR_SPACE_CONVERSION_TO_LINEAR    1
+#define gcdCOLOR_SPACE_CONVERSION_TO_NONLINEAR 2
+
+gceSTATUS
+gcoSURF_MixSurfacesCPU(
+    IN gcoSURF TargetSurface,
+    IN gcoSURF SourceSurface,
+    IN gctFLOAT mixFactor
+    )
+{
+    gceSTATUS status;
+    gcoSURF srcSurf, dstSurf;
+    gctPOINTER srcAddr[3] = {gcvNULL};
+    gctPOINTER dstAddr[3] = {gcvNULL};
+    _PFNreadPixel pfReadPixel = gcvNULL;
+    _PFNwritePixel pfWritePixel = gcvNULL;
+    _PFNcalcPixelAddr pfSrcCalcAddr = gcvNULL;
+    _PFNcalcPixelAddr pfDstCalcAddr = gcvNULL;
+    gctINT i, j;
+
+    gcsSURF_FORMAT_INFO *srcFmtInfo, *dstFmtInfo;
+
+    srcSurf = SourceSurface;
+    dstSurf = TargetSurface;
+
+    /* Target and Source surfaces need to have same dimensions and format. */
+    if ((dstSurf->info.rect.bottom != srcSurf->info.rect.bottom)
+     || (dstSurf->info.rect.right != srcSurf->info.rect.right)
+     || (dstSurf->info.format != srcSurf->info.format)
+     || (dstSurf->info.type != srcSurf->info.type)
+     || (dstSurf->info.tiling != srcSurf->info.tiling))
+    {
+        return gcvSTATUS_INVALID_ARGUMENT;
+    }
+
+    /* MSAA case not supported. */
+    if (dstSurf->info.samples.x > 1 || dstSurf->info.samples.y > 1 ||
+        srcSurf->info.samples.x > 1 || srcSurf->info.samples.y > 1)
+    {
+        return gcvSTATUS_NOT_SUPPORTED;
+    }
+
+    srcFmtInfo = &SourceSurface->info.formatInfo;
+    dstFmtInfo = &dstSurf->info.formatInfo;
+
+    /*
+    ** Integer format upload/blit, the data type must be totally matched.
+    */
+    if (((srcFmtInfo->fmtDataType == gcvFORMAT_DATATYPE_UNSIGNED_INTEGER) ||
+         (srcFmtInfo->fmtDataType == gcvFORMAT_DATATYPE_SIGNED_INTEGER)) &&
+         (srcFmtInfo->fmtDataType != dstFmtInfo->fmtDataType))
+    {
+        return gcvSTATUS_NOT_SUPPORTED;
+    }
+
+    /* TODO: those function pointers can be recorded in gcoSURF */
+    pfReadPixel  = gcoSURF_GetReadPixelFunc(srcSurf);
+    pfWritePixel = gcoSURF_GetWritePixelFunc(dstSurf);
+    pfSrcCalcAddr = gcoHARDWARE_GetProcCalcPixelAddr(gcvNULL, srcSurf);
+    pfDstCalcAddr = gcoHARDWARE_GetProcCalcPixelAddr(gcvNULL, dstSurf);
+
+    /* set color space conversion flag */
+    gcmASSERT(srcSurf->info.colorSpace == dstSurf->info.colorSpace);
+
+    if (!pfReadPixel || !pfWritePixel || !pfSrcCalcAddr || !pfDstCalcAddr)
+    {
+        return gcvSTATUS_INVALID_ARGUMENT;
+    }
+
+    /* Flush the GPU cache */
+    gcmONERROR(gcoHARDWARE_FlushTileStatus(gcvNULL, &srcSurf->info, gcvTRUE));
+    gcmONERROR(gcoHARDWARE_DisableTileStatus(gcvNULL, &dstSurf->info, gcvTRUE));
+
+    /* Synchronize with the GPU. */
+    /* TODO: if both of the surfaces previously were not write by GPU,
+    ** or already did the sync, no need to do it again.
+    */
+    gcmONERROR(gcoHARDWARE_FlushPipe(gcvNULL, gcvNULL));
+    gcmONERROR(gcoHARDWARE_Commit(gcvNULL));
+    gcmONERROR(gcoHARDWARE_Stall(gcvNULL));
+
+    /* Lock the surfaces. */
+    gcmONERROR(gcoSURF_Lock(srcSurf, gcvNULL, srcAddr));
+    gcmONERROR(gcoSURF_Lock(dstSurf, gcvNULL, dstAddr));
+
+    /* Src surface might be written by GPU previously, CPU need to invalidate
+    ** its cache before reading.
+    ** Dst surface alo need invalidate CPU cache to guarantee CPU cache is coherent
+    ** with memory, so it's correct to flush out after writing.
+    */
+    gcmONERROR(gcoSURF_NODE_Cache(&srcSurf->info.node,
+                                  srcAddr[0],
+                                  srcSurf->info.size,
+                                  gcvCACHE_INVALIDATE));
+    gcmONERROR(gcoSURF_NODE_Cache(&dstSurf->info.node,
+                                  dstAddr[0],
+                                  dstSurf->info.size,
+                                  gcvCACHE_INVALIDATE));
+
+    for (j = srcSurf->info.rect.top; j < srcSurf->info.rect.bottom; ++j)
+    {
+        for (i = srcSurf->info.rect.left; i < srcSurf->info.rect.right; ++i)
+        {
+            gcsPIXEL internalSrc, internalDst;
+            gctPOINTER srcAddr_l[4];
+            gctPOINTER dstAddr_l[4];
+
+            pfSrcCalcAddr(srcSurf, (gctSIZE_T)i, (gctSIZE_T)j, (gctSIZE_T)0, srcAddr_l);
+            pfDstCalcAddr(dstSurf, (gctSIZE_T)i, (gctSIZE_T)j, (gctSIZE_T)0, dstAddr_l);
+
+            pfReadPixel(srcAddr_l, &internalSrc);
+            pfReadPixel(dstAddr_l, &internalDst);
+
+            if (srcSurf->info.colorSpace == gcvSURF_COLOR_SPACE_NONLINEAR)
+            {
+                gcoSURF_PixelToLinear(&internalSrc);
+                gcoSURF_PixelToLinear(&internalDst);
+            }
+
+            /* Mix the pixels. */
+            internalDst.pf.r = internalDst.pf.r * (1 - mixFactor) + internalSrc.pf.r * mixFactor;
+            internalDst.pf.g = internalDst.pf.g * (1 - mixFactor) + internalSrc.pf.g * mixFactor;
+            internalDst.pf.b = internalDst.pf.b * (1 - mixFactor) + internalSrc.pf.b * mixFactor;
+            internalDst.pf.a = internalDst.pf.a * (1 - mixFactor) + internalSrc.pf.a * mixFactor;
+            internalDst.pf.d = internalDst.pf.d * (1 - mixFactor) + internalSrc.pf.d * mixFactor;
+            internalDst.pf.s = internalDst.pf.s * (1 - mixFactor) + internalSrc.pf.s * mixFactor;
+
+            if (srcSurf->info.colorSpace == gcvSURF_COLOR_SPACE_NONLINEAR)
+            {
+                gcoSURF_PixelToNonLinear(&internalDst);
+            }
+
+            pfWritePixel(&internalDst, dstAddr_l, 0);
+        }
+    }
+
+    /* Dst surface was written by CPU and might be accessed by GPU later */
+    gcmONERROR(gcoSURF_NODE_Cache(&dstSurf->info.node,
+                                  dstAddr[0],
+                                  dstSurf->info.size,
+                                  gcvCACHE_CLEAN));
+
+#if gcdDUMP
+    /* verify the source */
+    gcmDUMP_BUFFER(gcvNULL,
+                   "verify",
+                   srcSurf->info.node.physical,
+                   srcSurf->info.node.logical,
+                   0,
+                   srcSurf->info.size);
+    /* upload the destination */
+    gcmDUMP_BUFFER(gcvNULL,
+                   "memory",
+                   dstSurf->info.node.physical,
+                   dstSurf->info.node.logical,
+                   0,
+                   dstSurf->info.size);
+#endif
+
+OnError:
+    /* Unlock the surfaces. */
+    if (srcAddr[0])
+    {
+        gcoSURF_Unlock(srcSurf, srcAddr[0]);
+    }
+    if (dstAddr[0])
+    {
+        gcoSURF_Unlock(dstSurf, dstAddr[0]);
+    }
+
+    return gcvSTATUS_OK;
+}
+
 /*******************************************************************************
 **
 **  gcoSURF_Resample
@@ -3479,6 +6454,9 @@ depr_gcoSURF_ResolveRect(
 **
 **      Nothing.
 */
+
+#define RESAMPLE_FLAG 0xBAAD1234
+
 gceSTATUS
 gcoSURF_Resample(
     IN gcoSURF SrcSurface,
@@ -3489,16 +6467,24 @@ gcoSURF_Resample(
     gcsSAMPLES srcSamples = { 0, 0 };
     gcsSAMPLES destSamples = { 0, 0 };
     gcsPOINT rectOrigin = { 0, 0 };
+    gcsPOINT dstOrigin = { RESAMPLE_FLAG, RESAMPLE_FLAG };
     gcsPOINT rectSize;
+    gctUINT   srcOffset, desOffset;
     gctUINT32 srcPhysical[3] = {~0U}, destPhysical[3] = {~0U};
-    gctPOINTER srcLogical[3] = {gcvNULL}, destLogical[3] = {gcvNULL};
+    gctPOINTER srcLogical[3] = {gcvNULL}, destLogical[3] = {gcvNULL}, tempDestLogical[3] = {gcvNULL};
     gctUINT i;
+    gcoSURF tempDestSurface = gcvNULL;
 
     gcmHEADER_ARG("SrcSurface=0x%x DestSurface=0x%x", SrcSurface, DestSurface);
 
     /* Validate the surfaces. */
     gcmVERIFY_OBJECT(SrcSurface, gcvOBJ_SURF);
     gcmVERIFY_OBJECT(DestSurface, gcvOBJ_SURF);
+
+    srcOffset  = SrcSurface->info.offset;
+    desOffset = DestSurface->info.offset;
+    SrcSurface->info.offset = 0;
+    DestSurface->info.offset = 0;
 
     /* Both surfaces have to be non-multisampled. */
     if ((SrcSurface->info.samples.x  != 1)
@@ -3510,26 +6496,44 @@ gcoSURF_Resample(
         gcmONERROR(gcvSTATUS_NOT_SUPPORTED);
     }
 
+
+#if gcdDUMP
+    {
+        gctSTRING env;
+        gctINT simFrame = 0;
+        gctUINT frameCount;
+        gcoOS_GetEnv(gcvNULL, "SIM_Frame", &env);
+        gcoHAL_FrameInfoOps(gcvNULL,
+                            gcvFRAMEINFO_FRAME_NUM,
+                            gcvFRAMEINFO_OP_GET,
+                            &frameCount);
+        gcoOS_StrToInt(env, &simFrame);
+        if ((gctINT)frameCount < simFrame)
+        {
+            gcmONERROR(gcvSTATUS_NOT_SUPPORTED);
+        }
+    }
+#endif
     /* Determine the samples and fill in coordinates. */
     if (SrcSurface->info.rect.right == DestSurface->info.rect.right)
     {
         srcSamples.x  = 1;
         destSamples.x = 1;
-        rectSize.x    = SrcSurface->info.alignedWidth;
+        rectSize.x    = SrcSurface->info.rect.right;
     }
 
-    else if (SrcSurface->info.rect.right == DestSurface->info.rect.right * 2)
+    else if (SrcSurface->info.rect.right / 2 == (DestSurface->info.rect.right))
     {
         srcSamples.x  = 2;
         destSamples.x = 1;
-        rectSize.x    = DestSurface->info.alignedWidth;
+        rectSize.x    = DestSurface->info.rect.right;
     }
 
-    else if (SrcSurface->info.rect.right * 2 == DestSurface->info.rect.right)
+    else if (SrcSurface->info.rect.right == DestSurface->info.rect.right / 2)
     {
         srcSamples.x  = 1;
         destSamples.x = 2;
-        rectSize.x    = SrcSurface->info.alignedWidth;
+        rectSize.x    = SrcSurface->info.rect.right;
     }
 
     else
@@ -3541,21 +6545,21 @@ gcoSURF_Resample(
     {
         srcSamples.y  = 1;
         destSamples.y = 1;
-        rectSize.y    = SrcSurface->info.alignedHeight;
+        rectSize.y    = SrcSurface->info.rect.bottom;
     }
 
-    else if (SrcSurface->info.rect.bottom == DestSurface->info.rect.bottom * 2)
+    else if (SrcSurface->info.rect.bottom / 2 == (DestSurface->info.rect.bottom))
     {
         srcSamples.y  = 2;
         destSamples.y = 1;
-        rectSize.y    = DestSurface->info.alignedHeight;
+        rectSize.y    = DestSurface->info.rect.bottom;
     }
 
-    else if (SrcSurface->info.rect.bottom * 2 == DestSurface->info.rect.bottom)
+    else if (SrcSurface->info.rect.bottom == DestSurface->info.rect.bottom / 2)
     {
         srcSamples.y  = 1;
         destSamples.y = 2;
-        rectSize.y    = SrcSurface->info.alignedHeight;
+        rectSize.y    = SrcSurface->info.rect.bottom;
     }
 
     else
@@ -3567,13 +6571,83 @@ gcoSURF_Resample(
     SrcSurface->info.samples  = srcSamples;
     DestSurface->info.samples = destSamples;
 
-    /* Verify the two surfaces have the same depth. */
+    /* 3D texture. */
     if (SrcSurface->depth != DestSurface->depth)
     {
-        gcmONERROR(gcvSTATUS_NOT_SUPPORTED);
-    }
+        /* Need to be reducing depth, with resample. */
+        if (SrcSurface->depth < DestSurface->depth)
+        {
+            gcmONERROR(gcvSTATUS_INVALID_REQUEST);
+        }
 
-    if (SrcSurface->depth > 1)
+        /* Lock source surface if larger than 1 depth. */
+        gcmONERROR(gcoSURF_Lock(SrcSurface, srcPhysical, srcLogical));
+
+        /* Lock destination surface if larger than 1 depth. */
+        gcmONERROR(gcoSURF_Lock(DestSurface, destPhysical, destLogical));
+
+        gcoSURF_Construct(gcvNULL,
+                          DestSurface->info.rect.right,
+                          DestSurface->info.rect.bottom,
+                          1,
+                          DestSurface->info.type,
+                          DestSurface->info.format,
+                          gcvPOOL_DEFAULT,
+                          &tempDestSurface);
+
+        /* Lock tempDest once. */
+        gcmONERROR(gcoSURF_Lock(tempDestSurface, gcvNULL, tempDestLogical));
+
+        /* Downsample 2 slices, and mix them together.
+           Ignore the last Src slice, if the size is odd. */
+        for (i = 0; i < DestSurface->depth; ++i)
+        {
+            dstOrigin.x = dstOrigin.y = RESAMPLE_FLAG;
+            /* Call generic function. */
+            gcmONERROR(gcoSURF_ResolveRect(SrcSurface,
+                                           DestSurface,
+                                           &rectOrigin,
+                                           &dstOrigin,
+                                           &rectSize));
+
+            /* Move to next source depth. */
+            SrcSurface->info.node.physical  += SrcSurface->info.sliceSize;
+            SrcSurface->info.node.logical   += SrcSurface->info.sliceSize;
+
+            dstOrigin.x = dstOrigin.y = RESAMPLE_FLAG;
+
+            gcmONERROR(gcoSURF_ResolveRect(SrcSurface,
+                                           tempDestSurface,
+                                           &rectOrigin,
+                                           &dstOrigin,
+                                           &rectSize));
+
+            gcmONERROR(gcoSURF_MixSurfacesCPU(DestSurface,
+                                              tempDestSurface,
+                                              0.5f));
+
+            /* Move to next depth. */
+            SrcSurface->info.node.physical  += SrcSurface->info.sliceSize;
+            SrcSurface->info.node.logical   += SrcSurface->info.sliceSize;
+            DestSurface->info.node.physical += DestSurface->info.sliceSize;
+            DestSurface->info.node.logical  += DestSurface->info.sliceSize;
+        }
+
+        /* Restore addresses. */
+        SrcSurface->info.node.physical  = srcPhysical[0];
+        SrcSurface->info.node.logical   = srcLogical[0];
+        DestSurface->info.node.physical = destPhysical[0];
+        DestSurface->info.node.logical  = destLogical[0];
+
+        /* Unlock surfaces. */
+        gcmVERIFY_OK(gcoSURF_Unlock(SrcSurface,  srcLogical[0]));
+        gcmVERIFY_OK(gcoSURF_Unlock(DestSurface, destLogical[0]));
+        gcmVERIFY_OK(gcoSURF_Unlock(tempDestSurface, tempDestLogical[0]));
+        gcmVERIFY_OK(gcoSURF_Destroy(tempDestSurface));
+        tempDestSurface = gcvNULL;
+    }
+    /* CUBE/2DArray. */
+    else if (SrcSurface->depth > 1)
     {
         /* Lock source surface if larger than 1 depth. */
         gcmONERROR(gcoSURF_Lock(SrcSurface, srcPhysical, srcLogical));
@@ -3583,18 +6657,19 @@ gcoSURF_Resample(
 
         for (i = 0; i < SrcSurface->depth; ++i)
         {
+            dstOrigin.x = dstOrigin.y = RESAMPLE_FLAG;
             /* Call generic function. */
             gcmONERROR(gcoSURF_ResolveRect(SrcSurface,
                                            DestSurface,
                                            &rectOrigin,
-                                           &rectOrigin,
+                                           &dstOrigin,
                                            &rectSize));
 
             /* Move to next depth. */
-            SrcSurface->info.node.physical  += SrcSurface->info.size;
-            SrcSurface->info.node.logical   += SrcSurface->info.size;
-            DestSurface->info.node.physical += DestSurface->info.size;
-            DestSurface->info.node.logical  += DestSurface->info.size;
+            SrcSurface->info.node.physical  += SrcSurface->info.sliceSize;
+            SrcSurface->info.node.logical   += SrcSurface->info.sliceSize;
+            DestSurface->info.node.physical += DestSurface->info.sliceSize;
+            DestSurface->info.node.logical  += DestSurface->info.sliceSize;
         }
 
         /* Restore addresses. */
@@ -3613,7 +6688,7 @@ gcoSURF_Resample(
         gcmONERROR(gcoSURF_ResolveRect(SrcSurface,
                                        DestSurface,
                                        &rectOrigin,
-                                       &rectOrigin,
+                                       &dstOrigin,
                                        &rectSize));
     }
 
@@ -3622,17 +6697,24 @@ gcoSURF_Resample(
     SrcSurface->info.samples.y  = 1;
     DestSurface->info.samples.x = 1;
     DestSurface->info.samples.y = 1;
+    /*Restore offset */
+    SrcSurface->info.offset = srcOffset;
+    DestSurface->info.offset = desOffset;
 
     /* Success. */
     gcmFOOTER_NO();
     return gcvSTATUS_OK;
 
 OnError:
+
     /* Restore samples. */
     SrcSurface->info.samples.x  = 1;
     SrcSurface->info.samples.y  = 1;
     DestSurface->info.samples.x = 1;
     DestSurface->info.samples.y = 1;
+    SrcSurface->info.offset = srcOffset;
+    DestSurface->info.offset = desOffset;
+
 
     if (srcLogical[0] != gcvNULL)
     {
@@ -3642,8 +6724,6 @@ OnError:
 
         /* Unlock surface. */
         gcmVERIFY_OK(gcoSURF_Unlock(SrcSurface, srcLogical[0]));
-
-
     }
 
     if (destLogical[0] != gcvNULL)
@@ -3656,9 +6736,189 @@ OnError:
         gcmVERIFY_OK(gcoSURF_Unlock(DestSurface, destLogical[0]));
     }
 
+    if (tempDestSurface != gcvNULL)
+    {
+        if (tempDestLogical[0] != gcvNULL)
+        {
+            /* Unlock surface. */
+            gcmVERIFY_OK(gcoSURF_Unlock(tempDestSurface, tempDestLogical[0]));
+        }
+
+        gcmVERIFY_OK(gcoSURF_Destroy(tempDestSurface));
+    }
+
+
+    /* Fallback to CPU resampling */
+    if (gcmIS_ERROR(status))
+    {
+        gcsSURF_BLIT_ARGS  blitArgs;
+        gcePATCH_ID patchID = gcvPATCH_INVALID;
+
+        gcoHAL_GetPatchID(gcvNULL, &patchID);
+
+        if (patchID != gcvPATCH_GFXBENCH && patchID != gcvPATCH_FRUITNINJA)
+        {
+            gcoOS_ZeroMemory(&blitArgs, sizeof(blitArgs));
+            blitArgs.srcX               = 0;
+            blitArgs.srcY               = 0;
+            blitArgs.srcZ               = 0;
+            blitArgs.srcWidth           = SrcSurface->info.rect.right;
+            blitArgs.srcHeight          = SrcSurface->info.rect.bottom;
+            blitArgs.srcDepth           = SrcSurface->depth;
+            blitArgs.srcSurface         = SrcSurface;
+            blitArgs.dstX               = 0;
+            blitArgs.dstY               = 0;
+            blitArgs.dstZ               = 0;
+            blitArgs.dstWidth           = DestSurface->info.rect.right;
+            blitArgs.dstHeight          = DestSurface->info.rect.bottom;
+            blitArgs.dstDepth           = DestSurface->depth;
+            blitArgs.dstSurface         = DestSurface;
+            blitArgs.xReverse           = gcvFALSE;
+            blitArgs.yReverse           = gcvFALSE;
+            blitArgs.scissorTest        = gcvFALSE;
+            status = gcoSURF_BlitCPU(&blitArgs);
+        }
+        else
+        {
+            /* Skip SW GENERATION for low levels */
+        }
+    }
+
     /* Return status. */
     gcmFOOTER();
     return status;
+}
+
+
+/*******************************************************************************
+**
+**  gcoSURF_GetResolveAlignment
+**
+**  Query the resolve alignment of the hardware.
+**
+**  INPUT:
+**
+**      gcsSURF_INFO_PTR Surface,
+**          Pointer to an surface info.
+**
+**  OUTPUT:
+**
+**      gctUINT *originX,
+**          X direction origin alignment
+**
+**      gctUINT *originY
+**          Y direction origin alignemnt
+**
+**      gctUINT *sizeX,
+**          X direction size alignment
+**
+**      gctUINT *sizeY
+**          Y direction size alignemnt
+**
+*/
+gceSTATUS
+gcoSURF_GetResolveAlignment(
+    IN gcoSURF Surface,
+    OUT gctUINT *originX,
+    OUT gctUINT *originY,
+    OUT gctUINT *sizeX,
+    OUT gctUINT *sizeY
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Surface=0x%x", Surface);
+
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+
+    /* Query the tile sizes through gcoHARDWARE. */
+    status = gcoHARDWARE_GetSurfaceResolveAlignment(gcvNULL, &Surface->info, originX, originY, sizeX, sizeY);
+
+    gcmFOOTER_ARG("status=%d *originX=%d *originY=%d *sizeX=%d *sizeY=%d",
+                  status, gcmOPT_VALUE(originX), gcmOPT_VALUE(originY),
+                  gcmOPT_VALUE(sizeX), gcmOPT_VALUE(sizeY));
+    return status;
+}
+
+
+gceSTATUS gcoSURF_TranslateRotationRect(
+    gcsSIZE_PTR rtSize,
+    gceSURF_ROTATION rotation,
+    gcsRECT * rect
+    )
+{
+    gctFLOAT tx,ty,tz,tw;
+    gctFLOAT tmp;
+
+    tx  = (gctFLOAT)rect->left;
+    ty  = (gctFLOAT)rect->top;
+
+    tz  = (gctFLOAT)rect->right;
+    tw  = (gctFLOAT)rect->bottom;
+
+    /* 1, translate to rt center */
+    tx = tx - (gctFLOAT)rtSize->width / 2.0f;
+    ty = ty - (gctFLOAT)rtSize->height / 2.0f;
+
+    tz = tz - (gctFLOAT)rtSize->width / 2.0f;
+    tw = tw - (gctFLOAT)rtSize->height / 2.0f;
+
+    /* cos? -sin?    90D  x = -y  180D x = -x 270D x = y
+       sin? cos?          y = x        y = -y      y = -x */
+
+    switch (rotation)
+    {
+        case gcvSURF_90_DEGREE:
+            /* 2, rotate */
+            tmp = tx;
+            tx  = -ty;
+            ty  = tmp;
+
+            tmp = tz;
+            tz  = -tw;
+            tw  = tmp;
+            /* 3, translate back  */
+            tx = tx + (gctFLOAT)rtSize->height / 2.0f;
+            ty = ty + (gctFLOAT)rtSize->width / 2.0f;
+
+            tz = tz + (gctFLOAT)rtSize->height / 2.0f;
+            tw = tw + (gctFLOAT)rtSize->width / 2.0f;
+
+            /* Form the new (left,top) (right,bottom) */
+            rect->left   = (gctINT32)tz;
+            rect->top    = (gctINT32)ty;
+            rect->right  = (gctINT32)tx;
+            rect->bottom = (gctINT32)tw;
+            break;
+
+        case gcvSURF_270_DEGREE:
+            /* 2, rotate */
+            tmp = tx;
+            tx  = ty;
+            ty  = -tmp;
+
+            tmp = tz;
+            tz  = tw;
+            tw  = -tmp;
+            /* 3, translate back  */
+            tx = tx + (gctFLOAT)rtSize->height / 2.0f;
+            ty = ty + (gctFLOAT)rtSize->width / 2.0f;
+
+            tz = tz + (gctFLOAT)rtSize->height / 2.0f;
+            tw = tw + (gctFLOAT)rtSize->width / 2.0f;
+
+            /* Form the new (left,top) (right,bottom) */
+            rect->left   = (gctINT32)tx;
+            rect->top    = (gctINT32)tw;
+            rect->right  = (gctINT32)tz;
+            rect->bottom = (gctINT32)ty;
+            break;
+
+         default :
+            break;
+    }
+
+    return gcvSTATUS_OK;
 }
 
 /*******************************************************************************
@@ -3680,6 +6940,7 @@ OnError:
 **          Pointer to a gcoSURF object that represents the destination surface
 **          to resolve into.
 **
+**
 **  OUTPUT:
 **
 **      Nothing.
@@ -3690,11 +6951,65 @@ gcoSURF_Resolve(
     IN gcoSURF DestSurface
     )
 {
+    gceSTATUS status;
+
+    gcsSURF_RESOLVE_ARGS args;
+
+    gcmHEADER_ARG("SrcSurface=0x%x DestSurface=0x%x", SrcSurface, DestSurface);
+
+    args.version = gcvHAL_ARG_VERSION_V1;
+
+    args.uArgs.v1.yInverted = gcvFALSE;
+
+    status = gcoSURF_ResolveEx(SrcSurface,
+                               DestSurface,
+                               &args);
+
+    gcmFOOTER();
+
+    return status;
+
+}
+
+
+/*******************************************************************************
+**
+**  gcoSURF_ResolveEx
+**
+**  Resolve the surface to the frame buffer.  Resolve means that the frame is
+**  finished and should be displayed into the frame buffer, either by copying
+**  the data or by flipping to the surface, depending on the hardware's
+**  capabilities.
+**
+**  INPUT:
+**
+**      gcoSURF SrcSurface
+**          Pointer to a gcoSURF object that represents the source surface
+**          to be resolved.
+**
+**      gcoSURF DestSurface
+**          Pointer to a gcoSURF object that represents the destination surface
+**          to resolve into.
+**
+**      gcsSURF_RESOLVE_ARGS *args
+**          Pointer to extra resolve argument (multi-version)
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoSURF_ResolveEx(
+    IN gcoSURF SrcSurface,
+    IN gcoSURF DestSurface,
+    IN gcsSURF_RESOLVE_ARGS *args
+    )
+{
     gcsPOINT rectOrigin;
     gcsPOINT rectSize;
     gceSTATUS status;
 
-    gcmHEADER_ARG("SrcSurface=0x%x DestSurface=0x%x", SrcSurface, DestSurface);
+    gcmHEADER_ARG("SrcSurface=0x%x DestSurface=0x%x args=0x%x", SrcSurface, DestSurface, args);
 
     /* Validate the surfaces. */
     gcmVERIFY_OBJECT(SrcSurface, gcvOBJ_SURF);
@@ -3707,9 +7022,9 @@ gcoSURF_Resolve(
     rectSize.y   = DestSurface->info.alignedHeight;
 
     /* Call generic function. */
-    status = gcoSURF_ResolveRect(
+    status = gcoSURF_ResolveRectEx(
         SrcSurface, DestSurface,
-        &rectOrigin, &rectOrigin, &rectSize
+        &rectOrigin, &rectOrigin, &rectSize, args
         );
 
     gcmFOOTER();
@@ -3718,386 +7033,9 @@ gcoSURF_Resolve(
 
 /*******************************************************************************
 **
-**  gcoSURF_PrepareRemoteResolveRect
-**
-**  Save the resovle info the kernel.
-**
-**  INPUT:
-**
-**      gcoSURF SrcSurface
-**          Pointer to a gcoSURF object that represents the source surface
-**          to be resolved.
-**
-**      gcsPOINT_PTR SrcOrigin
-**          The origin of the source area to be resolved.
-**
-**      gcsPOINT_PTR DestOrigin
-**          The origin of the destination area to be resolved.
-**
-**      gcsPOINT_PTR RectSize
-**          The size of the rectangular area to be resolved.
-**
-**  OUTPUT:
-**
-**      Nothing.
-*/
-gceSTATUS
-gcoSURF_PrepareRemoteResolveRect(
-    IN gcoSURF SrcSurface,
-    IN gcsPOINT_PTR SrcOrigin,
-    IN gcsPOINT_PTR DestOrigin,
-    IN gcsPOINT_PTR RectSize
-    )
-{
-    gceSTATUS status;
-    gcsVIDMEM_NODE_SHARED_INFO DynamicInfo;
-
-    gcmHEADER_ARG("SrcSurface=0x%x SrcOrigin=0x%x "
-                  "DestOrigin=0x%x RectSize=0x%x",
-                  SrcSurface, SrcOrigin, DestOrigin, RectSize);
-
-    /* Validate the surfaces. */
-    gcmVERIFY_OBJECT(SrcSurface, gcvOBJ_SURF);
-    gcmVERIFY_ARGUMENT(SrcOrigin != gcvNULL);
-    gcmVERIFY_ARGUMENT(DestOrigin != gcvNULL);
-    gcmVERIFY_ARGUMENT(RectSize != gcvNULL);
-
-    do
-    {
-        gcmERR_BREAK(gcoHARDWARE_FlushPipe());
-        gcmERR_BREAK(gcoHARDWARE_FlushTileStatus(&SrcSurface->info,
-                                                 gcvFALSE));
-        DynamicInfo.SrcOrigin.x = SrcOrigin->x;
-        DynamicInfo.SrcOrigin.y = SrcOrigin->y;
-        DynamicInfo.DestOrigin.x = DestOrigin->x;
-        DynamicInfo.DestOrigin.y = DestOrigin->y;
-        DynamicInfo.RectSize.width = RectSize->x;
-        DynamicInfo.RectSize.height = RectSize->y;
-        DynamicInfo.tileStatusDisabled = SrcSurface->info.tileStatusDisabled;
-        DynamicInfo.clearValue = SrcSurface->info.clearValue;
-
-        gcmERR_BREAK(gcoHAL_SetSharedInfo(0,
-                                          gcvNULL,
-                                          0,
-                                          SrcSurface->info.node.u.normal.node,
-                                          (gctUINT8_PTR)(&DynamicInfo),
-                                          gcvVIDMEM_INFO_GENERIC));
-
-    }
-    while(gcvFALSE);
-
-    /* Return the status. */
-    gcmFOOTER();
-    return status;
-}
-
-/*******************************************************************************
-**
-**  gcoSURF_ResolveFromStoredRect
-**
-**  Resolve using the rectangle info previously saved in the vid mem node,
-**  possibly by another process. Rectangle must be aligned.
-**
-**  INPUT:
-**
-**      gcoSURF SrcSurface
-**          gcoSURF object that represents the source surface
-**          to be resolved.
-**
-**      gcoSURF DestSurface
-**          gcoSURF object that represents the destination surface
-**          to resolve into.
-**
-**  OUTPUT:
-**
-**      Nothing.
-*/
-gceSTATUS
-gcoSURF_ResolveFromStoredRect(
-    IN gcoSURF SrcSurface,
-    IN gcoSURF DestSurface
-    )
-{
-    gceSTATUS status = gcvSTATUS_OK;
-    gcsPOINT Origin, RectSize;
-    gcsVIDMEM_NODE_SHARED_INFO DynamicInfo;
-    gctBOOL fullSize;
-
-    gcmHEADER_ARG("SrcSurface=0x%x DestSurface=0x%x",
-                  SrcSurface, DestSurface);
-
-    gcmVERIFY_OBJECT(SrcSurface, gcvOBJ_SURF);
-    gcmVERIFY_OBJECT(DestSurface, gcvOBJ_SURF);
-
-    do
-    {
-        gcmERR_BREAK(gcoHAL_GetSharedInfo(0,
-                                          0,
-                                          gcvNULL,
-                                          0,
-                                          SrcSurface->info.node.u.normal.node,
-                                          (gctUINT8_PTR)(&DynamicInfo),
-                                          gcvVIDMEM_INFO_DIRTY_RECTANGLE));
-
-        fullSize = ((DynamicInfo.RectSize.width == 0) ||
-                            (DynamicInfo.RectSize.height == 0) ||
-                            ((gctUINT)DynamicInfo.SrcOrigin.x + (gctUINT)DynamicInfo.RectSize.width > SrcSurface->info.alignedWidth) ||
-                            ((gctUINT)DynamicInfo.SrcOrigin.y + (gctUINT)DynamicInfo.RectSize.height > SrcSurface->info.alignedHeight));
-
-        if (fullSize)
-        {
-            gcmERR_BREAK(gcoSURF_Resolve(SrcSurface,
-                                         DestSurface));
-        }
-        else
-        {
-            /* Src and Dst have identical geometries, so we use the same origin and size. */
-            Origin.x = DynamicInfo.SrcOrigin.x;
-            Origin.y = DynamicInfo.SrcOrigin.y;
-            RectSize.x = DynamicInfo.RectSize.width;
-            RectSize.y = DynamicInfo.RectSize.height;
-
-            gcmERR_BREAK(gcoSURF_ResolveRect(SrcSurface,
-                                             DestSurface,
-                                             &Origin,
-                                             &Origin,
-                                             &RectSize));
-        }
-    }
-    while(gcvFALSE);
-
-    /* Return the status. */
-    gcmFOOTER();
-    return status;
-}
-
-/*******************************************************************************
-**
-**  gcoSURF_ExportRenderTarget
-**
-**  Save the Surface Info into the kernel.
-**
-**  INPUT:
-**
-**      gcoSURF SrcSurface
-**          Pointer to a gcoSURF object that represents the source surface
-**          to be resolved.
-**
-**  OUTPUT:
-**
-**      Nothing.
-*/
-gceSTATUS
-gcoSURF_ExportRenderTarget(
-    IN gcoSURF SrcSurface
-)
-{
-    gceSTATUS status;
-
-    gcmHEADER_ARG("SrcSurface=0x%x", SrcSurface);
-
-    /* Validate the surfaces. */
-    gcmVERIFY_OBJECT(SrcSurface, gcvOBJ_SURF);
-    do
-    {
-        gcmERR_BREAK(gcoHAL_SetSharedInfo((gctUINT32)gcoOS_GetCurrentProcessID(),
-                                          (gctUINT8_PTR)(SrcSurface),
-                                          sizeof(*SrcSurface),
-                                          gcvNULL,
-                                          0,
-                                          gcvVIDMEM_INFO_GENERIC));
-    }
-    while(gcvFALSE);
-
-    /* Return the status. */
-    gcmFOOTER();
-    return status;
-}
-
-/*******************************************************************************
-**
-**  gcoSURF_ImportRenderTarget
-**
-**  Save the Surface Info into the kernel.
-**
-**  INPUT:
-**
-**      gctUINT32 Pid
-**          The process ID that saved the info.
-**
-**      gcoSURF SrcSurface
-**          Pointer to a gcoSURF object that represents the source surface
-**          to be resolved.
-**
-**  OUTPUT:
-**
-**      Nothing.
-*/
-gceSTATUS
-gcoSURF_ImportRenderTarget(
-    IN gctUINT32 Pid,
-    IN gcoSURF SrcSurface
-)
-{
-    gceSTATUS status;
-
-    gcmHEADER_ARG("Pid=%d SrcSurface=0x%x", Pid, SrcSurface);
-
-    /* Validate the surfaces. */
-    gcmVERIFY_OBJECT(SrcSurface, gcvOBJ_SURF);
-    do
-    {
-        gcmERR_BREAK(gcoHAL_GetSharedInfo(Pid,
-                                          Pid,
-                                          (gctUINT8_PTR)(SrcSurface),
-                                          sizeof(*SrcSurface),
-                                          gcvNULL,
-                                          0,
-                                          gcvVIDMEM_INFO_GENERIC));
-    }
-    while(gcvFALSE);
-    /* Return the status. */
-    gcmFOOTER();
-    return status;
-}
-
-/*******************************************************************************
-**
-**  gcoSURF_RemoteResolveRect
-**
-**  Resolve using the info that process Pid saved.
-**
-**  INPUT:
-**
-**      gcoSURF SrcSurface
-**          Pointer to a gcoSURF object that represents the source surface
-**          to be resolved.
-**
-**      gcoSURF DestSurface
-**          Pointer to a gcoSURF object that represents the destination surface
-**          to resolve into.
-**
-**  OUTPUT:
-**
-**      Nothing.
-*/
-gceSTATUS
-gcoSURF_RemoteResolveRect(
-    IN gcoSURF SrcSurface,
-    IN gcoSURF DestSurface,
-    IN gctBOOL *resolveDiscarded
-    )
-{
-    gceSTATUS status;
-    gcsPOINT SrcOrigin, DestOrigin, RectSize;
-    gctPOINTER source[3];
-    gctBOOL savedtileStatusDisabled;
-    gcsSURF_INFO_PTR currentSurface = gcvNULL;
-    gcsVIDMEM_NODE_SHARED_INFO DynamicInfo;
-    gctUINT32 savedclearValue;
-
-    gcmHEADER_ARG("SrcSurface=0x%x DestSurface=0x%x",
-                  SrcSurface, DestSurface);
-
-    gcmVERIFY_OBJECT(SrcSurface, gcvOBJ_SURF);
-    gcmVERIFY_OBJECT(DestSurface, gcvOBJ_SURF);
-    do
-    {
-        gcmERR_BREAK(gcoHAL_GetSharedInfo(0,
-                                          0,
-                                          gcvNULL,
-                                          0,
-                                          SrcSurface->info.node.u.normal.node,
-                                          (gctUINT8_PTR)(&DynamicInfo),
-                                          gcvVIDMEM_INFO_GENERIC));
-        if ((DynamicInfo.RectSize.width == 0) || (DynamicInfo.RectSize.height == 0))
-        {
-            /* Discard. */
-            *resolveDiscarded = gcvTRUE;
-            break;
-        }
-
-        savedtileStatusDisabled = SrcSurface->info.tileStatusDisabled;
-        savedclearValue = SrcSurface->info.clearValue;
-        SrcOrigin.x = DynamicInfo.SrcOrigin.x;
-        SrcOrigin.y = DynamicInfo.SrcOrigin.y;
-        DestOrigin.x = DynamicInfo.DestOrigin.x;
-        DestOrigin.y = DynamicInfo.DestOrigin.y;
-        RectSize.x = DynamicInfo.RectSize.width;
-        RectSize.y = DynamicInfo.RectSize.height;
-        SrcSurface->info.tileStatusDisabled = DynamicInfo.tileStatusDisabled;
-        SrcSurface->info.clearValue = DynamicInfo.clearValue;
-
-        gcmERR_BREAK(gcoHARDWARE_FlushPipe());
-        gcmERR_BREAK(gcoHARDWARE_FlushTileStatus(&SrcSurface->info,
-                                                 gcvFALSE));
-
-        gcmERR_BREAK(gcoHARDWARE_GetCurrentSurface(&currentSurface));
-        gcmERR_BREAK(gcoHARDWARE_SetCurrentSurface(&SrcSurface->info));
-        gcmERR_BREAK(gcoSURF_Lock(SrcSurface, gcvNULL, source));
-        gcmERR_BREAK(gcoSURF_SetTileStatus(SrcSurface));
-        gcmERR_BREAK(gcoSURF_ResolveRect(SrcSurface,
-                                         DestSurface,
-                                         &SrcOrigin,
-                                         &DestOrigin,
-                                         &RectSize));
-
-        gcmERR_BREAK(gcoSURF_DisableTileStatus(SrcSurface, gcvFALSE));
-        gcmERR_BREAK(gcoHARDWARE_SetCurrentSurface(currentSurface));
-        SrcSurface->info.tileStatusDisabled = savedtileStatusDisabled;
-        SrcSurface->info.clearValue = savedclearValue;
-        gcmERR_BREAK(gcoSURF_Unlock(SrcSurface, source[0]));
-    }
-    while(gcvFALSE);
-
-    /* Return the status. */
-    gcmFOOTER();
-    return status;
-}
-
-/*******************************************************************************
-**
-**  gcoSURF_GetRTSignal
-**
-**  Return the "resolve submitted indicator" signal.
-**
-**  INPUT:
-**
-**      gcoSURF RTSurface
-**          A gcoSURF object that represents a render target
-**
-**  OUTPUT:
-**
-**      resolveSubmittedSignal
-**          Signal used by SF to indicate that resolve for this surface
-**          has been submitted to hardware.
-*/
-gceSTATUS
-gcoSURF_GetRTSignal(
-    IN gcoSURF RTSurface,
-    OUT gctSIGNAL * resolveSubmittedSignal
-    )
-{
-#if defined(ANDROID) && gcdDEFER_RESOLVES
-    gcmHEADER_ARG("RTSurface=0x%x resolveSubmittedSignal=0x%x",
-                  RTSurface, resolveSubmittedSignal);
-
-    gcmVERIFY_OBJECT(RTSurface, gcvOBJ_SURF);
-    gcmASSERT(RTSurface->info.type == gcvSURF_RENDER_TARGET);
-
-    *resolveSubmittedSignal = RTSurface->resolveSubmittedSignal;
-
-    /* Return the status. */
-    gcmFOOTER_NO();
-#endif
-    return gcvSTATUS_OK;
-}
-
-/*******************************************************************************
-**
 **  gcoSURF_ResolveRect
 **
-**  Resolve a rectangluar area of a surface to another surface.
+**  Resolve a rectangular area of a surface to another surface.
 **
 **  INPUT:
 **
@@ -4132,12 +7070,82 @@ gcoSURF_ResolveRect(
     )
 {
     gceSTATUS status;
+    gcsSURF_RESOLVE_ARGS args;
+    gcmHEADER_ARG("SrcSurface=0x%x DestSurface=0x%x SrcOrigin=0x%x "
+                  "DestOrigin=0x%x RectSize=0x%x",
+                  SrcSurface, DestSurface, SrcOrigin, DestOrigin, RectSize);
+
+    args.version = gcvHAL_ARG_VERSION_V1;
+
+    args.uArgs.v1.yInverted = gcvFALSE;
+
+    status = gcoSURF_ResolveRectEx(SrcSurface,
+                                   DestSurface,
+                                   SrcOrigin,
+                                   DestOrigin,
+                                   RectSize,
+                                   &args);
+
+
+    gcmFOOTER();
+
+    return status;
+
+}
+
+
+/*******************************************************************************
+**
+**  gcoSURF_ResolveRectEx
+**
+**  Resolve a rectangular area of a surface to another surface.
+**  Support explicilitly yInverted resolve request in argument.
+**  Note: RS only support tile<->linear yInverted resolve, other
+**        case will be fallbacked to SW.
+**
+**  INPUT:
+**
+**      gcoSURF SrcSurface
+**          Pointer to a gcoSURF object that represents the source surface
+**          to be resolved.
+**
+**      gcoSURF DestSurface
+**          Pointer to a gcoSURF object that represents the destination surface
+**          to resolve into.
+**
+**      gcsPOINT_PTR SrcOrigin
+**          The origin of the source area to be resolved.
+**
+**      gcsPOINT_PTR DestOrigin
+**          The origin of the destination area to be resolved.
+**
+**      gcsPOINT_PTR RectSize
+**          The size of the rectangular area to be resolved.
+**
+**      gcsSURF_RESOLVE_ARGS *args
+**          Point to extra resolve argument (multiple-version)
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoSURF_ResolveRectEx(
+    IN gcoSURF SrcSurface,
+    IN gcoSURF DestSurface,
+    IN gcsPOINT_PTR SrcOrigin,
+    IN gcsPOINT_PTR DestOrigin,
+    IN gcsPOINT_PTR RectSize,
+    IN gcsSURF_RESOLVE_ARGS *args
+    )
+{
+    gceSTATUS status;
     gctPOINTER source[3];
     gctPOINTER target[3];
 
     gcmHEADER_ARG("SrcSurface=0x%x DestSurface=0x%x SrcOrigin=0x%x "
-                  "DestOrigin=0x%x RectSize=0x%x",
-                  SrcSurface, DestSurface, SrcOrigin, DestOrigin, RectSize);
+                  "DestOrigin=0x%x RectSize=0x%x args=0x%x",
+                  SrcSurface, DestSurface, SrcOrigin, DestOrigin, RectSize, args);
 
     /* Validate the surfaces. */
     gcmVERIFY_OBJECT(SrcSurface, gcvOBJ_SURF);
@@ -4145,13 +7153,26 @@ gcoSURF_ResolveRect(
     gcmVERIFY_ARGUMENT(SrcOrigin != gcvNULL);
     gcmVERIFY_ARGUMENT(DestOrigin != gcvNULL);
     gcmVERIFY_ARGUMENT(RectSize != gcvNULL);
+    gcmVERIFY_ARGUMENT(args != gcvNULL);
 
     do
     {
         gcsPOINT rectSize;
         gctUINT32 physical[3] = {0};
-        gctINT maxWidth;
-        gctINT maxHeight;
+        gctINT srcMaxWidth, srcMaxHeight;
+        gctINT dstMaxWidth, dstMaxHeight;
+        gctBOOL resampleBlt = gcvFALSE;
+        gctBOOL yInverted = gcvFALSE;
+
+        if ((DestOrigin->x == (gctINT) RESAMPLE_FLAG) &&
+            (DestOrigin->y == (gctINT) RESAMPLE_FLAG))
+        {
+            resampleBlt = gcvTRUE;
+            DestOrigin->x = SrcOrigin->x;
+            DestOrigin->y = SrcOrigin->y;
+        }
+
+        yInverted = args->uArgs.v1.yInverted;
 
         /* Reset lock pointers. */
         source[0] = gcvNULL;
@@ -4161,16 +7182,12 @@ gcoSURF_ResolveRect(
         gcmERR_BREAK(gcoSURF_Lock(SrcSurface, gcvNULL, source));
         gcmERR_BREAK(gcoSURF_Lock(DestSurface, physical, target));
 
-        gcmERR_BREAK(
-            gcoHARDWARE_FlushTileStatus(&SrcSurface->info,
-                                        gcvFALSE));
+        DestSurface->info.canDropStencilPlane = SrcSurface->info.canDropStencilPlane;
 
-#ifndef __QNXNTO__
-        /* Fix bug3508, there is garbage when running tutorial3_es20 on BG2 Android*/
-        if (SrcSurface->info.type == gcvSURF_TEXTURE)
-        {
-            gcoSURF_CPUCacheOperation(SrcSurface, gcvCACHE_INVALIDATE);
-        }
+        gcmERR_BREAK(
+            gcoHARDWARE_FlushTileStatus(gcvNULL,
+                                        &SrcSurface->info,
+                                        gcvFALSE));
 
         if (SrcSurface->info.type == gcvSURF_BITMAP)
         {
@@ -4190,53 +7207,115 @@ gcoSURF_ResolveRect(
                 DestSurface->info.size,
                 gcvCACHE_FLUSH));
         }
-#endif
 
-        /* Determine the resolve size. */
-        if ((DestOrigin->x == 0) &&
-            (DestOrigin->y == 0) &&
-            (RectSize->x == DestSurface->info.rect.right) &&
-            (RectSize->y == DestSurface->info.rect.bottom))
+        /* Make sure we don't go beyond the source surface. */
+        srcMaxWidth  = SrcSurface->info.alignedWidth  - SrcOrigin->x;
+        srcMaxHeight = SrcSurface->info.alignedHeight - SrcOrigin->y;
+
+        /* Make sure we don't go beyond the target surface. */
+        dstMaxWidth  = DestSurface->info.alignedWidth  - DestOrigin->x;
+        dstMaxHeight = DestSurface->info.alignedHeight - DestOrigin->y;
+
+        if (resampleBlt)
         {
-            /* Full destination resolve, a special case. */
-            rectSize.x = DestSurface->info.alignedWidth;
-            rectSize.y = DestSurface->info.alignedHeight;
+            /* Determine the resolve size. */
+            if ((DestOrigin->x == 0) &&
+                (RectSize->x == DestSurface->info.rect.right) &&
+                (DestSurface->info.alignedWidth <= SrcSurface->info.alignedWidth / SrcSurface->info.samples.x))
+            {
+                /* take destination aligned size only if source is MSAA-required aligned accordingly. */
+                rectSize.x = DestSurface->info.alignedWidth;
+            }
+            else
+            {
+                rectSize.x = gcmMIN(dstMaxWidth, (gctINT)(SrcSurface->info.alignedWidth / SrcSurface->info.samples.x));
+            }
+
+            /* Determine the resolve size. */
+            if ((DestOrigin->y == 0) &&
+                (RectSize->y == DestSurface->info.rect.bottom)&&
+                (DestSurface->info.alignedHeight <= SrcSurface->info.alignedHeight / SrcSurface->info.samples.y))
+            {
+                /* take destination aligned size only if source is MSAA-required aligned accordingly. */
+                rectSize.y = DestSurface->info.alignedHeight;
+            }
+            else
+            {
+                rectSize.y = gcmMIN(dstMaxHeight, (gctINT)(SrcSurface->info.alignedHeight / SrcSurface->info.samples.y));
+            }
+
+            gcmASSERT(rectSize.x <= srcMaxWidth);
+            gcmASSERT(rectSize.y <= srcMaxHeight);
+            gcmASSERT(rectSize.x <= dstMaxWidth);
+            gcmASSERT(rectSize.y <= dstMaxHeight);
         }
         else
         {
-            rectSize.x = RectSize->x;
-            rectSize.y = RectSize->y;
+            /* Determine the resolve size. */
+            if ((DestOrigin->x == 0) &&
+                (RectSize->x >= DestSurface->info.rect.right))
+            {
+                /* Full width resolve, a special case. */
+                rectSize.x = DestSurface->info.alignedWidth;
+            }
+            else
+            {
+                rectSize.x = RectSize->x;
+            }
+
+            if ((DestOrigin->y == 0) &&
+                (RectSize->y >= DestSurface->info.rect.bottom))
+            {
+                /* Full height resolve, a special case. */
+                rectSize.y = DestSurface->info.alignedHeight;
+            }
+            else
+            {
+                rectSize.y = RectSize->y;
+            }
+
+            rectSize.x = gcmMIN(srcMaxWidth,  rectSize.x);
+            rectSize.y = gcmMIN(srcMaxHeight, rectSize.y);
+
+            rectSize.x = gcmMIN(dstMaxWidth,  rectSize.x);
+            rectSize.y = gcmMIN(dstMaxHeight, rectSize.y);
+
         }
-
-        /* Disable the source surface alignment for now. This in some cases
-           will cause resolve to go beyond the source surface (might happen
-           for texture, for example, since it is 4x4 and not 16x4 aligned),
-           but since this is not destructive behaviour, it should be OK for
-           now. Currently, if the source algnment is enabled, it will cause
-           gcoHARDWARE_ResolveRect to choose a different way of resolving,
-           which is using 2D and has other issues as well and will fail. */
-#ifndef __QNXNTO__
-        /* Make sure we don't go beyond the source surface. */
-        maxWidth  = SrcSurface->info.alignedWidth  - SrcOrigin->x;
-        maxHeight = SrcSurface->info.alignedHeight - SrcOrigin->y;
-
-        rectSize.x = gcmMIN(maxWidth,  rectSize.x);
-        rectSize.y = gcmMIN(maxHeight, rectSize.y);
-#endif
-
-        /* Make sure we don't go beyond the target surface. */
-        maxWidth  = DestSurface->info.alignedWidth  - DestOrigin->x;
-        maxHeight = DestSurface->info.alignedHeight - DestOrigin->y;
-
-        rectSize.x = gcmMIN(maxWidth,  rectSize.x);
-        rectSize.y = gcmMIN(maxHeight, rectSize.y);
 
         if (DestSurface->info.hzNode.valid)
         {
             /* Disable any HZ attached to destination. */
-            DestSurface->info.hzNode.size = 0;
+            DestSurface->info.hzDisabled = gcvTRUE;
         }
 
+
+
+        /*
+        ** 1, gcoHARDWARE_ResolveRect can't handle multi-layer source/dest.
+        ** 2, Fake format, except padding channel ones.
+        ** 3, gcoHARDWARE_ResolveRect can't handle non unsigned normalized source/dest
+        ** For those cases, just fall back to generic copy pixels path.
+        */
+        if (((SrcSurface->info.formatInfo.layers > 1)                                            ||
+             (DestSurface->info.formatInfo.layers > 1)                                           ||
+             (SrcSurface->info.formatInfo.fakedFormat &&
+             /* Faked format, but not paddingFormat with default value padded, go SW */
+              !(SrcSurface->info.paddingFormat && !SrcSurface->info.garbagePadded)
+             )                                                                                   ||
+             (DestSurface->info.formatInfo.fakedFormat && !DestSurface->info.paddingFormat)      ||
+             (SrcSurface->info.formatInfo.fmtDataType != gcvFORMAT_DATATYPE_UNSIGNED_NORMALIZED) ||
+             (DestSurface->info.formatInfo.fmtDataType != gcvFORMAT_DATATYPE_UNSIGNED_NORMALIZED)
+            ) &&
+            ((SrcSurface->info.format != gcvSURF_S8) || (DestSurface->info.format != gcvSURF_S8))
+           )
+        {
+
+            gcmERR_BREAK(gcoSURF_CopyPixels(SrcSurface, DestSurface,
+                               SrcOrigin->x, SrcOrigin->y,
+                               DestOrigin->x, DestOrigin->y,
+                               rectSize.x,(yInverted ? -rectSize.y : rectSize.y)));
+            break;
+        }
 
         /* Special case a resolve from the depth buffer with tile status. */
         if ((SrcSurface->info.type == gcvSURF_DEPTH)
@@ -4245,49 +7324,56 @@ gcoSURF_ResolveRect(
         {
             /* Resolve a depth buffer. */
             gcmERR_BREAK(
-                gcoHARDWARE_ResolveDepth((SrcSurface->info.tileStatusNode.pool == gcvPOOL_UNKNOWN)
-                                         ? ~0U
-                                         : SrcSurface->info.tileStatusNode.physical,
+                gcoHARDWARE_ResolveDepth(gcvNULL,
                                          &SrcSurface->info,
                                          &DestSurface->info,
                                          SrcOrigin,
                                          DestOrigin,
-                                         &rectSize));
+                                         &rectSize,
+                                         yInverted));
         }
         else
         {
-#if gcdANDROID_UNALIGNED_LINEAR_COMPOSITION_ADJUST
-            if(SrcSurface->info.linearResolvePhysical != 0 ||
-               SrcSurface->info.linearResolveLogical  != 0 )
-            {
-                gctUINT32 physical = SrcSurface->info.node.physical;
-                gctPOINTER logical = SrcSurface->info.node.logical;
+#if defined(ANDROID) && gcdANDROID_UNALIGNED_LINEAR_COMPOSITION_ADJUST
+            /*
+             * If flip bitmap is used as RS source, we need to calculate the
+             * real pixel address before hw operation.
+             */
+            gctUINT32 physical;
+            gctUINT8_PTR logical;
 
-                SrcSurface->info.node.physical  = SrcSurface->info.linearResolvePhysical;
-                SrcSurface->info.node.logical   = SrcSurface->info.linearResolveLogical;
+            /* Save original addresses. */
+            physical = SrcSurface->info.node.physical;
+            logical  = SrcSurface->info.node.logical;
 
-                /* Perform resolve. */
-                gcmERR_BREAK(
-                    gcoHARDWARE_ResolveRect(&SrcSurface->info,
-                                            &DestSurface->info,
-                                            SrcOrigin,
-                                            DestOrigin,
-                                            &rectSize));
-
-                SrcSurface->info.node.physical = physical;
-                SrcSurface->info.node.logical  = logical;
-            }
-            else
+            /* Calculate flip bitmap pixel addresses. */
+            SrcSurface->info.node.physical += SrcSurface->info.flipBitmapOffset;
+            SrcSurface->info.node.logical  += SrcSurface->info.flipBitmapOffset;
 #endif
-            {
+
             /* Perform resolve. */
             gcmERR_BREAK(
-                gcoHARDWARE_ResolveRect(&SrcSurface->info,
+                gcoHARDWARE_ResolveRect(gcvNULL,
+                                        &SrcSurface->info,
                                         &DestSurface->info,
                                         SrcOrigin,
                                         DestOrigin,
-                                        &rectSize));
-            }
+                                        &rectSize,
+                                        yInverted));
+
+#if defined(ANDROID) && gcdANDROID_UNALIGNED_LINEAR_COMPOSITION_ADJUST
+            /* Restore addresses. */
+            SrcSurface->info.node.physical = physical;
+            SrcSurface->info.node.logical  = logical;
+#endif
+        }
+
+        /* If dst surface was fully overwritten, reset the deferDither3D flag. */
+        if (gcoHARDWARE_IsFeatureAvailable(gcvNULL, gcvFEATURE_PE_DITHER_FIX) == gcvFALSE &&
+            DestOrigin->x == 0 && RectSize->x >= DestSurface->info.rect.right  / DestSurface->info.samples.x &&
+            DestOrigin->y == 0 && RectSize->y >= DestSurface->info.rect.bottom / DestSurface->info.samples.y)
+        {
+            DestSurface->info.deferDither3D = gcvFALSE;
         }
     }
     while (gcvFALSE);
@@ -4307,13 +7393,256 @@ gcoSURF_ResolveRect(
     gcmFOOTER();
     return status;
 }
-#endif /* VIVANTE_NO_3D */
 
+
+
+static gceSTATUS
+_3DBlitClearRect(
+    IN gcoSURF Surface,
+    IN gcsSURF_CLEAR_ARGS_PTR ClearArgs,
+    IN gctUINT32 LayerIndex
+    )
+{
+    gceSTATUS status;
+    gcsPOINT origin, rectSize;
+    gcs3DBLIT_INFO clearInfo = {0};
+    gcs3DBLIT_INFO hzClearInfo = {0};
+    gctBOOL fastClear = gcvFALSE;
+    gctBOOL supportFastClear = gcvTRUE, hzSupportFastClear = gcvTRUE;
+    gcsRECT_PTR rect = ClearArgs->clearRect;
+    gcsSAMPLES originSamples;
+    gctBOOL clearHZ = ((ClearArgs->flags & gcvCLEAR_DEPTH) && Surface->info.hzNode.pool != gcvPOOL_UNKNOWN);
+
+    origin.x = ClearArgs->clearRect->left;
+    origin.y = ClearArgs->clearRect->top;
+    rectSize.x = ClearArgs->clearRect->right - ClearArgs->clearRect->left;
+    rectSize.y = ClearArgs->clearRect->bottom - ClearArgs->clearRect->top;
+
+    if ((ClearArgs->flags & gcvCLEAR_STENCIL) && Surface->info.hasStencilComponent)
+    {
+        Surface->info.canDropStencilPlane = gcvFALSE;
+    }
+
+    /* Test for entire surface clear. */
+    if ((rect->left == 0)  &&  (rect->top == 0)
+    &&  (rect->right >= (Surface->info.rect.right / Surface->info.samples.x))
+    &&  (rect->bottom >= (Surface->info.rect.bottom / Surface->info.samples.x))
+    )
+    {
+        fastClear = gcvTRUE;
+    }
+
+    /* Compute clear values. */
+    gcmONERROR(_ComputeClear(&Surface->info, ClearArgs, LayerIndex));
+
+    /* Prepare clearInfo. */
+    clearInfo.clearValue[0] = Surface->info.clearValue[LayerIndex];
+    clearInfo.clearValue[1] = Surface->info.clearValueUpper[LayerIndex];
+    clearInfo.clearMask = Surface->info.clearBitMask[LayerIndex];
+    clearInfo.destAddress = Surface->info.node.physical + Surface->info.offset;
+    clearInfo.destTileStatusAddress = Surface->info.tileStatusNode.physical;
+    clearInfo.origin = &origin;
+    clearInfo.rect = &rectSize;
+    if (clearInfo.clearMask == 0)
+    {
+        return gcvSTATUS_OK;
+    }
+
+    if (clearHZ)
+    {
+        /* Prepare hzClearInfo. */
+        hzClearInfo.clearValue[0] = Surface->info.clearValueHz;
+        hzClearInfo.clearValue[1] = Surface->info.clearValueHz;
+        hzClearInfo.clearMask = _ByteMaskToBitMask(0xF);
+        hzClearInfo.destAddress = Surface->info.hzNode.physical;
+        hzClearInfo.destTileStatusAddress = Surface->info.hzTileStatusNode.physical;
+        hzClearInfo.origin = &origin;
+        hzClearInfo.rect = &rectSize;
+    }
+
+        /* Check limitation of 3DBLIT to determine to use FC, HW Clear or SW clear. */
+        gcmONERROR(
+            gcoHARDWARE_3DBlitClearQuery(gcvNULL, &Surface->info, &clearInfo, &supportFastClear));
+
+        fastClear &= supportFastClear;
+
+        if (clearHZ)
+        {
+            gcmONERROR(
+                gcoHARDWARE_3DBlitClearQuery(gcvNULL, &Surface->info, &clearInfo, &hzSupportFastClear));
+
+            fastClear &= hzSupportFastClear;
+        }
+
+    gcoHARDWARE_SelectPipe(gcvNULL, gcvPIPE_3D, gcvNULL);
+
+    originSamples = Surface->info.samples;
+    Surface->info.samples.x = 1;
+    Surface->info.samples.y = 1;
+
+    /* Flush the tile status cache. */
+    gcmONERROR(
+        gcoHARDWARE_FlushTileStatus(gcvNULL, &Surface->info, gcvFALSE));
+
+    Surface->info.samples = originSamples;
+
+    gcmONERROR(
+        gcoHARDWARE_FlushPipe(gcvNULL, gcvNULL));
+
+    if (!fastClear)
+    {
+         /* Flush the tile status and decompress the buffers. */
+        gcmONERROR(gcoHARDWARE_DisableTileStatus(gcvNULL, &Surface->info, gcvTRUE));
+
+        clearInfo.destTileStatusAddress = 0;
+
+        if (clearHZ)
+        {
+            hzClearInfo.destTileStatusAddress = 0;
+        }
+    }
+
+    /* Clear. */
+    gcmONERROR(
+        gcoHARDWARE_3DBlitClear(gcvNULL, &Surface->info, &clearInfo, &origin, &rectSize));
+
+    if (clearHZ)
+    {
+        /* Clear HZ. */
+        gcmONERROR(
+            gcoHARDWARE_3DBlitClear(gcvNULL, &Surface->info, &hzClearInfo, &origin, &rectSize));
+    }
+
+    if (fastClear)
+    {
+        /* Record FC value. */
+        Surface->info.fcValue = clearInfo.clearValue[0];
+        Surface->info.fcValueUpper = clearInfo.clearValue[1];
+
+        if (clearHZ)
+        {
+            /* Record HZ FC value. */
+            Surface->info.fcValueHz = hzClearInfo.clearValue[0];
+        }
+
+        /* Turn the tile status on again. */
+        Surface->info.tileStatusDisabled = gcvFALSE;
+
+        /* Reset the tile status. */
+        gcmONERROR(gcoSURF_EnableTileStatus(Surface));
+    }
+
+    return gcvSTATUS_OK;
+
+OnError:
+    return status;
+}
+
+gceSTATUS
+gcoSURF_3DBlitClearRect(
+    IN gcoSURF Surface,
+    IN gcsSURF_CLEAR_ARGS_PTR ClearArgs
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gcsSURF_CLEAR_ARGS clearArgs;
+    gctUINT originalOffset;
+    gctUINT LayerIndex;
+    gcsRECT fullRect;
+
+    gcmHEADER_ARG("Surface=0x%x ClearArgs=0x%x", Surface, ClearArgs);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+    gcmVERIFY_ARGUMENT(ClearArgs != gcvNULL);
+
+
+    gcoOS_MemCopy(&clearArgs, ClearArgs, sizeof(gcsSURF_CLEAR_ARGS));
+
+    if (gcvNULL == clearArgs.clearRect)
+    {
+        fullRect.left = 0;
+        fullRect.top  = 0;
+        fullRect.right = Surface->info.alignedWidth;
+        fullRect.bottom = Surface->info.alignedHeight;
+        clearArgs.clearRect = &fullRect;
+    }
+
+    originalOffset = Surface->info.offset;
+    for (LayerIndex = 0; LayerIndex < Surface->info.formatInfo.layers; LayerIndex++)
+    {
+        gcmONERROR(gcoSURF_SetOffset(Surface, clearArgs.offset + Surface->info.layerSize * LayerIndex));
+
+        gcmONERROR(_3DBlitClearRect(Surface, &clearArgs, LayerIndex));
+    }
+    gcmONERROR(gcoSURF_SetOffset(Surface, originalOffset));
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gcoSURF_3DBlitBltRect(
+    IN gcoSURF SrcSurf,
+    IN gcoSURF DestSurf,
+    IN gcsPOINT_PTR SrcOrigin,
+    IN gcsPOINT_PTR DestOrigin,
+    IN gcsPOINT_PTR RectSize
+    )
+{
+    gceSTATUS status;
+    gcmHEADER_ARG("SrcSurf=0x%x DestSurf=0x%x", SrcSurf, DestSurf);
+
+    gcmONERROR(gcoHARDWARE_FlushTileStatus(gcvNULL, &SrcSurf->info, gcvFALSE));
+
+    if (!DestSurf->info.tileStatusDisabled)
+    {
+        gcmONERROR(gcoHARDWARE_DisableTileStatus(gcvNULL, &DestSurf->info, gcvTRUE));
+    }
+
+    gcmONERROR(gcoHARDWARE_3DBlitBlt(gcvNULL, &SrcSurf->info, &DestSurf->info, SrcOrigin, DestOrigin, RectSize));
+
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gcoSURF_3DBlitCopy(
+    IN gctUINT32 SrcAddress,
+    IN gctUINT32 DestAddress,
+    IN gctUINT32 Bytes
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+
+    gcmHEADER_ARG("SrcAddress=0x%x DestAddress=0x%x Bytes=0x%x",
+                  SrcAddress, DestAddress, Bytes);
+
+    gcmONERROR(gcoHARDWARE_3DBlitCopy(gcvNULL, SrcAddress, DestAddress, Bytes));
+
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    gcmFOOTER();
+    return status;
+}
+
+
+#endif /* gcdENABLE_3D */
+
+#if gcdENABLE_2D
 /*******************************************************************************
 **
 **  gcoSURF_SetClipping
 **
-**  Set cipping rectangle to the size of the surface.
+**  Set clipping rectangle to the size of the surface.
 **
 **  INPUT:
 **
@@ -4387,7 +7716,7 @@ gcoSURF_Clear2D(
     IN gctUINT32 HiColor
     )
 {
-    gceSTATUS status;
+    gceSTATUS status = gcvSTATUS_NOT_SUPPORTED;
     gctPOINTER destMemory[3] = {gcvNULL};
     gco2D engine;
 
@@ -4586,7 +7915,7 @@ gcoSURF_Line(
 **          is supported.
 **
 **      OPTIONAL gcsRECT_PTR SrcRect
-**          If RectCount is 1, SrcRect represents an sbsolute rectangle within
+**          If RectCount is 1, SrcRect represents an absolute rectangle within
 **          the source surface.
 **          If RectCount is greater then 1, (right,bottom) members of SrcRect
 **          are ignored and (left,top) members are used as the offset from
@@ -4610,7 +7939,7 @@ gcoSURF_Line(
 **      OPTIONAL gceSURF_TRANSPARENCY Transparency
 **          gcvSURF_OPAQUE - each pixel of the bitmap overwrites the destination.
 **          gcvSURF_SOURCE_MATCH - source pixels compared against register value
-**              to determine the transparency. In simple terms, the transaprency
+**              to determine the transparency. In simple terms, the transparency
 **              comes down to selecting the ROP code to use. Opaque pixels use
 **              foreground ROP and transparent ones use background ROP.
 **          gcvSURF_SOURCE_MASK - monochrome source mask defines transparency.
@@ -4684,21 +8013,27 @@ gcoSURF_Blit(
         /* Validate the object. */
         gcmBADOBJECT_BREAK(DestSurface, gcvOBJ_SURF);
 
+        if (Mask != gcvNULL && gcoHAL_IsFeatureAvailable(gcvNULL, gcvFEATURE_ANDROID_ONLY) == gcvTRUE)
+        {
+            gcmFOOTER_ARG("status=%d", gcvSTATUS_NOT_SUPPORTED);
+            return gcvSTATUS_NOT_SUPPORTED;
+        }
+
         /* Is 2D Hardware available? */
-        if (!gcoHARDWARE_Is2DAvailable())
+        if (!gcoHARDWARE_Is2DAvailable(gcvNULL))
         {
             /* No, use software renderer. */
-            gcmERR_BREAK(gcoHARDWARE_UseSoftware2D(gcvTRUE));
+            gcmERR_BREAK(gcoHARDWARE_UseSoftware2D(gcvNULL, gcvTRUE));
             useSoftEngine = gcvTRUE;
         }
 
         /* Is the destination format supported? */
         if (gcmIS_ERROR(gcoHARDWARE_TranslateDestinationFormat(
-                DestSurface->info.format,
+                gcvNULL, DestSurface->info.format, gcvTRUE,
                 &destFormat, &destFormatSwizzle, &destIsYUV)))
         {
             /* No, use software renderer. */
-            gcmERR_BREAK(gcoHARDWARE_UseSoftware2D(gcvTRUE));
+            gcmERR_BREAK(gcoHARDWARE_UseSoftware2D(gcvNULL, gcvTRUE));
             useSoftEngine = gcvTRUE;
         }
 
@@ -4788,7 +8123,7 @@ gcoSURF_Blit(
                 gcmERR_BREAK(gco2D_SetColorSourceEx(
                     engine,
                     useSoftEngine ?
-                        (gctUINT32)SrcSurface->info.node.logical
+                        (gctUINT32)(gctUINTPTR_T)SrcSurface->info.node.logical
                         : SrcSurface->info.node.physical,
                     SrcSurface->info.stride,
                     SrcSurface->info.format,
@@ -4817,7 +8152,7 @@ gcoSURF_Blit(
         gcmERR_BREAK(gco2D_SetTargetEx(
             engine,
             useSoftEngine ?
-                (gctUINT32)DestSurface->info.node.logical
+                (gctUINT32)(gctUINTPTR_T)DestSurface->info.node.logical
                 : DestSurface->info.node.physical,
             DestSurface->info.stride,
             DestSurface->info.rotation,
@@ -4893,7 +8228,7 @@ gcoSURF_Blit(
                 }
             }
 
-            /* Determine the maxumum stream height. */
+            /* Determine the maximum stream height. */
             maxHeight  = gcoMATH_DivideUInt(gco2D_GetMaximumDataCount() << 5,
                                             streamWidth);
             maxHeight &= streamPackHeightMask;
@@ -4923,7 +8258,7 @@ gcoSURF_Blit(
             /* Determine the initial source address. */
             srcBaseAddress
                 = (useSoftEngine ?
-                        (gctUINT32)SrcSurface->info.node.logical
+                        (gctUINT32)(gctUINTPTR_T)SrcSurface->info.node.logical
                         : SrcSurface->info.node.physical)
                 +   srcAlignedTop  * SrcSurface->info.stride
                 + ((srcAlignedLeft * srcFormat[0]->bitsPerPixel) >> 3);
@@ -5034,7 +8369,7 @@ gcoSURF_Blit(
     if (useSoftEngine)
     {
         /* Disable software renderer. */
-        gcmVERIFY_OK(gcoHARDWARE_UseSoftware2D(gcvFALSE));
+        gcmVERIFY_OK(gcoHARDWARE_UseSoftware2D(gcvNULL, gcvFALSE));
     }
 
 /*OnError:*/
@@ -5096,7 +8431,7 @@ gcoSURF_Blit(
 **      gceSURF_TRANSPARENCY Transparency
 **          gcvSURF_OPAQUE - each pixel of the bitmap overwrites the destination.
 **          gcvSURF_SOURCE_MATCH - source pixels compared against register value
-**              to determine the transparency. In simple terms, the transaprency
+**              to determine the transparency. In simple terms, the transparency
 **              comes down to selecting the ROP code to use. Opaque pixels use
 **              foreground ROP and transparent ones use background ROP.
 **          gcvSURF_SOURCE_MASK - monochrome source mask defines transparency.
@@ -5184,11 +8519,11 @@ gcoSURF_MonoBlit(
 
         /* Is the destination format supported? */
         if (gcmIS_ERROR(gcoHARDWARE_TranslateDestinationFormat(
-                DestSurface->info.format,
+                gcvNULL, DestSurface->info.format, gcvTRUE,
                 &destFormat, &destFormatSwizzle, &destIsYUV)))
         {
             /* No, use software renderer. */
-            gcmERR_BREAK(gcoHARDWARE_UseSoftware2D(gcvTRUE));
+            gcmERR_BREAK(gcoHARDWARE_UseSoftware2D(gcvNULL, gcvTRUE));
             useSotfEngine = gcvTRUE;
         }
 
@@ -5238,7 +8573,7 @@ gcoSURF_MonoBlit(
         gcmERR_BREAK(gco2D_SetTargetEx(
             engine,
             useSotfEngine ?
-                (gctUINT32)DestSurface->info.node.logical
+                (gctUINT32)(gctUINTPTR_T)DestSurface->info.node.logical
                 : DestSurface->info.node.physical,
             DestSurface->info.stride,
             DestSurface->info.rotation,
@@ -5380,7 +8715,7 @@ gcoSURF_MonoBlit(
     if (useSotfEngine)
     {
         /* Disable software renderer. */
-        gcmVERIFY_OK(gcoHARDWARE_UseSoftware2D(gcvFALSE));
+        gcmVERIFY_OK(gcoHARDWARE_UseSoftware2D(gcvNULL, gcvFALSE));
     }
 
     /* Return status. */
@@ -5420,6 +8755,7 @@ gcoSURF_MonoBlit(
 **
 **      Nothing.
 */
+
 gceSTATUS
 gcoSURF_FilterBlit(
     IN gcoSURF SrcSurface,
@@ -5433,7 +8769,7 @@ gcoSURF_FilterBlit(
     gcsRECT destSubRect, srcRect, destRect;
     gctBOOL ditherBy3D = gcvFALSE;
     gctBOOL ditherNotSupported = gcvFALSE;
-    gctBOOL rotateWalkaround =  gcvFALSE;
+    gctBOOL rotateWK =  gcvFALSE;
     gctBOOL enable2DDither =  gcvFALSE;
 
     gctPOINTER srcMemory[3] = {gcvNULL, };
@@ -5494,11 +8830,11 @@ gcoSURF_FilterBlit(
         gcmERR_BREAK(gcoSURF_QueryFormat(SrcSurface->info.format, srcFormat));
         gcmERR_BREAK(gcoSURF_QueryFormat(DestSurface->info.format, destFormat));
 
-        if ((SrcSurface->info.dither || DestSurface->info.dither)
+        if ((SrcSurface->info.dither2D || DestSurface->info.dither2D)
             && ((srcFormat[0]->bitsPerPixel > destFormat[0]->bitsPerPixel)
             || (srcFormat[0]->fmtClass == gcvFORMAT_CLASS_YUV)))
         {
-            if (gcoHARDWARE_IsFeatureAvailable(gcvFEATURE_2D_DITHER))
+            if (gcoHARDWARE_IsFeatureAvailable(gcvNULL, gcvFEATURE_2D_DITHER))
             {
                 gcmERR_BREAK(gco2D_EnableDither(
                     engine,
@@ -5506,7 +8842,7 @@ gcoSURF_FilterBlit(
 
                 enable2DDither = gcvTRUE;
             }
-            else if (gcoHARDWARE_IsFeatureAvailable(gcvFEATURE_PIPE_3D))
+            else if (gcoHARDWARE_IsFeatureAvailable(gcvNULL, gcvFEATURE_PIPE_3D))
             {
                 ditherBy3D = gcvTRUE;
             }
@@ -5518,14 +8854,14 @@ gcoSURF_FilterBlit(
         }
 
         if ((SrcSurface->info.rotation != gcvSURF_0_DEGREE || DestSurface->info.rotation != gcvSURF_0_DEGREE)
-            && !gcoHARDWARE_IsFeatureAvailable(gcvFEATURE_2D_FILTERBLIT_FULLROTATION))
+            && !gcoHARDWARE_IsFeatureAvailable(gcvNULL, gcvFEATURE_2D_FILTERBLIT_FULLROTATION))
         {
-            rotateWalkaround = gcvTRUE;
+            rotateWK = gcvTRUE;
         }
         else if (ditherBy3D && (((DestSubRect->right - DestSubRect->left) & 15)
             || ((DestSubRect->bottom - DestSubRect->top) & 3)))
         {
-            rotateWalkaround = gcvTRUE;
+            rotateWK = gcvTRUE;
         }
 
         /* Lock the destination. */
@@ -5542,7 +8878,7 @@ gcoSURF_FilterBlit(
             srcMemory
             ));
 
-        if (ditherBy3D || rotateWalkaround)
+        if (ditherBy3D || rotateWK)
         {
             gcsRECT tempRect;
 
@@ -5553,7 +8889,7 @@ gcoSURF_FilterBlit(
             destRect = *DestRect;
             destSubRect = *DestSubRect;
 
-            if (rotateWalkaround)
+            if (rotateWK)
             {
                 if (SrcSurface->info.rotation != gcvSURF_0_DEGREE)
                 {
@@ -5598,14 +8934,16 @@ gcoSURF_FilterBlit(
                 tempRect.bottom = destRect.bottom - destRect.top;
 
                 gcmERR_BREAK(gcoHARDWARE_Get2DTempSurface(
+                    gcvNULL,
                     tempRect.right,
                     tempRect.bottom,
                     ditherBy3D ? gcvSURF_A8R8G8B8 : DestSurface->info.format,
+                    DestSurface->info.flags,
                     &tempSurf));
 
                 tempSurf->rotation = gcvSURF_0_DEGREE;
             }
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
             else
             {
                 /* Only dither. */
@@ -5618,15 +8956,17 @@ gcoSURF_FilterBlit(
                 tempRect.bottom = destRect.bottom - destRect.top;
 
                 gcmERR_BREAK(gcoHARDWARE_Get2DTempSurface(
+                    gcvNULL,
                     swap ? tempRect.bottom : tempRect.right,
                     swap ? tempRect.right : tempRect.bottom,
                     gcvSURF_A8R8G8B8,
+                    DestSurface->info.flags,
                     &tempSurf
                     ));
 
                 tempSurf->rotation = DestSurface->info.rotation;
             }
-#endif /* VIVANTE_NO_3D */
+#endif /* gcdENABLE_3D */
 
             gcmERR_BREAK(gco2D_FilterBlitEx(
                 engine,
@@ -5652,13 +8992,14 @@ gcoSURF_FilterBlit(
                 ));
 
             tempRect = destSubRect;
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
             if (ditherBy3D)
             {
                 gcsPOINT srcOrigin, destOrigin, rectSize;
                 gcsSURF_INFO * DitherDest;
+                gctBOOL savedDeferDither3D;
 
-                if (rotateWalkaround)
+                if (rotateWK)
                 {
                     srcOrigin.x = tempRect.left;
                     srcOrigin.y = tempRect.top;
@@ -5675,9 +9016,11 @@ gcoSURF_FilterBlit(
                     tempRect.bottom = rectSize.y;
 
                     gcmERR_BREAK(gcoHARDWARE_Get2DTempSurface(
+                        gcvNULL,
                         tempRect.right,
                         tempRect.bottom,
                         DestSurface->info.format,
+                        DestSurface->info.flags,
                         &temp2Surf
                         ));
 
@@ -5724,24 +9067,27 @@ gcoSURF_FilterBlit(
                     DitherDest = &DestSurface->info;
                 }
 
-                gcmERR_BREAK(gcoHARDWARE_FlushPipe());
+                gcmERR_BREAK(gcoHARDWARE_FlushPipe(gcvNULL, gcvNULL));
 
-                gcmERR_BREAK(gcoHARDWARE_SetDither(gcvTRUE));
+                /* Mark resolve to enable dither */
+                savedDeferDither3D = tempSurf->deferDither3D;
+                tempSurf->deferDither3D = gcvTRUE;
 
                 rectSize.x = gcmALIGN(rectSize.x, 16);
                 rectSize.y = gcmALIGN(rectSize.y, 4);
 
                 gcmERR_BREAK(gcoHARDWARE_ResolveRect(
+                        gcvNULL,
                         tempSurf,
                         DitherDest,
-                        &srcOrigin, &destOrigin, &rectSize));
+                        &srcOrigin, &destOrigin, &rectSize, gcvFALSE));
 
-                gcmERR_BREAK(gcoHARDWARE_FlushPipe());
+                gcmERR_BREAK(gcoHARDWARE_FlushPipe(gcvNULL, gcvNULL));
 
-                gcmERR_BREAK(gcoHARDWARE_SetDither(gcvFALSE));
+                tempSurf->deferDither3D = savedDeferDither3D;
             }
-#endif /* VIVANTE_NO_3D */
-            if (rotateWalkaround)
+#endif /* gcdENABLE_3D */
+            if (rotateWK)
             {
                 /* bitblit rorate. */
                 gcsSURF_INFO * srcSurf = ditherBy3D ? temp2Surf : tempSurf;
@@ -5753,7 +9099,7 @@ gcoSURF_FilterBlit(
                 destSubRect.top += destRect.top;
                 destSubRect.bottom += destRect.top;
 
-                if (!gcoHARDWARE_IsFeatureAvailable(gcvFEATURE_2D_BITBLIT_FULLROTATION))
+                if (!gcoHARDWARE_IsFeatureAvailable(gcvNULL, gcvFEATURE_2D_BITBLIT_FULLROTATION))
                 {
                     tDestRot = DestSurface->info.rotation;
 
@@ -5927,12 +9273,12 @@ gcoSURF_FilterBlit(
     /* Free temp buffer. */
     if (tempSurf != gcvNULL)
     {
-        gcmVERIFY_OK(gcoHARDWARE_Put2DTempSurface(tempSurf));
+        gcmVERIFY_OK(gcoHARDWARE_Put2DTempSurface(gcvNULL, tempSurf));
     }
 
     if (temp2Surf != gcvNULL)
     {
-        gcmVERIFY_OK(gcoHARDWARE_Put2DTempSurface(temp2Surf));
+        gcmVERIFY_OK(gcoHARDWARE_Put2DTempSurface(gcvNULL, temp2Surf));
     }
 
     if (ditherNotSupported)
@@ -6083,7 +9429,284 @@ gcoSURF_DisableAlphaBlend(
     return status;
 }
 
-#ifndef VIVANTE_NO_3D
+/*******************************************************************************
+**
+**  gcoSURF_Set2DSource
+**
+**  Set source surface for 2D engine.
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to the surface.
+**
+**      gceSURF_ROTATION Rotation
+**          Source rotation parameter.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoSURF_Set2DSource(
+    gcoSURF Surface,
+    gceSURF_ROTATION Rotation
+    )
+{
+    gceSTATUS status;
+    gco2D engine;
+    gctUINT addressNum;
+    gctUINT physical[3];
+    gctUINT stride[3];
+    gctUINT width;
+    gctUINT height;
+    gce2D_TILE_STATUS_CONFIG tileStatusConfig;
+
+    gcmHEADER_ARG("Source=0x%x Rotation=%d", Surface, Rotation);
+    gcmVERIFY_ARGUMENT(Surface != gcvNULL);
+
+    /* Get 2D engine. */
+    gcmONERROR(gcoHAL_Get2DEngine(gcvNULL, &engine));
+
+    /* Get shortcut. */
+    addressNum = Surface->info.node.count;
+
+    /* Calculate surface size. */
+#if gcdENABLE_3D
+    width  = Surface->info.rect.right  / Surface->info.samples.x;
+    height = Surface->info.rect.bottom / Surface->info.samples.y;
+#else
+    width  = Surface->info.rect.right;
+    height = Surface->info.rect.bottom;
+#endif
+
+    /* Get physical addresses and strides. */
+    switch (addressNum)
+    {
+    case 3:
+        physical[2] = Surface->info.node.physical3;
+        stride  [2] = Surface->info.vStride;
+    case 2:
+        physical[1] = Surface->info.node.physical2;
+        stride  [1] = Surface->info.uStride;
+    case 1:
+        physical[0] = Surface->info.node.physical;
+        stride  [0] = Surface->info.stride;
+        break;
+    }
+
+    if (Surface->info.tiling & gcvTILING_SPLIT_BUFFER)
+    {
+        /* Split buffer needs two addresses. */
+        gcmASSERT(addressNum == 1);
+
+        physical[1] = Surface->info.node.physicalBottom;
+        stride  [1] = Surface->info.stride;
+        addressNum  = 2;
+    }
+
+    /* Extract master surface arguments and call 2D api. */
+    gcmONERROR(
+        gco2D_SetGenericSource(engine,
+                               physical,
+                               addressNum,
+                               stride,
+                               addressNum,
+                               Surface->info.tiling,
+                               Surface->info.format,
+                               Rotation,
+                               width,
+                               height));
+
+#if gcdENABLE_3D
+    /* Extract tile status arguments. */
+    if ((Surface->info.tileStatusNode.pool == gcvPOOL_UNKNOWN) ||
+        (Surface->info.tileStatusDisabled) ||
+        (Surface->info.dirty == gcvFALSE))
+    {
+        /* No tile status or tile status disabled. */
+        tileStatusConfig = gcv2D_TSC_DISABLE;
+    }
+    else
+    {
+        /* Tile status enabled. */
+        tileStatusConfig = Surface->info.compressed ? gcv2D_TSC_COMPRESSED
+                         : gcv2D_TSC_ENABLE;
+    }
+
+    if (Surface->info.samples.x > 1 || Surface->info.samples.y > 1)
+    {
+        /* Down-sample. */
+        tileStatusConfig |= gcv2D_TSC_DOWN_SAMPLER;
+    }
+
+    /* Set tile status states. */
+    gcmONERROR(
+        gco2D_SetSourceTileStatus(engine,
+                                  tileStatusConfig,
+                                  Surface->info.format,
+                                  Surface->info.fcValue,
+                                  Surface->info.tileStatusNode.physical));
+
+#else
+    /* No 3D. */
+    tileStatusConfig = gcv2D_TSC_DISABLE;
+
+    /* Set tile status states. */
+    gcmONERROR(
+        gco2D_SetSourceTileStatus(engine,
+                                  tileStatusConfig,
+                                  gcvSURF_UNKNOWN,
+                                  0,
+                                  ~0U));
+#endif
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoSURF_Set2DTarget
+**
+**  Set target surface for 2D engine.
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to the surface.
+**
+**      gceSURF_ROTATION Rotation
+**          Destination rotation parameter.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoSURF_Set2DTarget(
+    gcoSURF Surface,
+    gceSURF_ROTATION Rotation
+    )
+{
+    gceSTATUS status;
+    gco2D engine;
+    gctUINT addressNum;
+    gctUINT physical[3];
+    gctUINT stride[3];
+    gctUINT width;
+    gctUINT height;
+    gce2D_TILE_STATUS_CONFIG tileStatusConfig;
+
+    gcmHEADER_ARG("Source=0x%x Rotation=%d", Surface, Rotation);
+    gcmVERIFY_ARGUMENT(Surface != gcvNULL);
+
+    /* Get 2D engine. */
+    gcmONERROR(gcoHAL_Get2DEngine(gcvNULL, &engine));
+
+    /* Get shortcut. */
+    addressNum = Surface->info.node.count;
+
+    /* Calculate surface size. */
+#if gcdENABLE_3D
+    width  = Surface->info.rect.right  / Surface->info.samples.x;
+    height = Surface->info.rect.bottom / Surface->info.samples.y;
+#else
+    width  = Surface->info.rect.right;
+    height = Surface->info.rect.bottom;
+#endif
+
+    /* Get physical addresses and strides. */
+    switch (addressNum)
+    {
+    case 3:
+        physical[2] = Surface->info.node.physical3;
+        stride  [2] = Surface->info.vStride;
+    case 2:
+        physical[1] = Surface->info.node.physical2;
+        stride  [1] = Surface->info.uStride;
+    case 1:
+        physical[0] = Surface->info.node.physical;
+        stride  [0] = Surface->info.stride;
+        break;
+    }
+
+    if (Surface->info.tiling & gcvTILING_SPLIT_BUFFER)
+    {
+        /* Split buffer needs two addresses. */
+        gcmASSERT(addressNum == 1);
+
+        physical[1] = Surface->info.node.physicalBottom;
+        stride  [1] = Surface->info.stride;
+        addressNum  = 2;
+    }
+
+    /* Extract master surface arguments and call 2D api. */
+    gcmONERROR(
+        gco2D_SetGenericTarget(engine,
+                               physical,
+                               addressNum,
+                               stride,
+                               addressNum,
+                               Surface->info.tiling,
+                               Surface->info.format,
+                               Rotation,
+                               width,
+                               height));
+
+#if gcdENABLE_3D
+    /* Extract tile status arguments. */
+    if ((Surface->info.tileStatusNode.pool == gcvPOOL_UNKNOWN) ||
+        (Surface->info.tileStatusDisabled) ||
+        (Surface->info.dirty == gcvFALSE))
+    {
+        /* No tile status or tile status disabled. */
+        tileStatusConfig = gcv2D_TSC_DISABLE;
+    }
+    else
+    {
+        /* Tile status enabled. */
+        tileStatusConfig = Surface->info.compressed ? gcv2D_TSC_COMPRESSED
+                         : gcv2D_TSC_ENABLE;
+    }
+
+    /* Set tile status states. */
+    gcmONERROR(
+        gco2D_SetTargetTileStatus(engine,
+                                  tileStatusConfig,
+                                  Surface->info.format,
+                                  Surface->info.fcValue,
+                                  Surface->info.tileStatusNode.physical));
+
+#else
+    /* No 3D. */
+    tileStatusConfig = gcv2D_TSC_DISABLE;
+
+    /* Set tile status states. */
+    gcmONERROR(
+        gco2D_SetTargetTileStatus(engine,
+                                  tileStatusConfig,
+                                  gcvSURF_UNKNOWN,
+                                  0,
+                                  ~0U));
+#endif
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    gcmFOOTER();
+    return status;
+}
+#endif  /* gcdENABLE_2D */
+
+#if gcdENABLE_3D
 /*******************************************************************************
 **
 **  gcoSURF_CopyPixels
@@ -6139,51 +9762,103 @@ gcoSURF_CopyPixels(
 
     do
     {
+        gctINT realHeight = gcmABS(Height);
         /* Lock the surfaces. */
         gcmERR_BREAK(
             gcoSURF_Lock(Source, gcvNULL, srcMemory));
         gcmERR_BREAK(
             gcoSURF_Lock(Target, gcvNULL, trgMemory));
 
-        if (Source->info.node.pool != gcvPOOL_USER)
+        if (Source->info.type == gcvSURF_BITMAP)
         {
-            gcmERR_BREAK(
-                gcoSURF_NODE_Cache(&Source->info.node,
-                                 srcMemory[0],
-                                 Source->info.size,
-                                 gcvCACHE_FLUSH));
+            /* Flush the CPU cache. Source would've been rendered by the CPU. */
+            gcmERR_BREAK(gcoSURF_NODE_Cache(
+                &Source->info.node,
+                srcMemory[0],
+                Source->info.size,
+                gcvCACHE_CLEAN));
         }
-        if (Target->info.node.pool != gcvPOOL_USER)
+
+        if (Target->info.type == gcvSURF_BITMAP)
         {
-            gcmERR_BREAK(
-                gcoSURF_NODE_Cache(&Target->info.node,
-                                 trgMemory[0],
-                                 Target->info.size,
-                                 gcvCACHE_FLUSH));
+            gcmERR_BREAK(gcoSURF_NODE_Cache(
+                &Target->info.node,
+                trgMemory[0],
+                Target->info.size,
+                gcvCACHE_FLUSH));
         }
 
         /* Flush the surfaces. */
         gcmERR_BREAK(gcoSURF_Flush(Source));
         gcmERR_BREAK(gcoSURF_Flush(Target));
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
         /* Disable the tile status and decompress the buffers. */
-        gcmERR_BREAK(
-            gcoSURF_DisableTileStatus(Source, gcvTRUE));
+
+        /* Don't disable tilestatus when fastMSAA is present. Otherwise it will hang.
+           Also this is unnecessary. */
+        if ((Source->info.samples.x == 1) || (Source->info.samples.y == 1))
+        {
+            gcmERR_BREAK(
+                gcoSURF_DisableTileStatus(Source, gcvTRUE));
+        }
 
         /* Disable the tile status for the destination. */
         gcmERR_BREAK(
             gcoSURF_DisableTileStatus(Target, gcvTRUE));
 
-#endif /* VIVANTE_NO_3D */
+#endif /* gcdENABLE_3D */
 
-        /* Read the pixel. */
-        gcmERR_BREAK(
-            gcoHARDWARE_CopyPixels(&Source->info,
-                                   &Target->info,
-                                   SourceX, SourceY,
-                                   TargetX, TargetY,
-                                   Width, Height));
+        /*
+        ** Only unsigned normalized data type and no space conversion needed go hardware copy pixels path.
+        ** as this path can't handle other cases.
+        */
+        if ((Source->info.formatInfo.fmtDataType == gcvFORMAT_DATATYPE_UNSIGNED_NORMALIZED) &&
+            (Target->info.formatInfo.fmtDataType == gcvFORMAT_DATATYPE_UNSIGNED_NORMALIZED) &&
+            (!Source->info.formatInfo.fakedFormat || (Source->info.paddingFormat && !Source->info.garbagePadded)) &&
+            (!Target->info.formatInfo.fakedFormat || Target->info.paddingFormat) &&
+            (Source->info.colorSpace == Target->info.colorSpace))
+        {
+            /* Read the pixel. */
+            gcmERR_BREAK(
+                gcoHARDWARE_CopyPixels(gcvNULL,
+                &Source->info,
+                &Target->info,
+                SourceX, SourceY,
+                TargetX, TargetY,
+                Width, Height));
+        }
+        else
+        {
+            gcsSURF_BLIT_ARGS arg;
+
+            gcoOS_ZeroMemory(&arg, sizeof(arg));
+
+            /* The offset must be multiple of sliceSize */
+            gcmASSERT(Source->info.offset % Source->info.sliceSize == 0);
+            gcmASSERT(Target->info.offset % Target->info.sliceSize == 0);
+
+            arg.srcSurface = Source;
+            arg.srcX       = SourceX;
+            arg.srcY       = SourceY;
+            arg.srcZ       = Source->info.offset / Source->info.sliceSize;
+            arg.dstSurface = Target;
+            arg.dstX       = TargetX;
+            arg.dstY       = TargetY;
+            arg.dstZ       = Target->info.offset / Target->info.sliceSize;
+            arg.srcWidth   = arg.dstWidth  = Width;
+            arg.srcHeight  = arg.dstHeight = realHeight;
+            arg.srcDepth   = arg.dstDepth  = 1;
+            arg.yReverse   = (Height < 0);
+            gcmERR_BREAK(gcoSURF_BlitCPU(&arg));
+        }
+
+        if (gcoHARDWARE_IsFeatureAvailable(gcvNULL, gcvFEATURE_PE_DITHER_FIX) == gcvFALSE &&
+            TargetX == 0 && Width  >= Target->info.rect.right  / Target->info.samples.x &&
+            TargetY == 0 && realHeight >= Target->info.rect.bottom / Target->info.samples.y)
+        {
+            Target->info.deferDither3D = gcvFALSE;
+        }
     }
     while (gcvFALSE);
 
@@ -6257,11 +9932,11 @@ gcoSURF_ReadPixel(
         gcmERR_BREAK(
             gcoSURF_Flush(Surface));
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
         /* Flush the tile status and decompress the buffers. */
         gcmERR_BREAK(
             gcoSURF_DisableTileStatus(Surface, gcvTRUE));
-#endif /* VIVANTE_NO_3D */
+#endif /* gcdENABLE_3D */
 
         /* Lock the source surface. */
         gcmERR_BREAK(
@@ -6292,7 +9967,8 @@ gcoSURF_ReadPixel(
 
         /* Read the pixel. */
         gcmERR_BREAK(
-            gcoHARDWARE_CopyPixels(&Surface->info,
+            gcoHARDWARE_CopyPixels(gcvNULL,
+                                   &Surface->info,
                                    &target,
                                    X, Y,
                                    0, 0,
@@ -6366,11 +10042,11 @@ gcoSURF_WritePixel(
         gcmERR_BREAK(
             gcoSURF_Flush(Surface));
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
         /* Disable the tile status and decompress the buffers. */
         gcmERR_BREAK(
             gcoSURF_DisableTileStatus(Surface, gcvTRUE));
-#endif /* VIVANTE_NO_3D */
+#endif
 
         /* Lock the source surface. */
         gcmERR_BREAK(
@@ -6401,7 +10077,8 @@ gcoSURF_WritePixel(
 
         /* Read the pixel. */
         gcmERR_BREAK(
-            gcoHARDWARE_CopyPixels(&source,
+            gcoHARDWARE_CopyPixels(gcvNULL,
+                                   &source,
                                    &Surface->info,
                                    0, 0,
                                    X, Y,
@@ -6419,7 +10096,7 @@ gcoSURF_WritePixel(
     gcmFOOTER();
     return status;
 }
-#endif /* VIVANTE_NO_3D */
+#endif /* gcdENABLE_3D */
 
 gceSTATUS
 gcoSURF_NODE_Cache(
@@ -6431,7 +10108,7 @@ gcoSURF_NODE_Cache(
 {
     gceSTATUS status = gcvSTATUS_OK;
 
-    gcmHEADER_ARG("Node=0x%x, Operation=%d",Node, Operation);
+    gcmHEADER_ARG("Node=0x%x, Operation=%d, Bytes=%u", Node, Operation, Bytes);
 
     if (Node->pool == gcvPOOL_USER)
     {
@@ -6468,6 +10145,105 @@ gcoSURF_NODE_Cache(
 
     gcmFOOTER();
     return gcvSTATUS_OK;
+
+OnError:
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoSURF_NODE_CPUCacheOperation
+**
+**  Perform the specified CPU cache operation on the surface node.
+**
+**  INPUT:
+**
+**      gcsSURF_NODE_PTR Node
+**          Pointer to the surface node.
+**      gctPOINTER Logical
+**          logical address to flush.
+**      gctSIZE_T Bytes
+**          bytes to flush.
+**      gceSURF_CPU_CACHE_OP_TYPE Operation
+**          Cache operation to be performed.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoSURF_NODE_CPUCacheOperation(
+    IN gcsSURF_NODE_PTR Node,
+    IN gceSURF_TYPE Type,
+    IN gctSIZE_T Offset,
+    IN gctSIZE_T Length,
+    IN gceCACHEOPERATION Operation
+    )
+{
+
+    gceSTATUS status;
+    gctPOINTER memory;
+    gctBOOL locked = gcvFALSE;
+
+    gcmHEADER_ARG("Node=0x%x, Type=%u, Offset=%u, Length=%u, Operation=%d", Node, Type, Offset, Length, Operation);
+
+    /* Lock the node. */
+    gcmONERROR(gcoHARDWARE_Lock(Node, gcvNULL, &memory));
+    locked = gcvTRUE;
+
+    gcmONERROR(gcoSURF_NODE_Cache(Node,
+                                  (gctUINT8_PTR)memory + Offset,
+                                  Length,
+                                  Operation));
+
+
+    /* Unlock the node. */
+    gcmONERROR(gcoHARDWARE_Unlock(Node, Type));
+    locked = gcvFALSE;
+
+    gcmFOOTER();
+    return gcvSTATUS_OK;
+
+OnError:
+    if (locked)
+    {
+        gcmVERIFY_OK(gcoHARDWARE_Unlock(Node, Type));
+    }
+
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gcoSURF_LockNode(
+                 IN gcsSURF_NODE_PTR Node,
+                 OUT gctUINT32 * Address,
+                 OUT gctPOINTER * Memory
+                 )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Node=0x%x, Address=0x%x, Memory=0x%x", Node, Address, Memory);
+
+    gcmONERROR(gcoHARDWARE_Lock(Node, Address, Memory));
+
+OnError:
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gcoSURF_UnLockNode(
+                   IN gcsSURF_NODE_PTR Node,
+                   IN gceSURF_TYPE Type
+                   )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Node=0x%x, Type=%u", Node, Type);
+
+    gcmONERROR(gcoHARDWARE_Unlock(Node, Type));
 
 OnError:
     gcmFOOTER();
@@ -6513,7 +10289,7 @@ gcoSURF_CPUCacheOperation(
 
     gcmONERROR(gcoSURF_NODE_Cache(&Surface->info.node,
                                   source[0],
-                                  Surface->info.size,
+                                  Surface->info.node.size,
                                   Operation));
 
     /* Unlock the surfaces. */
@@ -6557,16 +10333,13 @@ gcoSURF_Flush(
 
     gcmHEADER_ARG("Surface=0x%x", Surface);
 
-    /* Verify the arguments. */
-    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
-
     /* Flush the current pipe. */
-    status = gcoHARDWARE_FlushPipe();
+    status = gcoHARDWARE_FlushPipe(gcvNULL, gcvNULL);
     gcmFOOTER();
     return status;
 }
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
 /*******************************************************************************
 **
 **  gcoSURF_FillFromTile
@@ -6588,28 +10361,44 @@ gcoSURF_FillFromTile(
     )
 {
     gceSTATUS status;
-    gco3D engine;
 
     gcmHEADER_ARG("Surface=0x%x", Surface);
 
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
 
-    if ((Surface->info.type == gcvSURF_RENDER_TARGET)
-     && (Surface->info.tileStatusNode.pool != gcvPOOL_UNKNOWN))
+    if (gcoHARDWARE_IsFeatureAvailable(gcvNULL, gcvFEATURE_TILE_FILLER)
+    &&  (Surface->info.type == gcvSURF_RENDER_TARGET)
+    &&  (Surface->info.samples.x == 1) && (Surface->info.samples.y == 1)
+    &&  (Surface->info.compressed == gcvFALSE)
+    &&  (Surface->info.tileStatusNode.pool != gcvPOOL_UNKNOWN)
+    &&  (Surface->info.tileStatusDisabled == gcvFALSE)
+    &&  ((Surface->info.node.size & 0x3fff) == 0))
     {
-        /* Extract the gco3D object pointer. */
+        /*
+         * Call underlying tile status disable to do FC fill:
+         * 1. Flush pipe / tile status cache
+         * 2. Decompress (Fill) tile status
+         * 3. Set surface tileStatusDisabled to true.
+         */
         gcmONERROR(
-            gcoHAL_Get3DEngine(gcvNULL, &engine));
+            gcoHARDWARE_DisableTileStatus(gcvNULL,
+                                          &Surface->info,
+                                          gcvTRUE));
+    }
+    else
+    if ((Surface->info.tileStatusNode.pool == gcvPOOL_UNKNOWN)
+    ||  (Surface->info.tileStatusDisabled == gcvTRUE))
+    {
+        /* Flush pipe cache. */
+        gcmONERROR(gcoHARDWARE_FlushPipe(gcvNULL, gcvNULL));
 
-        /* Flush the TileStatus cache. */
-        gcmONERROR(
-            gcoHARDWARE_FlushTileStatus(&Surface->info,
-                                        gcvFALSE));
-
-        /* Fill the surface from the TileStatus buffer. */
-        gcmONERROR(
-            gcoHARDWARE_FillFromTileStatus(&Surface->info));
+        /*
+         * No need to fill if tile status disabled.
+         * Return OK here to tell the caller that FC fill is done, because
+         * the caller(drivers) may be unable to know it.
+         */
+        status = gcvSTATUS_OK;
     }
     else
     {
@@ -6624,7 +10413,7 @@ OnError:
 }
 #endif
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D || gcdENABLE_VG
 /*******************************************************************************
 **
 **  gcoSURF_SetSamples
@@ -6651,11 +10440,22 @@ gcoSURF_SetSamples(
 {
     gceSTATUS status = gcvSTATUS_OK;
     gctINT width = 0, height = 0;
+#if gcdENABLE_3D
+    gcePATCH_ID patchId = gcvPATCH_INVALID;
+#endif
 
     gcmHEADER_ARG("Surface=0x%x Samples=%u", Surface, Samples);
 
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+
+#if gcdENABLE_3D
+    gcoHARDWARE_GetPatchID(gcvNULL, &patchId);
+    if (patchId == gcvPATCH_ANTUTU || patchId == gcvPATCH_ANTUTU4X)
+    {
+        Samples = 0;
+    }
+#endif
 
     /* Make sure this is not user-allocated surface. */
     if (Surface->info.node.pool == gcvPOOL_USER)
@@ -6678,6 +10478,8 @@ gcoSURF_SetSamples(
                 {
                 case gcvSURF_X8R8G8B8:
                 case gcvSURF_A8R8G8B8:
+                case gcvSURF_R8_1_X8R8G8B8:
+                case gcvSURF_G8R8_1_X8R8G8B8:
                     /* Render targets need 2 samples per pixel. */
                     width = (Surface->info.samples.x != 2)
                           ? (gctINT) gcoMATH_DivideUInt(Surface->info.rect.right,
@@ -6778,29 +10580,18 @@ gcoSURF_SetSamples(
     )
     {
         gceSURF_TYPE type = Surface->info.type;
-#if gcdENABLE_VG
-        gceHARDWARE_TYPE currentType;
-#endif
-        if (Surface->info.tileStatusNode.pool == gcvPOOL_UNKNOWN)
+
+        /* TODO: Shall we add hints bits? */
+        type = (gceSURF_FORMAT) (type | Surface->info.hints);
+
+#if gcdENABLE_3D
+        if ((Surface->info.tileStatusNode.pool == gcvPOOL_UNKNOWN) &&
+            !(Surface->info.hints & gcvSURF_NO_VIDMEM))
         {
             type |= gcvSURF_NO_TILE_STATUS;
         }
+#endif
 
-#if gcdENABLE_VG
-        gcmGETCURRENTHARDWARE(currentType);
-        /* Destroy existing surface memory. */
-        gcmONERROR(_FreeSurface(Surface, currentType));
-
-        /* Allocate new surface. */
-        gcmONERROR(
-            _AllocateSurface(Surface,
-                             currentType,
-                             width, height, Surface->depth,
-                             type,
-                             Surface->info.format,
-                             gcvPOOL_DEFAULT));
-
-#else
         /* Destroy existing surface memory. */
         gcmONERROR(_FreeSurface(Surface));
 
@@ -6811,7 +10602,6 @@ gcoSURF_SetSamples(
                              type,
                              Surface->info.format,
                              gcvPOOL_DEFAULT));
-#endif
     }
 
 OnError:
@@ -6865,6 +10655,7 @@ gcoSURF_GetSamples(
     gcmFOOTER_ARG("*Samples=%u", *Samples);
     return gcvSTATUS_OK;
 }
+#endif
 
 /*******************************************************************************
 **
@@ -6890,9 +10681,10 @@ gcoSURF_SetResolvability(
     IN gctBOOL Resolvable
     )
 {
+#if gcdENABLE_3D
     gcmHEADER_ARG("Surface=0x%x Resolvable=%d", Surface, Resolvable);
 
-    /* Verif the arguments. */
+    /* Verify the arguments. */
     gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
 
     /* Set the resolvability. */
@@ -6900,10 +10692,9 @@ gcoSURF_SetResolvability(
 
     /* Success. */
     gcmFOOTER_NO();
+#endif
     return gcvSTATUS_OK;
 }
-
-#endif /* VIVANTE_NO_3D */
 
 /*******************************************************************************
 **
@@ -6934,12 +10725,14 @@ gcoSURF_SetOrientation(
 {
     gcmHEADER_ARG("Surface=0x%x Orientation=%d", Surface, Orientation);
 
-    /* Verif the arguments. */
+    /* Verify the arguments. */
     gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
 
+#if !gcdREMOVE_SURF_ORIENTATION
     /* Set the orientation. */
     Surface->info.orientation = Orientation;
 
+#endif
     /* Success. */
     gcmFOOTER_NO();
     return gcvSTATUS_OK;
@@ -6981,6 +10774,83 @@ gcoSURF_QueryOrientation(
     gcmFOOTER_ARG("*Orientation=%d", *Orientation);
     return gcvSTATUS_OK;
 }
+
+/*******************************************************************************
+**
+**  gcoSURF_QueryFlags
+**
+**  Query status of the flag.
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to surface object.
+**      gceSURF_FLAG Flag
+**          Flag which is queried
+**
+**  OUTPUT:
+**      None
+**
+*/
+gceSTATUS
+gcoSURF_QueryFlags(
+    IN gcoSURF Surface,
+    IN gceSURF_FLAG Flag
+    )
+{
+    gceSTATUS status = gcvSTATUS_TRUE;
+    gcmHEADER_ARG("Surface=0x%x Flag=0x%x", Surface, Flag);
+
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+
+    if(Surface->info.flags & Flag)
+    {
+        status = gcvSTATUS_TRUE;
+    }
+    else
+    {
+        status = gcvSTATUS_FALSE;
+    }
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoSURF_QueryFormat
+**
+**  Return pixel format parameters.
+**
+**  INPUT:
+**
+**      gceSURF_FORMAT Format
+**          API format.
+**
+**  OUTPUT:
+**
+**      gcsSURF_FORMAT_INFO_PTR * Info
+**          Pointer to a variable that will hold the format description entry.
+**          If the format in question is interleaved, two pointers will be
+**          returned stored in an array fashion.
+**
+*/
+gceSTATUS
+gcoSURF_QueryFormat(
+    IN gceSURF_FORMAT Format,
+    OUT gcsSURF_FORMAT_INFO_PTR * Info
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Format=%d", Format);
+
+    status = gcoHARDWARE_QueryFormat(Format, Info);
+
+    gcmFOOTER();
+    return status;
+}
+
+
 
 /*******************************************************************************
 **
@@ -7056,6 +10926,84 @@ gcoSURF_GetColorType(
     return gcvSTATUS_OK;
 }
 
+
+
+
+/*******************************************************************************
+**
+**  gcoSURF_SetColorSpace
+**
+**  Set the color type of the surface.
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to the surface.
+**
+**      gceSURF_COLOR_SPACE ColorSpace
+**          color space of the surface.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoSURF_SetColorSpace(
+    IN gcoSURF Surface,
+    IN gceSURF_COLOR_SPACE ColorSpace
+    )
+{
+    gcmHEADER_ARG("Surface=0x%x ColorSpace=%d", Surface, ColorSpace);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+
+    /* Set the color space. */
+    Surface->info.colorSpace = ColorSpace;
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+}
+
+/*******************************************************************************
+**
+**  gcoSURF_GetColorSpace
+**
+**  Get the color space of the surface.
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to the surface.
+**
+**  OUTPUT:
+**
+**      gceSURF_COLOR_SPACE *ColorSpace
+**          pointer to the variable receiving color space of the surface.
+**
+*/
+gceSTATUS
+gcoSURF_GetColorSpace(
+    IN gcoSURF Surface,
+    OUT gceSURF_COLOR_SPACE *ColorSpace
+    )
+{
+    gcmHEADER_ARG("Surface=0x%x", Surface);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+    gcmVERIFY_ARGUMENT(ColorSpace != gcvNULL);
+
+    /* Return the color type. */
+    *ColorSpace = Surface->info.colorSpace;
+
+    /* Success. */
+    gcmFOOTER_ARG("*ColorSpace=%d", *ColorSpace);
+    return gcvSTATUS_OK;
+}
+
+
 /*******************************************************************************
 **
 **  gcoSURF_SetRotation
@@ -7112,7 +11060,7 @@ gcoSURF_SetRotation(
 **          Pointer to the surface.
 **
 **      gceSURF_ROTATION Dither
-**          ditherable or not.
+**          dither enable or not.
 **
 **  OUTPUT:
 **
@@ -7137,14 +11085,14 @@ gcoSURF_SetDither(
     }
 
     /* Set new rotation. */
-    Surface->info.dither = Dither;
+    Surface->info.dither2D = Dither;
 
     /* Success. */
     gcmFOOTER_NO();
     return gcvSTATUS_OK;
 }
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D || gcdENABLE_VG
 /*******************************************************************************
 **
 **  gcoSURF_Copy
@@ -7177,7 +11125,7 @@ gcoSURF_Copy(
     gctUINT8_PTR source = gcvNULL, target = gcvNULL;
 
 #if gcdENABLE_VG
-    gceHARDWARE_TYPE currentType;
+    gceHARDWARE_TYPE currentType = gcvHARDWARE_INVALID;
 #endif
 
     gcmHEADER_ARG("Surface=0x%x Source=0x%x", Surface, Source);
@@ -7186,10 +11134,16 @@ gcoSURF_Copy(
     gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
     gcmVERIFY_OBJECT(Source, gcvOBJ_SURF);
 
-    if ((Surface->info.tiling != gcvTILED)
-     || (Source->info.tiling != gcvTILED))
+
+    if ((Surface->info.tiling != Source->info.tiling) ||
+        ((Surface->info.tiling != gcvTILED) &&
+         (Surface->info.tiling != gcvSUPERTILED)
+        )
+       )
     {
-        /* Both surfaces need to be tiled. */
+        /* Both surfaces need to the same tiled.
+        ** only tile and supertile are supported.
+        */
         gcmFOOTER();
         return gcvSTATUS_INVALID_REQUEST;
     }
@@ -7198,7 +11152,7 @@ gcoSURF_Copy(
     {
         gctUINT y;
         gctUINT sourceOffset, targetOffset;
-        gctINT height;
+        gctINT height = 0;
         gctPOINTER pointer[3] = { gcvNULL };
 
 #if gcdENABLE_VG
@@ -7221,15 +11175,27 @@ gcoSURF_Copy(
 #endif
         {
             /* Flush the pipe. */
-            gcmERR_BREAK(gcoHARDWARE_FlushPipe());
+            gcmERR_BREAK(gcoHARDWARE_FlushPipe(gcvNULL, gcvNULL));
 
             /* Commit and stall the pipe. */
             gcmERR_BREAK(gcoHAL_Commit(gcvNULL, gcvTRUE));
 
-            /* Get the tile height. */
-            gcmERR_BREAK(gcoHARDWARE_QueryTileSize(gcvNULL, gcvNULL,
-                                                   gcvNULL, &height,
-                                                   gcvNULL));
+            switch (Surface->info.tiling)
+            {
+            case gcvTILED:
+                /* Get the tile height. */
+                gcmERR_BREAK(gcoHARDWARE_QueryTileSize(gcvNULL, gcvNULL,
+                                                       gcvNULL, &height,
+                                                       gcvNULL));
+                break;
+            case gcvSUPERTILED:
+                height = 64;
+                break;
+            default:
+                gcmASSERT(0);
+                height = 4;
+                break;
+            }
         }
         /* Lock the surfaces. */
         gcmERR_BREAK(gcoSURF_Lock(Source, gcvNULL, pointer));
@@ -7248,9 +11214,9 @@ gcoSURF_Copy(
         for (y = 0; y < Surface->info.alignedHeight; y += height)
         {
             /* Copy one row of tiles. */
-            gcmVERIFY_OK(gcoOS_MemCopy(target + targetOffset,
-                                       source + sourceOffset,
-                                       Surface->info.stride * height));
+            gcoOS_MemCopy(target + targetOffset,
+                          source + sourceOffset,
+                          Surface->info.stride * height);
 
             /* Move to next row of tiles. */
             sourceOffset += Source->info.stride  * height;
@@ -7275,7 +11241,76 @@ gcoSURF_Copy(
     gcmFOOTER();
     return status;
 }
-#endif /* VIVANTE_NO_3D */
+#endif
+
+#if gcdENABLE_3D
+gceSTATUS
+gcoSURF_IsHWResolveable(
+    IN gcoSURF SrcSurface,
+    IN gcoSURF DestSurface,
+    IN gcsPOINT_PTR SrcOrigin,
+    IN gcsPOINT_PTR DestOrigin,
+    IN gcsPOINT_PTR RectSize
+    )
+{
+    gceSTATUS status;
+    gcsPOINT  rectSize;
+    gctINT maxWidth;
+    gctINT maxHeight;
+
+    gcmHEADER_ARG("SrcSurface=0x%x DestSurface=0x%x SrcOrigin=0x%x "
+                  "DestOrigin=0x%x RectSize=0x%x",
+                  SrcSurface, DestSurface, SrcOrigin, DestOrigin, RectSize);
+
+    if ((DestOrigin->x == 0) &&
+        (DestOrigin->y == 0) &&
+        (RectSize->x == DestSurface->info.rect.right) &&
+        (RectSize->y == DestSurface->info.rect.bottom))
+    {
+        /* Full destination resolve, a special case. */
+        rectSize.x = DestSurface->info.alignedWidth;
+        rectSize.y = DestSurface->info.alignedHeight;
+    }
+    else
+    {
+        rectSize.x = RectSize->x;
+        rectSize.y = RectSize->y;
+    }
+
+    /* Make sure we don't go beyond the source surface. */
+    maxWidth  = SrcSurface->info.alignedWidth  - SrcOrigin->x;
+    maxHeight = SrcSurface->info.alignedHeight - SrcOrigin->y;
+
+    rectSize.x = gcmMIN(maxWidth,  rectSize.x);
+    rectSize.y = gcmMIN(maxHeight, rectSize.y);
+
+    /* Make sure we don't go beyond the target surface. */
+    maxWidth  = DestSurface->info.alignedWidth  - DestOrigin->x;
+    maxHeight = DestSurface->info.alignedHeight - DestOrigin->y;
+
+    rectSize.x = gcmMIN(maxWidth,  rectSize.x);
+    rectSize.y = gcmMIN(maxHeight, rectSize.y);
+
+    if ((SrcSurface->info.type == gcvSURF_DEPTH)
+    &&  (SrcSurface->info.tileStatusNode.pool != gcvPOOL_UNKNOWN)
+    )
+    {
+        status = gcvSTATUS_FALSE;
+    }
+    else
+    {
+         status = gcoHARDWARE_IsHWResolveable(&SrcSurface->info,
+                                              &DestSurface->info,
+                                              SrcOrigin,
+                                              DestOrigin,
+                                              &rectSize);
+    }
+
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+#endif /* gcdENABLE_3D */
 
 /*******************************************************************************
 **
@@ -7320,18 +11355,16 @@ gcoSURF_ConstructWrapper(
         surface = pointer;
 
         /* Reset the object. */
-        gcmVERIFY_OK(gcoOS_ZeroMemory(
-            surface, gcmSIZEOF(struct _gcoSURF)
-            ));
+        gcoOS_ZeroMemory(surface, gcmSIZEOF(struct _gcoSURF));
 
         /* Initialize the gcoSURF object.*/
         surface->object.type = gcvOBJ_SURF;
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
         /* 1 sample per pixel. */
         surface->info.samples.x = 1;
         surface->info.samples.y = 1;
-#endif /* VIVANTE_NO_3D */
+#endif
 
         /* One plane. */
         surface->depth = 1;
@@ -7343,6 +11376,8 @@ gcoSURF_ConstructWrapper(
         surface->info.node.physical3 = ~0U;
         surface->info.node.count     = 1;
         surface->referenceCount = 1;
+
+        surface->info.flags = gcvSURF_FLAG_NONE;
 
         /* Return pointer to the gcoSURF object. */
         *Surface = surface;
@@ -7356,6 +11391,50 @@ gcoSURF_ConstructWrapper(
 OnError:
 
     /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoSURF_SetFlags
+**
+**  Set status of the flag.
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to surface object.
+**      gceSURF_FLAG Flag
+**          Surface Flag
+**      gctBOOL Value
+**          New value for this flag.
+**
+**  OUTPUT:
+**      None
+**
+*/
+gceSTATUS
+gcoSURF_SetFlags(
+    IN gcoSURF Surface,
+    IN gceSURF_FLAG Flag,
+    IN gctBOOL Value
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gcmHEADER_ARG("Surface=0x%x Flag=0x%x Value=0x%x", Surface, Flag, Value);
+
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+
+    if(Value)
+    {
+        Surface->info.flags |= Flag;
+    }
+    else
+    {
+        Surface->info.flags &= ~Flag;
+    }
+
     gcmFOOTER();
     return status;
 }
@@ -7399,6 +11478,10 @@ gcoSURF_SetBuffer(
     )
 {
     gceSTATUS status;
+#if gcdENABLE_VG
+    gceHARDWARE_TYPE currentType = gcvHARDWARE_INVALID;
+#endif
+    gcsSURF_FORMAT_INFO_PTR surfInfo;
 
     gcmHEADER_ARG("Surface=0x%x Type=%d Format=%d Stride=%u Logical=0x%x "
                   "Physical=%08x",
@@ -7428,6 +11511,29 @@ gcoSURF_SetBuffer(
     Surface->logical  = (gctUINT8_PTR) Logical;
     Surface->physical = Physical;
 
+#if gcdENABLE_VG
+    gcmGETCURRENTHARDWARE(currentType);
+    if (currentType == gcvHARDWARE_VG)
+    {
+        /* Compute bits per pixel. */
+        gcmONERROR(gcoVGHARDWARE_ConvertFormat(gcvNULL,
+                                             Format,
+                                             (gctUINT32_PTR)&Surface->info.bitsPerPixel,
+                                             gcvNULL));
+    }
+    else
+#endif
+    {
+        /* Compute bits per pixel. */
+        gcmONERROR(gcoHARDWARE_ConvertFormat(Format,
+                                             (gctUINT32_PTR)&Surface->info.bitsPerPixel,
+                                             gcvNULL));
+    }
+
+    /* Initialize Surface->info.formatInfo */
+    gcmONERROR(gcoSURF_QueryFormat(Format, &surfInfo));
+    Surface->info.formatInfo = *surfInfo;
+
     /* Success. */
     gcmFOOTER_NO();
     return gcvSTATUS_OK;
@@ -7443,7 +11549,7 @@ OnError:
 **  gcoSURF_SetVideoBuffer
 **
 **  Set the underlying video buffer for the surface wrapper.
-**  The video plane addresses should be specified invidually.
+**  The video plane addresses should be specified individually.
 **
 **  INPUT:
 **
@@ -7506,13 +11612,17 @@ gcoSURF_SetWindow(
     gceSTATUS status;
     gctUINT32 offsetX;
     gctUINT32 offsetY;
-    gctUINT32 bitsPerPixel;
+    gctUINT   userStride;
+    gctUINT   halStride;
+    gctINT    bytesPerPixel;
 #if gcdSECURE_USER
     gcsHAL_INTERFACE iface;
 #endif
 #if gcdENABLE_VG
-    gceHARDWARE_TYPE currentHW;
+    gceHARDWARE_TYPE currentHW = gcvHARDWARE_INVALID;
 #endif
+    gcsSURF_FORMAT_INFO_PTR formatInfo;
+
     gcmHEADER_ARG("Surface=0x%x X=%u Y=%u Width=%u Height=%u",
                   Surface, X, Y, Width, Height);
 
@@ -7533,37 +11643,16 @@ gcoSURF_SetWindow(
     Surface->info.alignedWidth  = Width;
     Surface->info.alignedHeight = Height;
 
-#if gcdENABLE_VG
-    gcmGETCURRENTHARDWARE(currentHW);
-
-    if (currentHW == gcvHARDWARE_VG)
-    {
-        /* Compute bits per pixel. */
-        gcmONERROR(
-            gcoVGHARDWARE_ConvertFormat(gcvNULL,
-                                      Surface->info.format,
-                                      &bitsPerPixel,
-                                      gcvNULL));
-    }
-    else
-#endif
-    {
-        /* Compute bits per pixel. */
-        gcmONERROR(
-            gcoHARDWARE_ConvertFormat(Surface->info.format,
-                                      &bitsPerPixel,
-                                      gcvNULL));
-    }
-
     /* Stride is the same as the width? */
     if (Surface->autoStride)
     {
         /* Compute the stride. */
-        Surface->info.stride = Width * bitsPerPixel / 8;
+        Surface->info.stride = Width * Surface->info.bitsPerPixel / 8;
     }
     else
     {
 #if gcdENABLE_VG
+        gcmGETCURRENTHARDWARE(currentHW);
         if (currentHW == gcvHARDWARE_VG)
         {
             gcmONERROR(
@@ -7576,25 +11665,103 @@ gcoSURF_SetWindow(
 #endif
         {
             /* Align the surface size. */
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
             gcmONERROR(
-                gcoHARDWARE_AlignToTileCompatible(Surface->info.type,
+                gcoHARDWARE_AlignToTileCompatible(gcvNULL,
+                                                  Surface->info.type,
                                                   Surface->info.format,
                                                   &Surface->info.alignedWidth,
                                                   &Surface->info.alignedHeight,
+                                                  Surface->depth,
                                                   &Surface->info.tiling,
                                                   &Surface->info.superTiled));
 #else
             gcmONERROR(
-                gcoHARDWARE_AlignToTileCompatible(Surface->info.type,
+                gcoHARDWARE_AlignToTileCompatible(gcvNULL,
+                                                  Surface->info.type,
                                                   Surface->info.format,
                                                   &Surface->info.alignedWidth,
                                                   &Surface->info.alignedHeight,
+                                                  Surface->depth,
                                                   &Surface->info.tiling,
                                                   gcvNULL));
-#endif /* VIVANTE_NO_3D */
+#endif /* gcdENABLE_3D */
         }
     }
+
+#if gcdENABLE_VG
+    if (currentHW != gcvHARDWARE_VG)
+    {
+#endif
+
+    /* Get shortcut. */
+    formatInfo = &Surface->info.formatInfo;
+
+    /* bytes per pixel of first plane. */
+    switch (Surface->info.format)
+    {
+    case gcvSURF_YV12:
+    case gcvSURF_I420:
+    case gcvSURF_NV12:
+    case gcvSURF_NV21:
+    case gcvSURF_NV16:
+    case gcvSURF_NV61:
+        bytesPerPixel = 1;
+        halStride = Surface->info.alignedWidth;
+        break;
+
+    default:
+        bytesPerPixel = Surface->info.bitsPerPixel / 8;
+        halStride = (Surface->info.alignedWidth / formatInfo->blockWidth)
+                  * (formatInfo->blockSize / formatInfo->layers) / 8;
+        break;
+    }
+
+    /* Backup user stride. */
+    userStride = Surface->info.stride;
+
+    if (userStride != halStride)
+    {
+        if ((Surface->info.type != gcvSURF_BITMAP)
+        ||  (Surface->info.stride < Width * bytesPerPixel)
+        ||  (Surface->info.stride & (4 * bytesPerPixel - 1))
+        )
+        {
+            /*
+             * 1. For Vivante internal surfaces types, user buffer placement
+             * must be the same as what defined in HAL, otherwise the user
+             * buffer is not compatible with HAL.
+             * 2. For bitmap surface, user buffer stride may be larger than
+             * least stride defined in HAL, and should be aligned.
+             */
+            gcmONERROR(gcvSTATUS_NOT_SUPPORTED);
+        }
+
+        /* Calculte alignedWidth from user stride. */
+        Surface->info.alignedWidth = userStride / bytesPerPixel;
+    }
+
+    /* Compute the surface placement parameters. */
+    _ComputeSurfacePlacement(Surface);
+
+    if (userStride != Surface->info.stride)
+    {
+        /*
+         * Still not equal, which means user stride is not pixel aligned, ie,
+         * userStride != alignedWidth(user) * bytesPerPixel
+         */
+        Surface->info.stride = userStride;
+
+        /* Re-calculate slice size. */
+        Surface->info.sliceSize = userStride * (Surface->info.alignedHeight / formatInfo->blockHeight);
+    }
+
+    /* Restore alignedWidth. */
+    Surface->info.alignedWidth = halStride / bytesPerPixel;
+
+#if gcdENABLE_VG
+    }
+#endif
 
     /* Set the rectangle. */
     Surface->info.rect.left   = 0;
@@ -7602,16 +11769,39 @@ gcoSURF_SetWindow(
     Surface->info.rect.right  = Width;
     Surface->info.rect.bottom = Height;
 
-    offsetX = X * bitsPerPixel / 8;
+    offsetX = X * Surface->info.bitsPerPixel / 8;
     offsetY = Y * Surface->info.stride;
 
-    /* Compute the surface size. */
-    Surface->info.size
-        = Surface->info.stride
-        * Surface->info.alignedHeight;
+    /* Compute the surface sliceSize and size. */
+    Surface->info.sliceSize = (Surface->info.alignedWidth  / Surface->info.formatInfo.blockWidth)
+                            * (Surface->info.alignedHeight / Surface->info.formatInfo.blockHeight)
+                            * Surface->info.formatInfo.blockSize / 8;
+
+    Surface->info.layerSize = Surface->info.sliceSize
+                            * Surface->depth;
+
+    /* Always single layer for user surface */
+    gcmASSERT(Surface->info.formatInfo.layers == 1);
+
+    Surface->info.size      = Surface->info.layerSize
+                            * Surface->info.formatInfo.layers;
+
+    /* Need to map logical pointer? */
+    if (Surface->logical == gcvNULL)
+    {
+        gcmONERROR(gcvSTATUS_NOT_SUPPORTED);
+    }
+    else
+    {
+        Surface->info.node.logical = (gctUINT8_PTR) Surface->logical + offsetY;
+    }
 
     /* Need to map physical pointer? */
+#if gcdPROCESS_ADDRESS_SPACE
+    if (1)
+#else
     if (Surface->physical == ~0U)
+#endif
     {
         /* Map the physical pointer. */
         gcmONERROR(
@@ -7629,32 +11819,12 @@ gcoSURF_SetWindow(
         Surface->info.node.physical = Surface->physical + offsetY;
     }
 
-    /* Need to map logical pointer? */
-    if (Surface->logical == gcvNULL)
-    {
-        gctPOINTER pointer = gcvNULL;
-
-        /* Map the logical pointer. */
-        gcmONERROR(
-            gcoHAL_MapMemory(gcvNULL,
-                             gcmINT2PTR(Surface->physical + offsetY),
-                             Surface->info.size,
-                             &pointer));
-
-        Surface->info.node.logical                 = pointer;
-        Surface->info.node.u.wrapped.logicalMapped = gcvTRUE;
-    }
-    else
-    {
-        Surface->info.node.logical = (gctUINT8_PTR) Surface->logical + offsetY;
-    }
-
     Surface->info.node.logical  += offsetX;
     Surface->info.node.physical += offsetX;
 
 #if gcdSECURE_USER
     iface.command = gcvHAL_MAP_USER_MEMORY;
-    iface.u.MapUserMemory.memory  = Surface->info.node.logical;
+    iface.u.MapUserMemory.memory  = gcmPTR_TO_UINT64(Surface->info.node.logical);
     iface.u.MapUserMemory.address = Surface->info.node.physical;
     iface.u.MapUserMemory.size    = Surface->info.size;
     gcmONERROR(gcoOS_DeviceControl(gcvNULL,
@@ -7677,6 +11847,54 @@ OnError:
     /* Return the status. */
     gcmFOOTER();
     return status;
+}
+
+
+/*******************************************************************************
+**
+**  gcoSURF_SetAlignment
+**
+**  Set the alignment width/height of the surface and calculate stride/size.
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to gcoSURF object.
+**
+**      gctINT Width, Height
+**          Size of the surface in pixels.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoSURF_SetAlignment(
+    IN gcoSURF Surface,
+    IN gctUINT Width,
+    IN gctUINT Height
+    )
+{
+    gcmHEADER_ARG("Surface=0x%x Width=%u Height=%u", Surface, Width, Height);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+
+    Surface->info.alignedWidth = Width;
+    Surface->info.alignedHeight = Height;
+
+    /* Compute the surface stride. */
+    Surface->info.stride = Surface->info.alignedWidth
+                           * Surface->info.bitsPerPixel / 8;
+
+    /* Compute the surface size. */
+    Surface->info.size
+        = Surface->info.stride
+        * Surface->info.alignedHeight;
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
 }
 
 /*******************************************************************************
@@ -7747,16 +11965,17 @@ gcoSURF_QueryReferenceCount(
 gceSTATUS
 gcoSURF_SetOffset(
     IN gcoSURF Surface,
-    IN gctUINT Offset
+    IN gctSIZE_T Offset
     )
 {
-    gceSTATUS   status = gcvSTATUS_OK;
+    gceSTATUS status = gcvSTATUS_OK;
 
-    Surface->info.offset = Offset;
+    gcmSAFECASTSIZET(Surface->info.offset, Offset);
 
     return status;
 }
 
+#if gcdENABLE_3D
 gceSTATUS
 gcoSURF_IsRenderable(
     IN gcoSURF Surface
@@ -7770,9 +11989,1132 @@ gcoSURF_IsRenderable(
     gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
 
     /* Check whether the surface is renderable. */
-    status = gcoHARDWARE_IsSurfaceRenderable(&Surface->info);
+    status = gcoHARDWARE_QuerySurfaceRenderable(gcvNULL, &Surface->info);
 
     /* Return status. */
     gcmFOOTER();
     return status;
 }
+
+gceSTATUS
+gcoSURF_IsFormatRenderableAsRT(
+    IN gcoSURF Surface
+    )
+{
+    gceSTATUS               status;
+    gceSURF_FORMAT          format;
+
+    gcmHEADER_ARG("Surface=0x%x", Surface);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Surface, gcvOBJ_SURF);
+
+    /* Check whether the surface format is renderable when
+       Tex bind to fbo. */
+    format = Surface->info.format;
+
+    if(format >= 700)
+        status = gcvSTATUS_FALSE;
+    else
+        status = gcvSTATUS_TRUE;
+
+    /* Return status. */
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gcoSURF_Swap(
+    IN gcoSURF Surface1,
+    IN gcoSURF Surface2
+    )
+{
+    struct _gcoSURF temp;
+
+    gcmHEADER_ARG("Surface1=%p Surface2=%p", Surface1, Surface2);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Surface1, gcvOBJ_SURF);
+    gcmVERIFY_OBJECT(Surface2, gcvOBJ_SURF);
+
+    /* Swap the surfaces. */
+    temp      = *Surface1;
+    *Surface1 = *Surface2;
+    *Surface2 = temp;
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+}
+
+#define gcdCOLOR_SPACE_CONVERSION_NONE         0
+#define gcdCOLOR_SPACE_CONVERSION_TO_LINEAR    1
+#define gcdCOLOR_SPACE_CONVERSION_TO_NONLINEAR 2
+
+static
+gceSTATUS
+_AveragePixels(
+    gcsPIXEL *pixels,
+    gctINT pixelCount,
+    gceFORMAT_DATATYPE inputFormat,
+    gcsPIXEL *outPixel
+    )
+{
+    gctINT i;
+    gcsPIXEL mergePixel;
+
+    gcoOS_ZeroMemory(&mergePixel, sizeof(gcsPIXEL));
+
+    switch(inputFormat)
+    {
+    case gcvFORMAT_DATATYPE_UNSIGNED_INTEGER:
+        for (i = 0; i < pixelCount; i++)
+        {
+            mergePixel.pui.r += pixels[i].pui.r;
+            mergePixel.pui.g += pixels[i].pui.g;
+            mergePixel.pui.b += pixels[i].pui.b;
+            mergePixel.pui.a += pixels[i].pui.a;
+            mergePixel.pui.d += pixels[i].pui.d;
+            mergePixel.pui.s += pixels[i].pui.s;
+        }
+
+        mergePixel.pui.r /= pixelCount;
+        mergePixel.pui.g /= pixelCount;
+        mergePixel.pui.b /= pixelCount;
+        mergePixel.pui.a /= pixelCount;
+        mergePixel.pui.d /= pixelCount;
+        mergePixel.pui.s /= pixelCount;
+        break;
+
+    case gcvFORMAT_DATATYPE_SIGNED_INTEGER:
+        for (i = 0; i < pixelCount; i++)
+        {
+            mergePixel.pi.r += pixels[i].pi.r;
+            mergePixel.pi.g += pixels[i].pi.g;
+            mergePixel.pi.b += pixels[i].pi.b;
+            mergePixel.pi.a += pixels[i].pi.a;
+            mergePixel.pi.d += pixels[i].pi.d;
+            mergePixel.pi.s += pixels[i].pi.s;
+        }
+
+        mergePixel.pi.r /= pixelCount;
+        mergePixel.pi.g /= pixelCount;
+        mergePixel.pi.b /= pixelCount;
+        mergePixel.pi.a /= pixelCount;
+        mergePixel.pi.d /= pixelCount;
+        mergePixel.pi.s /= pixelCount;
+
+        break;
+    default:
+        for (i = 0; i < pixelCount; i++)
+        {
+            mergePixel.pf.r += pixels[i].pf.r;
+            mergePixel.pf.g += pixels[i].pf.g;
+            mergePixel.pf.b += pixels[i].pf.b;
+            mergePixel.pf.a += pixels[i].pf.a;
+            mergePixel.pf.d += pixels[i].pf.d;
+            mergePixel.pf.s += pixels[i].pf.s;
+        }
+
+        mergePixel.pf.r /= pixelCount;
+        mergePixel.pf.g /= pixelCount;
+        mergePixel.pf.b /= pixelCount;
+        mergePixel.pf.a /= pixelCount;
+        mergePixel.pf.d /= pixelCount;
+        mergePixel.pf.s /= pixelCount;
+        break;
+    }
+
+    *outPixel = mergePixel;
+
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoSURF_BlitCPU(
+    IN gcsSURF_BLIT_ARGS* args
+    )
+{
+    gceSTATUS status;
+    gcoSURF srcSurf, dstSurf;
+    gctPOINTER srcAddr[3] = {gcvNULL};
+    gctPOINTER dstAddr[3] = {gcvNULL};
+    _PFNreadPixel pfReadPixel = gcvNULL;
+    _PFNwritePixel pfWritePixel = gcvNULL;
+    _PFNcalcPixelAddr pfSrcCalcAddr = gcvNULL;
+    _PFNcalcPixelAddr pfDstCalcAddr = gcvNULL;
+    gctFLOAT xScale, yScale, zScale;
+    gctINT iDst, jDst, kDst;
+    gctINT colorSpaceConvert = gcdCOLOR_SPACE_CONVERSION_NONE;
+    gcsSURF_BLIT_ARGS blitArgs;
+    gctINT scissorHeight = 0;
+    gctINT scissorWidth = 0;
+
+    gcsSURF_FORMAT_INFO *srcFmtInfo, *dstFmtInfo;
+
+    gcoOS_MemCopy(&blitArgs, args, sizeof(gcsSURF_BLIT_ARGS));
+
+    srcSurf = args->srcSurface;
+    dstSurf = args->dstSurface;
+
+    /* MSAA surface should multiple samples.*/
+    blitArgs.srcWidth  *= srcSurf->info.samples.x;
+    blitArgs.srcHeight *= srcSurf->info.samples.y;
+    blitArgs.srcX      *= srcSurf->info.samples.x;
+    blitArgs.srcY      *= srcSurf->info.samples.y;
+
+    blitArgs.dstWidth  *= dstSurf->info.samples.x;
+    blitArgs.dstHeight *= dstSurf->info.samples.y;
+    blitArgs.dstX      *= dstSurf->info.samples.x;
+    blitArgs.dstY      *= dstSurf->info.samples.y;
+
+    if(blitArgs.scissorTest)
+    {
+        scissorHeight = blitArgs.scissor.bottom - blitArgs.scissor.top;
+        scissorWidth  = blitArgs.scissor.right - blitArgs.scissor.left;
+        blitArgs.scissor.top    *= dstSurf->info.samples.y;
+        blitArgs.scissor.left   *= dstSurf->info.samples.x;
+        blitArgs.scissor.bottom  = scissorHeight * dstSurf->info.samples.y + blitArgs.scissor.top;
+        blitArgs.scissor.right   = scissorWidth * dstSurf->info.samples.x + blitArgs.scissor.left;
+    }
+
+    if (!args || !args->srcSurface || !args->dstSurface)
+    {
+        return gcvSTATUS_INVALID_ARGUMENT;
+    }
+
+    if (args->srcSurface == args->dstSurface)
+    {
+        return gcvSTATUS_INVALID_ARGUMENT;
+    }
+
+    /* If either the src or dst rect are negative */
+    if (0 > blitArgs.srcWidth || 0 > blitArgs.srcHeight || 0 > blitArgs.srcDepth ||
+        0 > blitArgs.dstWidth || 0 > blitArgs.dstHeight || 0 > blitArgs.dstDepth)
+    {
+        return gcvSTATUS_INVALID_ARGUMENT;
+    }
+
+    /* If either the src or dst rect are zero, skip the blit */
+    if (0 == blitArgs.srcWidth || 0 == blitArgs.srcHeight || 0 == blitArgs.srcDepth ||
+        0 == blitArgs.dstWidth || 0 == blitArgs.dstHeight || 0 == blitArgs.dstDepth)
+    {
+        return gcvSTATUS_OK;
+    }
+
+    srcFmtInfo = &srcSurf->info.formatInfo;
+    dstFmtInfo = &dstSurf->info.formatInfo;
+
+    /* If either the src or dst rect has no intersection with the surface, skip the blit. */
+    if (blitArgs.srcX + blitArgs.srcWidth  <= 0 || blitArgs.srcX >= (gctINT)(srcSurf->info.alignedWidth)  ||
+        blitArgs.srcY + blitArgs.srcHeight <= 0 || blitArgs.srcY >= (gctINT)(srcSurf->info.alignedHeight) ||
+        blitArgs.srcZ + blitArgs.srcDepth  <= 0 || blitArgs.srcZ >= (gctINT)(srcSurf->depth)              ||
+        blitArgs.dstX + blitArgs.dstWidth  <= 0 || blitArgs.dstX >= (gctINT)(dstSurf->info.alignedWidth)  ||
+        blitArgs.dstY + blitArgs.dstHeight <= 0 || blitArgs.dstY >= (gctINT)(dstSurf->info.alignedHeight) ||
+        blitArgs.dstZ + blitArgs.dstDepth  <= 0 || blitArgs.dstZ >= (gctINT)(dstSurf->depth))
+    {
+        return gcvSTATUS_OK;
+    }
+
+    /* Propagate canDropStencil flag to the destination surface */
+    dstSurf->info.canDropStencilPlane = srcSurf->info.canDropStencilPlane;
+
+    if (dstSurf->info.hzNode.valid)
+    {
+        /* Disable any HZ attached to destination. */
+        dstSurf->info.hzDisabled = gcvTRUE;
+    }
+
+    /*
+    ** For integer format upload/blit, the data type must be totally matched.
+    ** And we should not do conversion to float per spec, or precision will be lost.
+    */
+    if (((srcFmtInfo->fmtDataType == gcvFORMAT_DATATYPE_UNSIGNED_INTEGER) ||
+         (srcFmtInfo->fmtDataType == gcvFORMAT_DATATYPE_SIGNED_INTEGER)) &&
+         (srcFmtInfo->fmtDataType != dstFmtInfo->fmtDataType))
+    {
+        return gcvSTATUS_NOT_SUPPORTED;
+    }
+
+    /* TODO: those function pointers can be recorded in gcoSURF */
+    pfReadPixel  = gcoSURF_GetReadPixelFunc(srcSurf);
+    pfWritePixel = gcoSURF_GetWritePixelFunc(dstSurf);
+    pfSrcCalcAddr = gcoHARDWARE_GetProcCalcPixelAddr(gcvNULL, srcSurf);
+    pfDstCalcAddr = gcoHARDWARE_GetProcCalcPixelAddr(gcvNULL, dstSurf);
+
+    /* set color space conversion flag */
+    if (srcSurf->info.colorSpace != dstSurf->info.colorSpace)
+    {
+        gcmASSERT(dstSurf->info.colorSpace != gcvSURF_COLOR_SPACE_UNKNOWN);
+
+        if (srcSurf->info.colorSpace == gcvSURF_COLOR_SPACE_LINEAR)
+        {
+            colorSpaceConvert = gcdCOLOR_SPACE_CONVERSION_TO_NONLINEAR;
+        }
+        else if (srcSurf->info.colorSpace == gcvSURF_COLOR_SPACE_NONLINEAR)
+        {
+            colorSpaceConvert = gcdCOLOR_SPACE_CONVERSION_TO_LINEAR;
+        }
+        else
+        {
+            /* color space should NOT be gcvSURF_COLOR_SPACE_UNKNOWN */
+            gcmASSERT(0);
+        }
+    }
+
+    if (!pfReadPixel || !pfWritePixel || !pfSrcCalcAddr || !pfDstCalcAddr)
+    {
+        return gcvSTATUS_INVALID_ARGUMENT;
+    }
+
+    /* Flush the GPU cache */
+    gcmONERROR(gcoHARDWARE_FlushTileStatus(gcvNULL, &srcSurf->info, gcvTRUE));
+    gcmONERROR(gcoHARDWARE_DisableTileStatus(gcvNULL, &dstSurf->info, gcvTRUE));
+
+    /* Synchronize with the GPU. */
+    /* TODO: if both of the surfaces previously were not write by GPU,
+    ** or already did the sync, no need to do it again.
+    */
+    gcmONERROR(gcoHARDWARE_FlushPipe(gcvNULL, gcvNULL));
+    gcmONERROR(gcoHARDWARE_Commit(gcvNULL));
+    gcmONERROR(gcoHARDWARE_Stall(gcvNULL));
+
+    /* Lock the surfaces. */
+    gcmONERROR(gcoSURF_Lock(srcSurf, gcvNULL, srcAddr));
+    gcmONERROR(gcoSURF_Lock(dstSurf, gcvNULL, dstAddr));
+
+    /* Src surface might be written by GPU previously, CPU need to invalidate
+    ** its cache before reading.
+    ** Dst surface alo need invalidate CPU cache to guarantee CPU cache is coherent
+    ** with memory, so it's correct to flush out after writing.
+    */
+    gcmONERROR(gcoSURF_NODE_Cache(&srcSurf->info.node,
+                                  srcAddr[0],
+                                  srcSurf->info.size,
+                                  gcvCACHE_INVALIDATE));
+    gcmONERROR(gcoSURF_NODE_Cache(&dstSurf->info.node,
+                                  dstAddr[0],
+                                  dstSurf->info.size,
+                                  gcvCACHE_INVALIDATE));
+
+    xScale = blitArgs.srcWidth  / (gctFLOAT)blitArgs.dstWidth;
+    yScale = blitArgs.srcHeight / (gctFLOAT)blitArgs.dstHeight;
+    zScale = blitArgs.srcDepth  / (gctFLOAT)blitArgs.dstDepth;
+
+    for (kDst = blitArgs.dstZ; kDst < blitArgs.dstZ + blitArgs.dstDepth; ++kDst)
+    {
+        gctINT kSrc;
+        gctINT paceI, paceJ, paceK;
+        gctINT paceImax, paceJmax, paceKmax;
+
+        if (kDst < 0 || kDst >= (gctINT)dstSurf->depth)
+        {
+            continue;
+        }
+
+        kSrc = blitArgs.srcZ + (gctINT)((kDst - blitArgs.dstZ) * zScale);
+
+        if (kSrc < 0 || kSrc >= (gctINT)srcSurf->depth)
+        {
+            continue;
+        }
+
+        for (jDst = blitArgs.dstY; jDst < blitArgs.dstY + blitArgs.dstHeight; ++jDst)
+        {
+            gctINT jSrc;
+
+            if (jDst < 0 || jDst >= (gctINT)dstSurf->info.alignedHeight)
+            {
+                continue;
+            }
+
+            /* scissor test */
+            if (blitArgs.scissorTest &&
+                (jDst < blitArgs.scissor.top || jDst >= blitArgs.scissor.bottom))
+            {
+                continue;
+            }
+
+            jSrc = (gctINT)((jDst - blitArgs.dstY) * yScale);
+            if (jSrc > blitArgs.srcHeight - 1)
+            {
+                jSrc = blitArgs.srcHeight - 1;
+            }
+            if (blitArgs.yReverse)
+            {
+                jSrc = blitArgs.srcHeight - 1 - jSrc;
+            }
+            jSrc += blitArgs.srcY;
+
+            if (jSrc < 0 || jSrc >= (gctINT)srcSurf->info.alignedHeight)
+            {
+                continue;
+            }
+
+            for (iDst = blitArgs.dstX; iDst < blitArgs.dstX + blitArgs.dstWidth; ++iDst)
+            {
+                gcsPIXEL internal;
+                gcsPIXEL samplePixels[32];
+                gctUINT sampleCount       = 0;
+                gctPOINTER srcAddr_l[4]   = {gcvNULL};
+                gctPOINTER dstAddr_l[4]   = {gcvNULL};
+                gctINT     iSrc;
+
+                if (iDst < 0 || iDst >= (gctINT)dstSurf->info.alignedWidth)
+                {
+                    continue;
+                }
+
+                /* scissor test */
+                if (blitArgs.scissorTest &&
+                    (iDst < blitArgs.scissor.left || iDst >= blitArgs.scissor.right))
+                {
+                    continue;
+                }
+
+                iSrc = (gctINT)((iDst - blitArgs.dstX) * xScale);
+                if (iSrc > blitArgs.srcWidth - 1)
+                {
+                    iSrc = blitArgs.srcWidth - 1;
+                }
+                if (blitArgs.xReverse)
+                {
+                    iSrc = blitArgs.srcWidth - 1 - iSrc;
+                }
+                iSrc += blitArgs.srcX;
+
+                if (iSrc < 0 || iSrc >= (gctINT)srcSurf->info.alignedWidth)
+                {
+                    continue;
+                }
+
+                paceImax = (gctINT)(xScale + 0.5f) > 1 ? (gctINT)(xScale + 0.5f) : 1;
+                paceJmax = (gctINT)(yScale + 0.5f) > 1 ? (gctINT)(yScale + 0.5f) : 1;
+                paceKmax = (gctINT)(zScale + 0.5f) > 1 ? (gctINT)(zScale + 0.5f) : 1;
+
+                for (paceK = 0; paceK < paceKmax; paceK++)
+                {
+                    for(paceJ = 0; paceJ < paceJmax; paceJ++)
+                    {
+                        for(paceI = 0; paceI < paceImax; paceI++)
+
+                        {
+                            gctINT sampleI = iSrc + paceI * (blitArgs.xReverse ? -1 : 1);
+                            gctINT sampleJ = jSrc + paceJ * (blitArgs.yReverse ? -1 : 1);
+                            gctINT sampleK = kSrc + paceK;
+
+                            sampleI = gcmCLAMP(sampleI, 0, (gctINT)(srcSurf->info.alignedWidth - 1));
+                            sampleJ = gcmCLAMP(sampleJ, 0, (gctINT)(srcSurf->info.alignedHeight - 1));
+                            sampleK = gcmCLAMP(sampleK, 0, (gctINT)(srcSurf->depth - 1));
+
+                            pfSrcCalcAddr(srcSurf, (gctSIZE_T)sampleI, (gctSIZE_T)sampleJ, (gctSIZE_T)sampleK, srcAddr_l);
+
+                            pfReadPixel(srcAddr_l, &samplePixels[sampleCount]);
+
+                            if (colorSpaceConvert == gcdCOLOR_SPACE_CONVERSION_TO_LINEAR)
+                            {
+                                gcoSURF_PixelToLinear(&samplePixels[sampleCount]);
+                            }
+                            else if (colorSpaceConvert == gcdCOLOR_SPACE_CONVERSION_TO_NONLINEAR)
+                            {
+                                gcoSURF_PixelToNonLinear(&samplePixels[sampleCount]);
+
+                            }
+                            sampleCount++;
+                        }
+                    }
+                }
+
+                if (sampleCount > 1)
+                {
+                    _AveragePixels(samplePixels, sampleCount, srcFmtInfo->fmtDataType, &internal);
+                }
+                else
+                {
+                    internal = samplePixels[0];
+                }
+
+                pfDstCalcAddr(dstSurf, (gctSIZE_T)iDst, (gctSIZE_T)jDst, (gctSIZE_T)kDst, dstAddr_l);
+
+                pfWritePixel(&internal, dstAddr_l, args->flags);
+
+                /* TODO: If they are of same type, we can skip some conversion */
+            }
+        }
+    }
+
+    /* Dst surface was written by CPU and might be accessed by GPU later */
+    gcmONERROR(gcoSURF_NODE_Cache(&dstSurf->info.node,
+                                  dstAddr[0],
+                                  dstSurf->info.size,
+                                  gcvCACHE_CLEAN));
+
+    if (gcoHARDWARE_IsFeatureAvailable(gcvNULL, gcvFEATURE_PE_DITHER_FIX) == gcvFALSE &&
+        args->flags == 0 && /* Full mask overwritten */
+        args->dstX == 0 && args->dstWidth  >= dstSurf->info.rect.right  / dstSurf->info.samples.x &&
+        args->dstY == 0 && args->dstHeight >= dstSurf->info.rect.bottom / dstSurf->info.samples.y)
+    {
+        dstSurf->info.deferDither3D = gcvFALSE;
+    }
+
+    if (dstSurf->info.paddingFormat &&
+        args->dstX == 0 && args->dstWidth  >= dstSurf->info.rect.right  / dstSurf->info.samples.x &&
+        args->dstY == 0 && args->dstHeight >= dstSurf->info.rect.bottom / dstSurf->info.samples.y)
+    {
+        dstSurf->info.garbagePadded = gcvFALSE;
+    }
+
+#if gcdDUMP
+    /* verify the source */
+    gcmDUMP_BUFFER(gcvNULL,
+                   "verify",
+                   srcSurf->info.node.physical,
+                   srcSurf->info.node.logical,
+                   0,
+                   srcSurf->info.size);
+    /* upload the destination */
+    gcmDUMP_BUFFER(gcvNULL,
+                   "memory",
+                   dstSurf->info.node.physical,
+                   dstSurf->info.node.logical,
+                   0,
+                   dstSurf->info.size);
+#endif
+
+OnError:
+    /* Unlock the surfaces. */
+    if (srcAddr[0])
+    {
+        gcoSURF_Unlock(srcSurf, srcAddr[0]);
+    }
+    if (dstAddr[0])
+    {
+        gcoSURF_Unlock(dstSurf, dstAddr[0]);
+    }
+
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoSURF_BlitDraw(
+    IN gcsSURF_BLITDRAW_ARGS *args
+    )
+{
+    gceSTATUS status;
+    gcmHEADER_ARG("args=0x%x", args);
+
+    status = gcoHARDWARE_BlitDraw(args);
+
+    gcmFOOTER_NO();
+    return status;
+
+}
+
+gceSTATUS
+gcoSURF_Preserve(
+    IN gcoSURF Source,
+    IN gcoSURF Dest,
+    IN gcsRECT_PTR MaskRect
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+    gcsRECT rects[4];
+    gctINT  count = 0;
+    gctINT  width, height;
+    gctUINT resolveAlignmentX = 0;
+    gctUINT resolveAlignmentY = 0;
+    gctUINT tileAlignmentX    = 0;
+    gctUINT tileAlignmentY    = 0;
+
+    gcmHEADER_ARG("Source=0x%x Dest=0x%x MaskRect=0x%x",
+                  Source, Dest,
+                  MaskRect);
+
+    gcmASSERT(!(Dest->info.flags & gcvSURF_FLAG_CONTENT_UPDATED));
+
+    /* Get surface size. */
+    width  = Dest->info.rect.right  / Dest->info.samples.x;
+    height = Dest->info.rect.bottom / Dest->info.samples.y;
+
+    if ((MaskRect != gcvNULL) &&
+        (MaskRect->left   <= 0) &&
+        (MaskRect->top    <= 0) &&
+        (MaskRect->right  >= (gctINT) width) &&
+        (MaskRect->bottom >= (gctINT) height))
+    {
+        gcmFOOTER_NO();
+        /* Full screen clear. No copy. */
+        return gcvSTATUS_OK;
+    }
+
+    /* Query surface resolve alignment parameters. */
+    gcmONERROR(
+        gcoHARDWARE_GetSurfaceResolveAlignment(gcvNULL,
+                                               &Dest->info,
+                                               &tileAlignmentX,
+                                               &tileAlignmentY,
+                                               &resolveAlignmentX,
+                                               &resolveAlignmentY));
+
+    if ((MaskRect == gcvNULL) ||
+        (MaskRect->left == MaskRect->right) ||
+        (MaskRect->top  == MaskRect->bottom))
+    {
+        /* Zarro clear rect, need copy full surface. */
+        rects[0].left   = 0;
+        rects[0].top    = 0;
+        rects[0].right  = gcmALIGN(width,  resolveAlignmentX);
+        rects[0].bottom = gcmALIGN(height, resolveAlignmentY);
+        count = 1;
+    }
+    else
+    {
+        gcsRECT maskRect;
+
+        if (Dest->info.flags & gcvSURF_FLAG_CONTENT_YINVERTED)
+        {
+            /* Y inverted content. */
+            maskRect.left   = MaskRect->left;
+            maskRect.top    = height - MaskRect->bottom;
+            maskRect.right  = MaskRect->right;
+            maskRect.bottom = height - MaskRect->top;
+        }
+        else
+        {
+            maskRect = *MaskRect;
+        }
+
+        /* Avoid right,bottom coordinate exceeding surface boundary. */
+        if (tileAlignmentX < resolveAlignmentX)
+        {
+            tileAlignmentX = resolveAlignmentX;
+        }
+
+        if (tileAlignmentY < resolveAlignmentY)
+        {
+            tileAlignmentY = resolveAlignmentY;
+        }
+
+        /*
+         *  +------------------------+
+         *  |                        |
+         *  |           r1           |
+         *  |                        |
+         *  |......+----------+......|
+         *  |      |          |      |
+         *  |  r0  |  mask    |  r2  |
+         *  |      |   rect   |      |
+         *  |......+----------+......|
+         *  |                        |
+         *  |           r3           |
+         *  |                        |
+         *  +------------------------+
+         */
+
+        /* Get real size of clear  */
+        if (maskRect.left > 0)
+        {
+            rects[count].left   = 0;
+            rects[count].top    = gcmALIGN_BASE(maskRect.top, tileAlignmentY);
+            rects[count].right  = gcmALIGN(maskRect.left, resolveAlignmentX);
+            rects[count].bottom = rects[count].top + gcmALIGN(maskRect.bottom - rects[count].top, resolveAlignmentY);
+            count++;
+        }
+
+        if (maskRect.top > 0)
+        {
+            rects[count].left   = 0;
+            rects[count].top    = 0;
+            rects[count].right  = gcmALIGN(width, resolveAlignmentX);
+            rects[count].bottom = gcmALIGN(maskRect.top, resolveAlignmentY);
+            count++;
+        }
+
+        if (maskRect.right < width)
+        {
+            rects[count].left   = gcmALIGN_BASE(maskRect.right, tileAlignmentX);
+            rects[count].top    = gcmALIGN_BASE(maskRect.top,   tileAlignmentY);
+            rects[count].right  = rects[count].left + gcmALIGN(width - rects[count].left, resolveAlignmentX);
+            rects[count].bottom = rects[count].top  + gcmALIGN(maskRect.bottom - rects[count].top, resolveAlignmentY);
+            count++;
+        }
+
+        if (maskRect.bottom < height)
+        {
+            rects[count].left   = 0;
+            rects[count].top    = gcmALIGN_BASE(maskRect.bottom, tileAlignmentY);
+            rects[count].right  = gcmALIGN(width, resolveAlignmentX);
+            rects[count].bottom = rects[count].top + gcmALIGN(height - rects[count].top, resolveAlignmentY);
+            count++;
+        }
+    }
+
+    /* Preserve calculated rects. */
+    gcmONERROR(
+        gcoHARDWARE_PreserveRects(gcvNULL,
+                                  &Source->info,
+                                  &Dest->info,
+                                  rects,
+                                  count));
+
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    gcmFOOTER();
+    return status;
+}
+#endif
+
+gceSTATUS
+gcoSURF_ResetSurWH(
+    IN gcoSURF Surface,
+    IN gctUINT oriw,
+    IN gctUINT orih,
+    IN gctUINT alignw,
+    IN gctUINT alignh,
+    IN gceSURF_FORMAT fmt
+)
+{
+    gceSTATUS status;
+    Surface->info.rect.right  = oriw;
+    Surface->info.rect.bottom = orih;
+    Surface->info.alignedWidth = alignw;
+    Surface->info.alignedHeight = alignh;
+
+    gcmONERROR(gcoHARDWARE_ConvertFormat(
+                          fmt,
+                          (gctUINT32_PTR)&Surface->info.bitsPerPixel,
+                          gcvNULL));
+
+    /* Compute surface placement parameters. */
+    _ComputeSurfacePlacement(Surface);
+
+    Surface->info.layerSize = Surface->info.sliceSize * Surface->depth;
+
+    gcmASSERT(Surface->info.formatInfo.layers == 1);
+
+    Surface->info.size = Surface->info.layerSize * Surface->info.formatInfo.layers;
+
+    /* Success. */
+    return gcvSTATUS_OK;
+
+OnError:
+    /* Return the status. */
+    return status;
+
+}
+
+/*******************************************************************************
+**
+**  gcoSURF_UpdateTimeStamp
+**
+**  Increase timestamp of a surface.
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to gcoSURF object.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoSURF_UpdateTimeStamp(
+    IN gcoSURF Surface
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+
+    gcmHEADER_ARG("Surface=0x%X", Surface);
+    gcmVERIFY_ARGUMENT(Surface != gcvNULL);
+
+    /* Increase timestamp value. */
+    Surface->info.timeStamp++;
+
+    gcmFOOTER_NO();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoSURF_UpdateTimeStamp
+**
+**  Query timestamp of a surface.
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to gcoSURF object.
+**
+**  OUTPUT:
+**
+**      gctUINT64 * TimeStamp
+**          Pointer to hold the timestamp. Can not be null.
+*/
+gceSTATUS
+gcoSURF_QueryTimeStamp(
+    IN gcoSURF Surface,
+    OUT gctUINT64 * TimeStamp
+    )
+{
+    gceSTATUS status = gcvSTATUS_OK;
+
+    gcmHEADER_ARG("Surface=0x%x", Surface);
+    gcmVERIFY_ARGUMENT(Surface != gcvNULL);
+    gcmVERIFY_ARGUMENT(TimeStamp != gcvNULL);
+
+    /* Increase timestamp value. */
+    *TimeStamp = Surface->info.timeStamp;
+
+    gcmFOOTER_ARG("*TimeStamp=%lld", *TimeStamp);
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoSURF_AllocShBuffer
+**
+**  Allocate shared buffer (gctSHBUF) for this surface, so that its shared
+**  states can be accessed across processes.
+**
+**  Shared buffer is freed when surface is destroyed.
+**
+**  Usage:
+**  1. Process (A) constructed a surface (a) which is to be used by other
+**     processes such as process (B).
+**
+**  2. Process (A) need alloc ShBuf (s) by gcoSURF_AllocShBuffer for surface
+**     (a) if (a) need shared its states to other processes.
+**
+**  3. Process (B) need get surface node and other information of surface (a)
+**     includes the ShBuf handle by some IPC method (such as android
+**     Binder mechanism). So process (B) wrapps it as surface (b).
+**
+**  4. Process (B) need call gcoSURF_BindShBuffer on surface (b) with ShBuf (s)
+**     to connect.
+**
+**  5. Processes can then call gcoSURF_PushSharedInfo/gcoSURF_PopSharedInfo to
+**     shared states.
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to gcoSURF object.
+**
+**  OUTPUT:
+**
+**      gctSHBUF * ShBuf
+**          Pointer to hold shared buffer handle.
+*/
+gceSTATUS
+gcoSURF_AllocShBuffer(
+    IN gcoSURF Surface,
+    OUT gctSHBUF * ShBuf
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Surface=0x%x ShBuf=%d",
+                  Surface, (gctUINT32) (gctUINTPTR_T) ShBuf);
+
+    gcmVERIFY_ARGUMENT(Surface != gcvNULL);
+
+    if (Surface->info.shBuf == gcvNULL)
+    {
+        /* Create ShBuf. */
+        gcmONERROR(
+            gcoHAL_CreateShBuffer(sizeof (gcsSURF_SHARED_INFO),
+                                  &Surface->info.shBuf));
+    }
+
+    /* Returns shared buffer handle. */
+    *ShBuf = Surface->info.shBuf;
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoSURF_BindShBuffer
+**
+**  Bind surface to a shared buffer. The share buffer should be allocated by
+**  gcoSURF_AllocShBuffer.
+**
+**  See gcoSURF_AllocShBuffer.
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to gcoSURF object.
+**
+**  OUTPUT:
+**
+**      gctSHBUF ShBuf
+**          Pointer shared buffer handle to connect to.
+*/
+gceSTATUS
+gcoSURF_BindShBuffer(
+    IN gcoSURF Surface,
+    OUT gctSHBUF ShBuf
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Surface=0x%x ShBuf=%d",
+                  Surface, (gctUINT32) (gctUINTPTR_T) ShBuf);
+
+    gcmVERIFY_ARGUMENT(Surface != gcvNULL);
+
+    if (Surface->info.shBuf == gcvNULL)
+    {
+        /* Map/reference ShBuf. */
+        gcmONERROR(gcoHAL_MapShBuffer(ShBuf));
+        Surface->info.shBuf = ShBuf;
+    }
+    else
+    {
+        /* Already has a ShBuf. */
+        gcmONERROR(gcvSTATUS_INVALID_ARGUMENT);
+    }
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoSURF_PushSharedInfo
+**
+**  Push surface shared states to shared buffer. Shared buffer should be
+**  initialized before this function either by gcoSURF_AllocShBuffer or
+**  gcoSURF_BindShBuffer. gcvSTATUS_NOT_SUPPORTED if not ever bound.
+**
+**  See gcoSURF_AllocShBuffer.
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to gcoSURF object.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoSURF_PushSharedInfo(
+    IN gcoSURF Surface
+    )
+{
+    gceSTATUS status;
+    gcsSURF_SHARED_INFO info;
+
+    gcmHEADER_ARG("Surface=0x%x", Surface);
+
+    gcmVERIFY_ARGUMENT(Surface != gcvNULL);
+
+    if (Surface->info.shBuf == gcvNULL)
+    {
+        /* No shared buffer bound. */
+        gcmONERROR(gcvSTATUS_NOT_SUPPORTED);
+    }
+
+    /* Gather states. */
+    info.magic              = gcvSURF_SHARED_INFO_MAGIC;
+    info.timeStamp          = Surface->info.timeStamp;
+
+#if gcdENABLE_3D
+    info.tileStatusDisabled = Surface->info.tileStatusDisabled;
+    info.dirty              = Surface->info.dirty;
+    info.fcValue            = Surface->info.fcValue;
+    info.fcValueUpper       = Surface->info.fcValueUpper;
+    info.compressed         = Surface->info.compressed;
+#endif
+
+    /* Put structure to shared buffer object. */
+    gcmONERROR(
+        gcoHAL_WriteShBuffer(Surface->info.shBuf,
+                             &info,
+                             sizeof (gcsSURF_SHARED_INFO)));
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return status;
+
+OnError:
+    gcmFOOTER();
+    return status;
+}
+
+/*******************************************************************************
+**
+**  gcoSURF_PopSharedInfo
+**
+**  Pop surface shared states from shared buffer. Shared buffer must be
+**  initialized before this function either by gcoSURF_AllocShBuffer or
+**  gcoSURF_BindShBuffer. gcvSTATUS_NOT_SUPPORTED if not ever bound.
+**
+**  Before sync shared states to this surface, timestamp is checked. If
+**  timestamp is not newer than current, sync is discard and gcvSTATUS_SKIP
+**  is returned.
+**
+**  See gcoSURF_AllocShBuffer.
+**
+**  INPUT:
+**
+**      gcoSURF Surface
+**          Pointer to gcoSURF object.
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoSURF_PopSharedInfo(
+    IN gcoSURF Surface
+    )
+{
+    gceSTATUS status;
+    gcsSURF_SHARED_INFO info;
+    gctUINT32 size = sizeof (gcsSURF_SHARED_INFO);
+    gctUINT32 bytesRead = 0;
+
+    gcmHEADER_ARG("Surface=0x%x", Surface);
+
+    gcmVERIFY_ARGUMENT(Surface != gcvNULL);
+
+    if (Surface->info.shBuf == gcvNULL)
+    {
+        /* No shared buffer bound. */
+        gcmONERROR(gcvSTATUS_NOT_SUPPORTED);
+    }
+
+    /* Get structure from shared buffer object. */
+    gcmONERROR(
+        gcoHAL_ReadShBuffer(Surface->info.shBuf,
+                            &info,
+                            size,
+                            &bytesRead));
+
+    if (status == gcvSTATUS_SKIP)
+    {
+        /* No data in shared buffer. */
+        goto OnError;
+    }
+
+    /* Check magic. */
+    if ((info.magic != gcvSURF_SHARED_INFO_MAGIC) ||
+        (bytesRead  != sizeof (gcsSURF_SHARED_INFO)))
+    {
+        /* Magic mismatch. */
+        gcmONERROR(gcvSTATUS_INVALID_ARGUMENT);
+    }
+
+    /* Check time stamp. */
+    if (info.timeStamp <= Surface->info.timeStamp)
+    {
+        status = gcvSTATUS_SKIP;
+        goto OnError;
+    }
+
+    /* Update surface states. */
+    Surface->info.timeStamp          = info.timeStamp;
+
+#if gcdENABLE_3D
+    Surface->info.tileStatusDisabled = info.tileStatusDisabled;
+    Surface->info.dirty              = info.dirty;
+    Surface->info.fcValue            = info.fcValue;
+    Surface->info.fcValueUpper       = info.fcValueUpper;
+    Surface->info.compressed         = info.compressed;
+#endif
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return status;
+
+OnError:
+    gcmFOOTER();
+    return status;
+}
+
+gceSTATUS
+gcsSURF_NODE_Construct(
+    IN gcsSURF_NODE_PTR Node,
+    IN gctSIZE_T Bytes,
+    IN gctUINT Alignment,
+    IN gceSURF_TYPE Type,
+    IN gctUINT32 Flag,
+    IN gcePOOL Pool
+    )
+{
+    gceSTATUS status;
+    gcsHAL_INTERFACE iface;
+    struct _gcsHAL_ALLOCATE_LINEAR_VIDEO_MEMORY * alvm
+        = (struct _gcsHAL_ALLOCATE_LINEAR_VIDEO_MEMORY *) &iface.u;
+
+    gcmHEADER_ARG("Node=%p, Bytes=%llu, Alignement=%d, Type=%d, Flag=%d, Pool=%d",
+                  Node, Bytes, Alignment, Type, Flag, Pool);
+
+#ifdef LINUX
+#ifndef ANDROID
+#if gcdENABLE_3D
+    gcePATCH_ID patchID = gcvPATCH_INVALID;
+    gcoHAL_GetPatchID(gcvNULL, &patchID);
+
+    if ( patchID == gcvPATCH_CHROME )
+    {
+        Flag |= gcvALLOC_FLAG_MEMLIMIT;
+    }
+#endif
+#endif
+#endif
+
+    iface.command   = gcvHAL_ALLOCATE_LINEAR_VIDEO_MEMORY;
+
+    gcmSAFECASTSIZET(alvm->bytes, Bytes);
+
+    alvm->alignment = Alignment;
+    alvm->type      = Type;
+    alvm->pool      = Pool;
+    alvm->flag      = Flag;
+
+    gcoOS_ZeroMemory(Node, gcmSIZEOF(gcsSURF_NODE));
+
+    gcmONERROR(gcoHAL_Call(gcvNULL, &iface));
+
+    Node->u.normal.node = alvm->node;
+    Node->pool          = alvm->pool;
+    Node->size          = alvm->bytes;
+
+    Node->firstLock     = gcvTRUE;
+
+    Node->physical      = ~0U;
+    Node->physical2     = ~0U;
+    Node->physical3     = ~0U;
+
+#if gcdGC355_MEM_PRINT
+#ifdef LINUX
+    gcoOS_AddRecordAllocation((gctINT32)Node->size);
+#endif
+#endif
+
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    gcmFOOTER();
+    return status;
+}
+

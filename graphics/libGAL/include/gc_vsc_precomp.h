@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -11,14 +11,16 @@
 *****************************************************************************/
 
 
+#ifndef __gc_vsc_precomp_h_
+#define __gc_vsc_precomp_h_
 
+#ifdef __cplusplus
+#define BEGIN_EXTERN_C() extern "C" {
+#define END_EXTERN_C()   }
+#else
+#define BEGIN_EXTERN_C()
+#define END_EXTERN_C()
+#endif
 
-/*
-**	Include file the defines the loadtime optimizer, as well as the
-**	objects it uses.
-*/
+#endif /* __gc_vsc_precomp_h_ */
 
-#ifndef __gc_hal_loadtime_optimizer_h_
-#define __gc_hal_loadtime_optimizer_h_
-
-#endif /* __gc_hal_loadtime_optimizer_h_ */

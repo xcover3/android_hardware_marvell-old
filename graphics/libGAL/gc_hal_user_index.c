@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -11,11 +11,9 @@
 *****************************************************************************/
 
 
-
-
 #include "gc_hal_user_precomp.h"
 
-#ifndef VIVANTE_NO_3D
+#if gcdENABLE_3D
 
 #if gcdNULL_DRIVER < 2
 
@@ -27,6 +25,8 @@
 
 /* Number of hashed ranges. */
 #define gcvRANGEHASHNUMBER      16
+#define SPILIT_INDEX_OFFSET       48
+#define SPILIT_INDEX_CHUNCK_BYTE  64
 
 /* Index buffer range information. */
 typedef struct _gcsINDEXRANGE
@@ -54,6 +54,8 @@ typedef struct _gcsINDEX_DYNAMIC
     gctUINT32                   minIndex;
     gctUINT32                   maxIndex;
 
+    /* For dynamic allocation */
+    gcsSURF_NODE                memory;
     struct _gcsINDEX_DYNAMIC *  next;
 }
 * gcsINDEX_DYNAMIC_PTR;
@@ -78,11 +80,51 @@ struct _gcoINDEX
     gcsINDEX_DYNAMIC_PTR        dynamic;
     gcsINDEX_DYNAMIC_PTR        dynamicHead;
     gcsINDEX_DYNAMIC_PTR        dynamicTail;
+
+    /* For runtime allocation */
+    gctUINT                     dynamicCurrent;
+    gctSIZE_T                   dynamicCacheSize;
+    gctUINT                     dynamicAllocatedCount;
+    gctBOOL                     dynamicAllocate;
+
+#if gcdSYNC
+    gceFENCE_STATUS             fenceStatus;
+    gcsSYNC_CONTEXT_PTR         fenceCtx;
+    gctPOINTER                  sharedLock;
+#endif
 };
 
 /******************************************************************************\
 ******************************* gcoINDEX API Code ******************************
 \******************************************************************************/
+
+static gceSTATUS
+_FreeDynamic(
+    IN gcsINDEX_DYNAMIC_PTR Dynamic
+    );
+
+gceSTATUS
+gcoINDEX_UploadDynamicEx2(
+                          IN gcoINDEX Index,
+                          IN gceINDEX_TYPE IndexType,
+                          IN gctCONST_POINTER Data,
+                          IN gctSIZE_T Bytes,
+                          IN gctBOOL ConvertToIndexedTriangleList
+                          );
+
+gceSTATUS
+gcoINDEX_SetSharedLock(
+    IN gcoINDEX Index,
+    IN gctPOINTER sharedLock
+    )
+{
+    if(Index != gcvNULL)
+    {
+        Index->sharedLock = sharedLock;
+    }
+
+    return gcvSTATUS_OK;
+}
 
 /*******************************************************************************
 **
@@ -130,8 +172,7 @@ gcoINDEX_Construct(
     index->object.type = gcvOBJ_INDEX;
 
     /* Reset ranage values. */
-    gcmVERIFY_OK(
-        gcoOS_ZeroMemory(&index->indexRange, gcmSIZEOF(index->indexRange)));
+    gcoOS_ZeroMemory(&index->indexRange, gcmSIZEOF(index->indexRange));
 
     /* No attributes and memory assigned yet. */
     index->bytes                 = 0;
@@ -141,6 +182,17 @@ gcoINDEX_Construct(
     index->memory.lockedInKernel = gcvFALSE;
     index->dynamic               = gcvNULL;
     index->dynamicCount          = 0;
+
+    index->dynamicAllocatedCount = 0;
+    index->dynamicCacheSize      = 0;
+    index->dynamicAllocate       = gcvFALSE;
+    index->dynamicCurrent        = 0;
+
+#if gcdSYNC
+    index->fenceStatus           = gcvFENCE_DISABLE;
+    index->fenceCtx              = gcvNULL;
+    index->sharedLock            = gcvNULL;
+#endif
 
     /* Return pointer to the gcoINDEX object. */
     *Index = index;
@@ -186,15 +238,54 @@ gcoINDEX_Destroy(
 
     gcmPROFILE_GC(GLINDEX_OBJECT, -1);
 
+#if gcdSYNC
+    {
+        gcsSYNC_CONTEXT_PTR ptr = Index->fenceCtx;
+
+        while(ptr)
+        {
+            Index->fenceCtx = ptr->next;
+
+            gcmVERIFY_OK(gcmOS_SAFE_FREE(gcvNULL,ptr));
+
+            ptr = Index->fenceCtx;
+        }
+    }
+#endif
+
     if (Index->dynamic != gcvNULL)
     {
-        /* Free all signal creations. */
-        for (dynamic = Index->dynamicHead;
-             dynamic != gcvNULL;
-             dynamic = dynamic->next)
+        if (Index->dynamicAllocate)
         {
-            gcmVERIFY_OK(
-                gcoOS_DestroySignal(gcvNULL, dynamic->signal));
+            gctUINT i;
+            gcsINDEX_DYNAMIC_PTR dynamic;
+
+            for (i = 0; i < Index->dynamicCount; i++)
+            {
+                dynamic = Index->dynamic + i;
+
+                _FreeDynamic(dynamic);
+
+                /* Free all signal creations. */
+                gcmVERIFY_OK(
+                    gcoOS_DestroySignal(gcvNULL, dynamic->signal));
+            }
+
+            Index->dynamicAllocatedCount = 0;
+            Index->dynamicCacheSize      = 0;
+            Index->dynamicCurrent        = 0;
+            Index->dynamicCount          = 0;
+        }
+        else
+        {
+            /* Free all signal creations. */
+            for (dynamic = Index->dynamicHead;
+                dynamic != gcvNULL;
+                dynamic = dynamic->next)
+            {
+                gcmVERIFY_OK(
+                    gcoOS_DestroySignal(gcvNULL, dynamic->signal));
+            }
         }
 
         /* Free the buffer structures. */
@@ -216,6 +307,62 @@ gcoINDEX_Destroy(
 
     /* Success. */
     gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoINDEX_GetFence(
+    IN gcoINDEX index
+    )
+{
+#if gcdSYNC
+    if (index)
+    {
+        gctBOOL fenceEnable;
+        gcoHARDWARE_GetFenceEnabled(gcvNULL, &fenceEnable);
+        if(fenceEnable)
+        {
+            gcmLOCK_SHARE_OBJ(index);
+            gcoHARDWARE_GetFence(gcvNULL, &index->fenceCtx);
+            gcmUNLOCK_SHARE_OBJ(index);
+        }
+        else
+        {
+            index->fenceStatus = gcvFENCE_GET;
+        }
+    }
+#endif
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoINDEX_WaitFence(
+    IN gcoINDEX index
+    )
+{
+#if gcdSYNC
+    if (index)
+    {
+        gctBOOL fenceEnable;
+        gcoHARDWARE_GetFenceEnabled(gcvNULL, &fenceEnable);
+        if(fenceEnable)
+        {
+            gcmLOCK_SHARE_OBJ(index);
+            gcoHARDWARE_WaitFence(gcvNULL, index->fenceCtx);
+            gcmUNLOCK_SHARE_OBJ(index);
+        }
+        else
+        {
+            if(index->fenceStatus == gcvFENCE_GET)
+            {
+                index->fenceStatus = gcvFENCE_ENABLE;
+                gcoHARDWARE_SetFenceEnabled(gcvNULL, gcvTRUE);
+                gcoHAL_Commit(gcvNULL, gcvTRUE);
+            }
+        }
+
+    }
+#endif
     return gcvSTATUS_OK;
 }
 
@@ -354,8 +501,7 @@ gcoINDEX_Load(
     )
 {
     gceSTATUS status;
-    gcsHAL_INTERFACE ioctl;
-    gctUINT32 indexSize;
+    gctUINT32 indexSize, bytes;
     gctUINT32 indexBufferSize;
 
     gcmHEADER_ARG("Index=0x%x IndexType=%d IndexCount=%u IndexBuffer=0x%x",
@@ -395,23 +541,16 @@ gcoINDEX_Load(
         gcmONERROR(gcoINDEX_Free(Index));
 
         /* Allocate video memory. */
-        ioctl.command = gcvHAL_ALLOCATE_LINEAR_VIDEO_MEMORY;
-        ioctl.u.AllocateLinearVideoMemory.bytes     = indexBufferSize;
-        ioctl.u.AllocateLinearVideoMemory.alignment = 64;
-        ioctl.u.AllocateLinearVideoMemory.type      = gcvSURF_INDEX;
-        ioctl.u.AllocateLinearVideoMemory.pool      = gcvPOOL_DEFAULT;
+        gcmONERROR(gcsSURF_NODE_Construct(
+            &Index->memory,
+            indexBufferSize,
+            64,
+            gcvSURF_INDEX,
+            gcvALLOC_FLAG_NONE,
+            gcvPOOL_DEFAULT
+            ));
 
-        /* Call kernel HAL. */
-        gcmONERROR(gcoHAL_Call(gcvNULL, &ioctl));
-
-        /* Store the buffer node. */
-        Index->memory.pool
-            = ioctl.u.AllocateLinearVideoMemory.pool;
-        Index->memory.u.normal.node
-            = ioctl.u.AllocateLinearVideoMemory.node;
-        Index->memory.u.normal.cacheable = gcvFALSE;
-        Index->bytes
-            = ioctl.u.AllocateLinearVideoMemory.bytes;
+        Index->bytes = indexBufferSize;
 
         /* Lock the index buffer. */
         gcmONERROR(gcoHARDWARE_Lock(&Index->memory,
@@ -423,10 +562,14 @@ gcoINDEX_Load(
     gcmONERROR(gcoINDEX_Upload(Index, IndexBuffer, indexBufferSize));
 
     /* Program index buffer states. */
-    gcmONERROR(gcoHARDWARE_BindIndex(Index->memory.physical,
-                                     IndexType));
+    gcmONERROR(gcoHARDWARE_BindIndex(gcvNULL,
+                                     Index->memory.physical,
+                                     0,
+                                     IndexType,
+                                     Index->bytes));
 
-    gcmPROFILE_GC(GLINDEX_OBJECT_BYTES, Index->bytes);
+    gcmSAFECASTSIZET(bytes, Index->bytes);
+    gcmPROFILE_GC(GLINDEX_OBJECT_BYTES, bytes);
 
     /* Success. */
     gcmFOOTER_NO();
@@ -481,8 +624,11 @@ gcoINDEX_Bind(
     }
 
     /* Program index buffer states. */
-    status = gcoHARDWARE_BindIndex(address,
-                                   Type);
+    status = gcoHARDWARE_BindIndex(gcvNULL,
+                                   address,
+                                   0,
+                                   Type,
+                                   Index->bytes);
     gcmFOOTER();
     return status;
 }
@@ -523,8 +669,60 @@ gcoINDEX_BindOffset(
     gcmVERIFY_OBJECT(Index, gcvOBJ_INDEX);
 
     /* Program index buffer states. */
-    status = gcoHARDWARE_BindIndex(Index->memory.physical + Offset,
-                                   Type);
+    status = gcoHARDWARE_BindIndex(gcvNULL,
+                                   Index->memory.physical + Offset,
+                                   0,
+                                   Type,
+                                   Index->bytes - Offset);
+    gcmFOOTER();
+    return status;
+}
+
+static gceSTATUS
+_FreeDynamic(
+    IN gcsINDEX_DYNAMIC_PTR Dynamic
+    )
+{
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Dynamic=0x%x", Dynamic);
+
+    /* Do we have a buffer allocated? */
+    if (Dynamic->memory.pool != gcvPOOL_UNKNOWN)
+    {
+        if (gcPLS.hal->dump != gcvNULL)
+        {
+            /* Dump deletion. */
+            gcmVERIFY_OK(gcoDUMP_Delete(gcPLS.hal->dump,
+                                        Dynamic->memory.physical));
+        }
+
+        /* Unlock the index buffer. */
+        gcmONERROR(gcoHARDWARE_Unlock(&Dynamic->memory,
+                                      gcvSURF_INDEX));
+
+        /* Create an event to free the video memory. */
+        gcmONERROR(gcoHARDWARE_ScheduleVideoMemory(&Dynamic->memory));
+
+        /* Reset the pointer. */
+        Dynamic->bytes        = 0;
+        Dynamic->memory.pool  = gcvPOOL_UNKNOWN;
+        Dynamic->memory.valid = gcvFALSE;
+        Dynamic->maxIndex     = 0;
+        Dynamic->minIndex     = 0;
+        Dynamic->free         = 0;
+        Dynamic->lastEnd      = 0;
+        Dynamic->lastStart    = ~0U;
+        Dynamic->logical      = 0;
+        Dynamic->physical     = 0;
+    }
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    /* Return the status. */
     gcmFOOTER();
     return status;
 }
@@ -559,8 +757,8 @@ _Free(
         gcmONERROR(gcoHARDWARE_ScheduleVideoMemory(&Index->memory));
 
         /* Reset range values. */
-        gcmVERIFY_OK(gcoOS_ZeroMemory(&Index->indexRange,
-                                      gcmSIZEOF(Index->indexRange)));
+        gcoOS_ZeroMemory(&Index->indexRange,
+                         gcmSIZEOF(Index->indexRange));
 
         /* Reset the pointer. */
         Index->bytes        = 0;
@@ -599,13 +797,15 @@ gcoINDEX_Free(
     )
 {
     gceSTATUS status;
+    gctUINT bytes;
 
     gcmHEADER_ARG("Index=0x%x", Index);
 
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Index, gcvOBJ_INDEX);
 
-    gcmPROFILE_GC(GLINDEX_OBJECT_BYTES, -1 * Index->bytes);
+    gcmSAFECASTSIZET(bytes, Index->bytes);
+    gcmPROFILE_GC(GLINDEX_OBJECT_BYTES, -1 * bytes);
 
     /* Not available when the gcoINDEX is dynamic. */
     if (Index->dynamic != gcvNULL)
@@ -654,8 +854,8 @@ gcoINDEX_Upload(
     IN gctSIZE_T Bytes
     )
 {
-    gcsHAL_INTERFACE ioctl;
     gceSTATUS status;
+    gctUINT bytes;
 
     gcmHEADER_ARG("Index=0x%x Buffer=0x%x Bytes=%lu", Index, Buffer, Bytes);
 
@@ -670,8 +870,7 @@ gcoINDEX_Upload(
     }
 
     /* Reset ranage values. */
-    gcmVERIFY_OK(
-        gcoOS_ZeroMemory(&Index->indexRange, gcmSIZEOF(Index->indexRange)));
+    gcoOS_ZeroMemory(&Index->indexRange, gcmSIZEOF(Index->indexRange));
 
     if (Index->bytes < Bytes)
     {
@@ -679,20 +878,17 @@ gcoINDEX_Upload(
         gcmONERROR(gcoINDEX_Free(Index));
 
         /* Allocate video memory. */
-        ioctl.command = gcvHAL_ALLOCATE_LINEAR_VIDEO_MEMORY;
-        ioctl.u.AllocateLinearVideoMemory.bytes     = Bytes;
-        ioctl.u.AllocateLinearVideoMemory.alignment = 4;
-        ioctl.u.AllocateLinearVideoMemory.type      = gcvSURF_INDEX;
-        ioctl.u.AllocateLinearVideoMemory.pool      = gcvPOOL_DEFAULT;
-
-        /* Call the kernel. */
-        gcmONERROR(gcoHAL_Call(gcvNULL, &ioctl));
+        gcmONERROR(gcsSURF_NODE_Construct(
+            &Index->memory,
+            Bytes,
+            4,
+            gcvSURF_INDEX,
+            gcvALLOC_FLAG_NONE,
+            gcvPOOL_DEFAULT
+            ));
 
         /* Initialize index. */
         Index->bytes                = Bytes;
-        Index->memory.pool          = ioctl.u.AllocateLinearVideoMemory.pool;
-        Index->memory.u.normal.node = ioctl.u.AllocateLinearVideoMemory.node;
-        Index->memory.u.normal.cacheable = gcvFALSE;
 
         /* Lock the index buffer. */
         gcmONERROR(gcoHARDWARE_Lock(&Index->memory,
@@ -727,7 +923,8 @@ gcoINDEX_Upload(
         }
     }
 
-    gcmPROFILE_GC(GLINDEX_OBJECT_BYTES, Bytes);
+    gcmSAFECASTSIZET(bytes, Bytes);
+    gcmPROFILE_GC(GLINDEX_OBJECT_BYTES, bytes);
 
     /* Success. */
     gcmFOOTER_NO();
@@ -766,7 +963,7 @@ OnError:
 gceSTATUS
 gcoINDEX_UploadOffset(
     IN gcoINDEX Index,
-    IN gctUINT32 Offset,
+    IN gctSIZE_T Offset,
     IN gctCONST_POINTER Buffer,
     IN gctSIZE_T Bytes
     )
@@ -795,6 +992,10 @@ gcoINDEX_UploadOffset(
 
     if (Buffer != gcvNULL)
     {
+#if gcdSYNC
+        gcoINDEX_WaitFence(Index);
+#endif
+
         /* Reset ranage values. */
         gcoOS_ZeroMemory(&Index->indexRange, sizeof(Index->indexRange));
 
@@ -818,24 +1019,126 @@ gcoINDEX_UploadOffset(
                        Index->memory.logical,
                        Offset,
                        Bytes);
-
-        if (gcPLS.hal->dump != gcvNULL)
-        {
-            /* Dump the index buffer. */
-            gcmVERIFY_OK(gcoDUMP_DumpData(
-                gcPLS.hal->dump,
-                gcvTAG_INDEX,
-                Index->memory.physical + Offset,
-                Bytes,
-                Buffer
-                ));
-        }
     }
 
     /* Success. */
     gcmFOOTER_NO();
     return gcvSTATUS_OK;
 }
+/************************************************************
+**  gcoINDEX_CheckRange
+**
+**  Check if the draw is out of index buffer range
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gctBOOL
+gcoINDEX_CheckRange(
+    IN gcoINDEX Index,
+    IN gceINDEX_TYPE Type,
+    IN gctINT Count,
+    IN gctUINT32  Indices
+    )
+{
+    gctUINT32 indexSize;
+
+    switch ( Type )
+    {
+        case gcvINDEX_8:
+             indexSize = 1;
+             break;
+
+        case gcvINDEX_16:
+             indexSize = 2;
+             break;
+
+        case gcvINDEX_32:
+             indexSize = 4;
+             break;
+
+        default:
+             return gcvFALSE;
+    }
+
+    indexSize = indexSize * Count;
+
+    if(indexSize + Indices> Index->bytes)
+    {
+        return gcvFALSE;
+    }
+    else
+    {
+        return gcvTRUE;
+    }
+}
+
+/*******************************************************************************
+**
+**  gcoINDEX_Merge
+**
+**  Merge index buffer 2 into index buffer 1.
+**  index2 must be from 0, and the range must be part of buffer1
+**
+**  OUTPUT:
+**
+**      Nothing.
+*/
+gceSTATUS
+gcoINDEX_Merge(
+    IN gcoINDEX Index1,
+    IN gcoINDEX Index2
+    )
+{
+    gceSTATUS status;
+    gctPOINTER buffer[3];
+
+    gcmHEADER_ARG("Index1=0x%x Index2=0x%x", Index1, Index2);
+
+    /* Verify the arguments. */
+    gcmVERIFY_OBJECT(Index1, gcvOBJ_INDEX);
+    gcmVERIFY_OBJECT(Index2, gcvOBJ_INDEX);
+
+    /* Lock the index buffer. */
+    gcmONERROR(gcoHARDWARE_Lock(&Index1->memory,
+                                gcvNULL,
+                                gcvNULL));
+
+    gcmONERROR(gcoHARDWARE_Lock(&Index2->memory,
+                                gcvNULL,
+                                buffer));
+
+    /* Upload data into the stream. */
+    gcmONERROR(gcoHARDWARE_CopyData(&Index1->memory,
+                                    0,
+                                    buffer[0],
+                                    Index2->bytes));
+
+    /* Dump the buffer. */
+    gcmDUMP_BUFFER(gcvNULL,
+                   "index",
+                   Index1->memory.physical,
+                   Index1->memory.logical,
+                   0,
+                   Index2->bytes);
+
+    gcmONERROR(gcoHARDWARE_Unlock(&Index1->memory,
+                                gcvSURF_INDEX));
+
+    gcmONERROR(gcoHARDWARE_Unlock(&Index2->memory,
+                                gcvSURF_INDEX));
+
+    /* Success. */
+    gcmFOOTER_NO();
+    return gcvSTATUS_OK;
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
 
 /*******************************************************************************
 **
@@ -875,7 +1178,7 @@ gcoINDEX_QueryCaps(
     gcmHEADER();
 
     /* Route to gcoHARDWARE. */
-    status = gcoHARDWARE_QueryIndexCaps(Index8, Index16, Index32, MaxIndex);
+    status = gcoHARDWARE_QueryIndexCaps(gcvNULL, Index8, Index16, Index32, MaxIndex);
     gcmFOOTER_ARG("status=%d(%s) *Index8=%d *Index16=%d *Index32=%d *MaxIndex=%u",
                   status, gcoOS_DebugStatus2Name(status), gcmOPT_VALUE(Index8), gcmOPT_VALUE(Index16),
                   gcmOPT_VALUE(Index32), gcmOPT_VALUE(MaxIndex));
@@ -947,6 +1250,7 @@ gcoINDEX_GetIndexRange(
         {
             gctUINT32 minIndex = ~0U;
             gctUINT32 maxIndex =  0;
+            gctBOOL primRestart = gcoHARDWARE_IsPrimitiveRestart(gcvNULL) == gcvTRUE;
 
             /* Must have buffer. */
             if (Index->memory.pool == gcvPOOL_UNKNOWN)
@@ -979,6 +1283,11 @@ gcoINDEX_GetIndexRange(
                     {
                         gctUINT32 curIndex = *indexBuffer++;
 
+                        if (primRestart && (curIndex == 0xFF))
+                        {
+                            continue;
+                        }
+
                         if (curIndex < minIndex)
                         {
                             minIndex = curIndex;
@@ -1010,6 +1319,11 @@ gcoINDEX_GetIndexRange(
                     {
                         gctUINT32 curIndex = *indexBuffer++;
 
+                        if (primRestart && (curIndex == 0xFFFF))
+                        {
+                            continue;
+                        }
+
                         if (curIndex < minIndex)
                         {
                             minIndex = curIndex;
@@ -1040,6 +1354,11 @@ gcoINDEX_GetIndexRange(
                     for (i = 0; i < Count; i++)
                     {
                         gctUINT32 curIndex = *indexBuffer++;
+
+                        if (primRestart && (curIndex == 0xFFFFFFFF))
+                        {
+                            continue;
+                        }
 
                         if (curIndex < minIndex)
                         {
@@ -1097,10 +1416,9 @@ gcoINDEX_AllocateMemory(
     )
 {
     gctSIZE_T bytes;
-    gcsHAL_INTERFACE ioctl;
     gctUINT32 physical;
     gctPOINTER logical;
-    gctUINT32 i;
+    gctUINT32 i, bytes32;
     gcsINDEX_DYNAMIC_PTR dynamic;
     gceSTATUS status;
 
@@ -1114,20 +1432,17 @@ gcoINDEX_AllocateMemory(
     bytes = gcmALIGN(Bytes, 64) * Buffers;
 
     /* Allocate the video memory. */
-    ioctl.command = gcvHAL_ALLOCATE_LINEAR_VIDEO_MEMORY;
-    ioctl.u.AllocateLinearVideoMemory.bytes     = bytes;
-    ioctl.u.AllocateLinearVideoMemory.alignment = 64;
-    ioctl.u.AllocateLinearVideoMemory.type      = gcvSURF_INDEX;
-    ioctl.u.AllocateLinearVideoMemory.pool      = gcvPOOL_DEFAULT;
-
-    /* Call the kernel. */
-    gcmONERROR(gcoHAL_Call(gcvNULL, &ioctl));
+    gcmONERROR(gcsSURF_NODE_Construct(
+        &Index->memory,
+        bytes,
+        64,
+        gcvSURF_INDEX,
+        gcvALLOC_FLAG_NONE,
+        gcvPOOL_DEFAULT
+        ));
 
     /* Initialize index. */
-    Index->bytes                = ioctl.u.AllocateLinearVideoMemory.bytes;
-    Index->memory.pool          = ioctl.u.AllocateLinearVideoMemory.pool;
-    Index->memory.u.normal.node = ioctl.u.AllocateLinearVideoMemory.node;
-    Index->memory.u.normal.cacheable = gcvFALSE;
+    Index->bytes = bytes;
 
     /* Lock the index buffer. */
     gcmONERROR(gcoHARDWARE_Lock(&Index->memory,
@@ -1151,10 +1466,67 @@ gcoINDEX_AllocateMemory(
         dynamic->lastStart = ~0U;
         dynamic->lastEnd   = 0;
 
+        gcmSAFECASTSIZET(bytes32, bytes);
         /* Advance buffer addresses. */
-        physical += bytes;
+        physical += bytes32;
         logical   = (gctUINT8_PTR) logical + bytes;
     }
+
+    /* Success. */
+    gcmFOOTER();
+    return gcvSTATUS_OK;
+
+OnError:
+    /* Return the status. */
+    gcmFOOTER();
+    return status;
+}
+
+static gceSTATUS
+gcoINDEX_AllocateDynamicMemory(
+    IN gctSIZE_T Bytes,
+    IN gcsINDEX_DYNAMIC_PTR Dynamic
+    )
+{
+    gctSIZE_T bytes;
+    gctUINT32 physical;
+    gctPOINTER logical;
+    gceSTATUS status;
+
+    gcmHEADER_ARG("Bytes=%lu Dynamic=0x%x", Bytes, Dynamic);
+
+    /* Free any memory. */
+    gcmONERROR(_FreeDynamic(Dynamic));
+    Dynamic->bytes = 0;
+
+    /* Compute the number of total bytes. */
+    bytes = gcmALIGN(Bytes, 64);
+
+    /* Allocate the video memory. */
+    gcmONERROR(gcsSURF_NODE_Construct(
+        &Dynamic->memory,
+        bytes,
+        64,
+        gcvSURF_INDEX,
+        gcvALLOC_FLAG_NONE,
+        gcvPOOL_DEFAULT
+        ));
+
+    /* Initialize index. */
+    Dynamic->bytes = bytes;
+
+    /* Lock the index buffer. */
+    gcmONERROR(gcoHARDWARE_Lock(&Dynamic->memory,
+                                &physical,
+                                &logical));
+
+    /* Initialize all buffer structures. */
+    Dynamic->physical = physical;
+    Dynamic->logical  = logical;
+    Dynamic->bytes = bytes;
+    Dynamic->free  = bytes;
+    Dynamic->lastStart = ~0U;
+    Dynamic->lastEnd   = 0;
 
     /* Success. */
     gcmFOOTER();
@@ -1218,8 +1590,8 @@ gcoINDEX_SetDynamic(
 
     Index->dynamic = pointer;
 
-    gcmONERROR(gcoOS_ZeroMemory(Index->dynamic,
-                                Buffers * gcmSIZEOF(struct _gcsINDEX_DYNAMIC)));
+    gcoOS_ZeroMemory(Index->dynamic,
+                     Buffers * gcmSIZEOF(struct _gcsINDEX_DYNAMIC));
 
     /* Initialize all buffer structures. */
     for (i = 0, dynamic = Index->dynamic; i < Buffers; ++i, ++dynamic)
@@ -1240,14 +1612,52 @@ gcoINDEX_SetDynamic(
         dynamic->next = dynamic + 1;
     }
 
-    /* Initilaize chain of buffer structures. */
-    Index->dynamicCount      = Buffers;
-    Index->dynamicHead       = Index->dynamic;
-    Index->dynamicTail       = Index->dynamic + Buffers - 1;
-    Index->dynamicTail->next = gcvNULL;
+    if (1/*gcoHAL_QuerySpecialHint(gceSPECIAL_HINT4) == gcvSTATUS_FALSE*/)
+    {
+        /* Initilaize chain of buffer structures. */
+        Index->dynamicAllocate   = gcvTRUE;
+        Index->dynamicCount      = Buffers;
+        Index->dynamicCacheSize  = Bytes;
 
-    /* Allocate the memory. */
-    gcmONERROR(gcoINDEX_AllocateMemory(Index, Bytes, Buffers));
+        Index->dynamicAllocatedCount  = 0;
+        Index->dynamicCurrent         = 0;
+
+        Index->dynamicHead       = Index->dynamic;
+        Index->dynamicTail       = Index->dynamic + Buffers - 1;
+        Index->dynamicTail->next = gcvNULL;
+
+        for (i = 0, dynamic = Index->dynamic; i < Buffers; ++i, ++dynamic)
+        {
+            /* Set buffer address. */
+            dynamic->physical = 0;
+            dynamic->logical  = 0;
+
+            /* Set buffer size. */
+            dynamic->bytes = 0;
+            dynamic->free  = 0;
+
+            /* Set usage. */
+            dynamic->lastStart = ~0U;
+            dynamic->lastEnd   = 0;
+
+            dynamic->memory.pool = gcvPOOL_UNKNOWN;
+            dynamic->memory.valid = gcvFALSE;
+        }
+    }
+    else
+    {
+
+        Index->dynamicAllocate   = gcvFALSE;
+
+        /* Initilaize chain of buffer structures. */
+        Index->dynamicCount      = Buffers;
+        Index->dynamicHead       = Index->dynamic;
+        Index->dynamicTail       = Index->dynamic + Buffers - 1;
+        Index->dynamicTail->next = gcvNULL;
+
+        /* Allocate the memory. */
+        gcmONERROR(gcoINDEX_AllocateMemory(Index, Bytes, Buffers));
+    }
 
     /* Success. */
     gcmFOOTER_NO();
@@ -1282,9 +1692,153 @@ OnError:
     return status;
 }
 
+gceSTATUS
+_PatchIndices(
+    IN gctPOINTER PatchedIndices,
+    IN gctCONST_POINTER Indices,
+    IN gceINDEX_TYPE IndexType,
+    IN gctSIZE_T Count,
+    gctUINT32_PTR iMin,
+    gctUINT32_PTR iMax
+    )
+{
+    gctSIZE_T triangles = Count - 2;
+    gctUINT i, j;
+    gctPOINTER indices = PatchedIndices;
+    gceSTATUS  status;
+    gctUINT32 imin = ~0U, imax = 0;
+    gctBOOL primRestart = gcoHARDWARE_IsPrimitiveRestart(gcvNULL) == gcvTRUE;
+
+    /* Dispatch on index type. */
+    switch (IndexType)
+    {
+    case gcvINDEX_8:
+        {
+            /* 8-bit indices. */
+            gctUINT8 *dst;
+            const gctUINT8 *src = (gctUINT8_PTR)Indices;
+
+            dst = (gctUINT8 *)indices;
+            for (i = 0, j = 0; i < triangles; i++)
+            {
+                dst[j * 3]     = src[(i % 2) == 0 ? i : i + 1];
+                dst[j * 3 + 1] = src[(i % 2) == 0 ? i + 1 : i];
+                dst[j * 3 + 2] = src[i + 2];
+
+                if (!(primRestart && (src[i] == 0xFF)))
+                {
+                    if (src[i] < imin) imin = src[i];
+                    if (src[i] > imax) imax = src[i];
+                }
+
+                j++;
+            }
+
+            /* Compute min/max for the last 2 indices. */
+            if (!(primRestart && (src[triangles] == 0xFF)))
+            {
+                if (src[triangles] < imin) imin = src[triangles];
+                if (src[triangles] > imax) imax = src[triangles];
+            }
+
+            if (!(primRestart && (src[triangles + 1] == 0xFF)))
+            {
+                if (src[triangles + 1] < imin) imin = src[triangles + 1];
+                if (src[triangles + 1] > imax) imax = src[triangles + 1];
+            }
+        }
+        break;
+
+    case gcvINDEX_16:
+        /* 16-bit indices. */
+        {
+            gctUINT16 *dst;
+            const gctUINT16 *src = (gctUINT16 *)Indices;
+
+            dst = (gctUINT16 *)indices;
+            for (i = 0, j = 0; i < triangles; i++)
+            {
+                dst[j * 3]     = src[(i % 2) == 0 ? i : i + 1];
+                dst[j * 3 + 1] = src[(i % 2) == 0 ? i + 1 : i];
+                dst[j * 3 + 2] = src[i + 2];
+
+                if (!(primRestart && (src[i] == 0xFFFF)))
+                {
+                    if (src[i] < imin) imin = src[i];
+                    if (src[i] > imax) imax = src[i];
+                }
+
+                j++;
+            }
+
+            /* Compute min/max for the last 2 indices. */
+            if (!(primRestart && (src[triangles] == 0xFFFF)))
+            {
+                if (src[triangles] < imin) imin = src[triangles];
+                if (src[triangles] > imax) imax = src[triangles];
+            }
+
+            if (!(primRestart && (src[triangles + 1] == 0xFFFF)))
+            {
+                if (src[triangles + 1] < imin) imin = src[triangles + 1];
+                if (src[triangles + 1] > imax) imax = src[triangles + 1];
+            }
+        }
+        break;
+
+    case gcvINDEX_32:
+        /* 32-bit indices. */
+        {
+            gctUINT32 *dst;
+            const gctUINT32 *src = (gctUINT32 *)Indices;
+
+            dst = (gctUINT32 *)indices;
+            for (i = 0, j = 0; i < triangles; i++)
+            {
+                dst[j * 3]     = src[(i % 2) == 0 ? i : i + 1];
+                dst[j * 3 + 1] = src[(i % 2) == 0 ? i + 1 : i];
+                dst[j * 3 + 2] = src[i + 2];
+
+                if (!(primRestart && (src[triangles] == 0xFFFFFFFF)))
+                {
+                    if (src[i] < imin) imin = src[i];
+                    if (src[i] > imax) imax = src[i];
+                }
+
+                j++;
+            }
+
+            /* Compute min/max for the last 2 indices. */
+            if (!(primRestart && (src[triangles] == 0xFFFFFFFF)))
+            {
+                if (src[triangles] < imin) imin = src[triangles];
+                if (src[triangles] > imax) imax = src[triangles];
+            }
+
+            if (!(primRestart && (src[triangles + 1] == 0xFFFFFFFF)))
+            {
+                if (src[triangles + 1] < imin) imin = src[triangles + 1];
+                if (src[triangles + 1] > imax) imax = src[triangles + 1];
+            }
+        }
+        break;
+
+    default:
+        gcmONERROR(gcvSTATUS_INVALID_ARGUMENT);
+    }
+
+    *iMin = imin;
+    *iMax = imax;
+
+    return gcvSTATUS_OK;
+OnError:
+    return status;
+}
+
+
 /*******************************************************************************
 **
-**  gcoINDEX_UploadDynamic
+**  gcoINDEX_UploadDynamicEx
 **
 **  Upload data into a dynamic index buffer.
 **
@@ -1293,46 +1847,118 @@ OnError:
 **      gcoINDEX Index
 **          Pointer to an gcoINDEX object that has been configured as dynamic.
 **
+**      gceINDEX_TYPE IndexType
+**          Type of index data to upload.
+**
 **      gctCONST_POINTER Data
 **          Pointer to a buffer containing the data to upload.
 **
 **      gctSIZE_T Bytes
 **          Number of bytes of data to upload.
+**
+**      gctBOOL ConvertToIndexedTriangleList
+**          Whether convert stripped/fan indices to triangle list.
 */
 gceSTATUS
-gcoINDEX_UploadDynamic(
+gcoINDEX_UploadDynamicEx(
     IN gcoINDEX Index,
+    IN gceINDEX_TYPE IndexType,
     IN gctCONST_POINTER Data,
-    IN gctSIZE_T Bytes
+    IN gctSIZE_T Bytes,
+    IN gctBOOL ConvertToIndexedTriangleList
     )
 {
     gceSTATUS status;
     gcsHAL_INTERFACE ioctl;
     gcsINDEX_DYNAMIC_PTR dynamic;
+    gctUINT32 iMin = ~0U, iMax = 0, aligned32, spilitIndexMod;
+    gctUINT8_PTR src, dest;
+    gctSIZE_T aligned, bytes;
+    gctSIZE_T count = 0, convertedBytes = 0;
+    gctUINT32 offset = 0;
 
-    gcmHEADER_ARG("Index=0x%x Data=0x%x Bytes=%lu", Index, Data, Bytes);
+    gcmHEADER_ARG("Index=0x%x IndexType=%d Data=0x%x Bytes=%lu",
+                  Index, IndexType, Data, Bytes);
 
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Index, gcvOBJ_INDEX);
     gcmDEBUG_VERIFY_ARGUMENT(Data != gcvNULL);
     gcmDEBUG_VERIFY_ARGUMENT(Bytes > 0);
 
+    /* If the index wasn't initialized as dynamic, do it now */
     if (Index->dynamic == gcvNULL)
     {
-        gcmONERROR(gcvSTATUS_INVALID_REQUEST);
+        gcmONERROR(gcoINDEX_SetDynamic(Index, 128 << 10, 32));
+    }
+
+    if (Index->dynamicAllocate)
+    {
+        status = gcoINDEX_UploadDynamicEx2(Index,
+                                           IndexType,
+                                           Data,
+                                           Bytes,
+                                           ConvertToIndexedTriangleList
+                                           );
+
+        gcmFOOTER_NO();
+        return status;
     }
 
     /* Shorthand the pointer. */
     dynamic = Index->dynamicHead;
     gcmASSERT(dynamic != gcvNULL);
 
+    if (ConvertToIndexedTriangleList)
+    {
+        gctUINT indexSize = 0;
+
+        /* Determine number of bytes in the index buffer. */
+        switch (IndexType)
+        {
+        case gcvINDEX_8:
+            indexSize = 1;
+            break;
+
+        case gcvINDEX_16:
+            indexSize = 2;
+            break;
+
+        case gcvINDEX_32:
+            indexSize = 4;
+            break;
+
+        default:
+            gcmONERROR(gcvSTATUS_INVALID_ARGUMENT);
+        }
+
+        /* Converting a triangle strip into triangle list. */
+        count = Bytes / indexSize;
+        convertedBytes = (3 * (count - 2)) * indexSize;
+        Bytes = convertedBytes;
+    }
+
     /* Make sure the dynamic index buffer is large enough to hold this data. */
     if (Bytes > dynamic->bytes)
     {
-        gcmONERROR(gcvSTATUS_DATA_TOO_LARGE);
+        /* Reallocate the index buffers. */
+        gcmONERROR(gcoINDEX_AllocateMemory(Index,
+                                           gcmALIGN(Bytes * 2, 4 << 10),
+                                           Index->dynamicCount));
     }
 
-    if (dynamic->free < gcmALIGN(Bytes, 4))
+    /* Compute number of aligned bytes. */
+
+    spilitIndexMod = (dynamic->physical+dynamic->lastEnd+Bytes) % SPILIT_INDEX_CHUNCK_BYTE;
+    if(gcoHAL_IsFeatureAvailable(gcvNULL,gcvFEATURE_INDEX_FETCH_FIX) != gcvSTATUS_TRUE
+       && spilitIndexMod < SPILIT_INDEX_OFFSET)
+    {
+        offset = SPILIT_INDEX_OFFSET - spilitIndexMod;
+        offset = gcmALIGN(offset, 4);
+    }
+
+    aligned = gcmALIGN(Bytes + offset, 4);
+
+    if (dynamic->free < aligned)
     {
         /* Not enough free bytes in this buffer, mark it busy. */
         gcmONERROR(gcoOS_Signal(gcvNULL,
@@ -1341,20 +1967,21 @@ gcoINDEX_UploadDynamic(
 
         /* Schedule a signal event. */
         ioctl.command            = gcvHAL_SIGNAL;
-        ioctl.u.Signal.signal    = dynamic->signal;
-        ioctl.u.Signal.auxSignal = gcvNULL;
-        ioctl.u.Signal.process   = gcoOS_GetCurrentProcessID();
+        ioctl.u.Signal.signal    = gcmPTR_TO_UINT64(dynamic->signal);
+        ioctl.u.Signal.auxSignal = 0;
+        ioctl.u.Signal.process   = gcmPTR_TO_UINT64(gcoOS_GetCurrentProcessID());
         ioctl.u.Signal.fromWhere = gcvKERNEL_COMMAND;
-        gcmONERROR(gcoHARDWARE_CallEvent(&ioctl));
+        gcmONERROR(gcoHARDWARE_CallEvent(gcvNULL, &ioctl));
 
         /* Commit the buffer. */
-        gcmONERROR(gcoHARDWARE_Commit());
+        gcmONERROR(gcoHARDWARE_Commit(gcvNULL));
 
         /* Move it to the tail of the queue. */
         gcmASSERT(Index->dynamicTail != gcvNULL);
         Index->dynamicTail->next = dynamic;
         Index->dynamicTail       = dynamic;
         Index->dynamicHead       = dynamic->next;
+        dynamic->next            = gcvNULL;
         gcmASSERT(Index->dynamicHead != gcvNULL);
 
         /* Reinitialize the top of the queue. */
@@ -1362,27 +1989,124 @@ gcoINDEX_UploadDynamic(
         dynamic->free      = dynamic->bytes;
         dynamic->lastStart = ~0U;
         dynamic->lastEnd   = 0;
+        spilitIndexMod = (dynamic->physical+dynamic->lastEnd+Bytes) % SPILIT_INDEX_CHUNCK_BYTE;
+        if (gcoHAL_IsFeatureAvailable(gcvNULL,gcvFEATURE_INDEX_FETCH_FIX) != gcvSTATUS_TRUE
+            && spilitIndexMod < SPILIT_INDEX_OFFSET)
+        {
+            offset= SPILIT_INDEX_OFFSET - spilitIndexMod;
+            offset = gcmALIGN(offset, 4);
+            aligned = gcmALIGN(Bytes + offset, 4);
+        }
 
-        /* Wait for the top of the queue to become available. */
-        gcmONERROR(gcoOS_WaitSignal(gcvNULL,
-                                    dynamic->signal,
-                                    gcPLS.hal->timeOut));
+        status = gcoOS_WaitSignal(gcvNULL, dynamic->signal, 0);
+        if (status == gcvSTATUS_TIMEOUT)
+        {
+            gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_INDEX,
+                          "Waiting for index buffer 0x%x",
+                          dynamic);
+
+            /* Wait for the top of the queue to become available. */
+            gcmONERROR(gcoOS_WaitSignal(gcvNULL,
+                                        dynamic->signal,
+                                        gcvINFINITE));
+        }
     }
 
-    /* Copy the index data. */
-    gcmONERROR(gcoOS_MemCopy(dynamic->logical + dynamic->lastEnd,
-                             Data,
-                             Bytes));
+    /* Setup pointers for copying data. */
+    src  = (gctUINT8_PTR) Data;
+    dest = dynamic->logical + dynamic->lastEnd + offset;
+
+    /* Dispatch on index type. */
+    if (ConvertToIndexedTriangleList)
+    {
+        _PatchIndices(dynamic->logical + dynamic->lastEnd,
+                      Data,
+                      IndexType,
+                      count,
+                      &iMin,
+                      &iMax);
+    }
+    else
+    {
+        gctBOOL primRestart = gcoHARDWARE_IsPrimitiveRestart(gcvNULL) == gcvTRUE;
+
+        switch (IndexType)
+        {
+        case gcvINDEX_8:
+            /* Copy all indices as 8-bit data. */
+            for (bytes = Bytes; bytes >= 1; --bytes)
+            {
+                gctUINT8 index = *(gctUINT8_PTR) src++;
+                *dest++ = index;
+
+                /* Skip the primitive restart index */
+                if (primRestart && (index == 0xFF))
+                {
+                    continue;
+                }
+
+                /* Keep track of min/max index. */
+                if (index < iMin) iMin = index;
+                if (index > iMax) iMax = index;
+            }
+            break;
+
+        case gcvINDEX_16:
+            /* Copy all indices as 16-bit data. */
+            for (bytes = Bytes; bytes >= 2; bytes -= 2)
+            {
+                gctUINT16 index = *(gctUINT16_PTR) src;
+                src += 2;
+                *(gctUINT16_PTR) dest = index;
+                dest += 2;
+
+                /* Skip the primitive restart index */
+                if (primRestart && (index == 0xFFFF))
+                {
+                    continue;
+                }
+
+                /* Keep track of min/max index. */
+                if (index < iMin) iMin = index;
+                if (index > iMax) iMax = index;
+            }
+            break;
+
+        case gcvINDEX_32:
+            /* Copy all indices as 32-bit data. */
+            for (bytes = Bytes; bytes >= 4; bytes -= 4)
+            {
+                gctUINT32 index = *(gctUINT32_PTR) src;
+                src += 4;
+                *(gctUINT32_PTR) dest = index;
+                dest += 4;
+
+                /* Skip the primitive restart index */
+                if (primRestart && (index == 0xFFFFFFFF))
+                {
+                    continue;
+                }
+
+                /* Keep track of min/max index. */
+                if (index < iMin) iMin = index;
+                if (index > iMax) iMax = index;
+            }
+            break;
+        }
+    }
+
     /* Flush the cache. */
-    gcmONERROR(gcoSURF_NODE_Cache(&Index->memory,
+    gcmONERROR(gcoSURF_NODE_Cache(&dynamic->memory,
                                 dynamic->logical + dynamic->lastEnd,
-                                Bytes,
-                                gcvCACHE_CLEAN));
+                                Bytes,gcvCACHE_CLEAN));
 
     /* Update the pointers. */
-    dynamic->lastStart = dynamic->lastEnd;
-    dynamic->lastEnd   = dynamic->lastStart + Bytes;
-    dynamic->free     -= gcmALIGN(Bytes, 4);
+    dynamic->lastStart = dynamic->lastEnd + offset;
+    gcmSAFECASTSIZET(aligned32, aligned);
+    dynamic->lastEnd   = dynamic->lastEnd + aligned32;
+    dynamic->free     -= aligned;
+    dynamic->minIndex  = iMin;
+    dynamic->maxIndex  = iMax;
 
     /* Dump the buffer. */
     gcmDUMP_BUFFER(gcvNULL,
@@ -1404,7 +2128,7 @@ OnError:
 
 /*******************************************************************************
 **
-**  gcoINDEX_UploadDynamicEx
+**  gcoINDEX_UploadDynamicEx2
 **
 **  Upload data into a dynamic index buffer.
 **
@@ -1423,27 +2147,31 @@ OnError:
 **          Number of bytes of data to upload.
 */
 gceSTATUS
-gcoINDEX_UploadDynamicEx(
-    IN gcoINDEX Index,
-    IN gceINDEX_TYPE IndexType,
-    IN gctCONST_POINTER Data,
-    IN gctSIZE_T Bytes
-    )
+gcoINDEX_UploadDynamicEx2(
+                          IN gcoINDEX Index,
+                          IN gceINDEX_TYPE IndexType,
+                          IN gctCONST_POINTER Data,
+                          IN gctSIZE_T Bytes,
+                          IN gctBOOL ConvertToIndexedTriangleList
+                          )
 {
     gceSTATUS status;
     gcsHAL_INTERFACE ioctl;
     gcsINDEX_DYNAMIC_PTR dynamic;
-    gctUINT32 iMin = ~0U, iMax = 0;
+    gctUINT32 iMin = ~0U, iMax = 0, aligned32, spilitIndexMod;
     gctUINT8_PTR src, dest;
-    gctSIZE_T aligned, bytes;
+    gctSIZE_T aligned, bytes, size;
+    gctSIZE_T count = 0, convertedBytes = 0;
+    gctUINT32 offset = 0;
 
     gcmHEADER_ARG("Index=0x%x IndexType=%d Data=0x%x Bytes=%lu",
-                  Index, IndexType, Data, Bytes);
+        Index, IndexType, Data, Bytes);
 
     /* Verify the arguments. */
     gcmVERIFY_OBJECT(Index, gcvOBJ_INDEX);
     gcmDEBUG_VERIFY_ARGUMENT(Data != gcvNULL);
     gcmDEBUG_VERIFY_ARGUMENT(Bytes > 0);
+    gcmASSERT(Index->dynamicAllocate == gcvTRUE);
 
     if (Index->dynamic == gcvNULL)
     {
@@ -1454,134 +2182,249 @@ gcoINDEX_UploadDynamicEx(
     dynamic = Index->dynamicHead;
     gcmASSERT(dynamic != gcvNULL);
 
-    /* Make sure the dynamic index buffer is large enough to hold this data. */
-    if (Bytes > dynamic->bytes)
+    if (ConvertToIndexedTriangleList)
     {
-        /* Reallocate the index buffers. */
-        gcmONERROR(gcoINDEX_AllocateMemory(Index,
-                                           gcmALIGN(Bytes * 2, 4 << 10),
-                                           Index->dynamicCount));
+        gctUINT indexSize = 0;
+
+        /* Determine number of bytes in the index buffer. */
+        switch (IndexType)
+        {
+        case gcvINDEX_8:
+            indexSize = 1;
+            break;
+
+        case gcvINDEX_16:
+            indexSize = 2;
+            break;
+
+        case gcvINDEX_32:
+            indexSize = 4;
+            break;
+
+        default:
+            gcmONERROR(gcvSTATUS_INVALID_ARGUMENT);
+        }
+
+        /* Converting a triangle strip into triangle list. */
+        count = Bytes / indexSize;
+        convertedBytes = (3 * (count - 2)) * indexSize;
+        Bytes = convertedBytes;
     }
 
-    /* Compute number of aligned bytes. */
-    aligned = gcmALIGN(Bytes, 4);
+    spilitIndexMod = (dynamic->physical+dynamic->lastEnd+Bytes) % SPILIT_INDEX_CHUNCK_BYTE;
+    if (gcoHAL_IsFeatureAvailable(gcvNULL,gcvFEATURE_INDEX_FETCH_FIX) != gcvSTATUS_TRUE
+        && spilitIndexMod < SPILIT_INDEX_OFFSET)
+    {
+        offset = SPILIT_INDEX_OFFSET - spilitIndexMod;
+        offset = gcmALIGN(offset, 16);
+    }
+
+    /* Compute number of aligned bytes. We need to align index buffer by 16 bytes.
+     * iMX6 instanced draw hangs if otherwise.
+    */
+    aligned = gcmALIGN(Bytes + offset, 16);
 
     if (dynamic->free < aligned)
     {
-        /* Not enough free bytes in this buffer, mark it busy. */
-        gcmONERROR(gcoOS_Signal(gcvNULL,
-                                dynamic->signal,
-                                gcvFALSE));
+        if (dynamic->bytes > 0)
+        {
+            /* Not enough free bytes in this buffer, mark it busy. */
+            gcmONERROR(gcoOS_Signal(gcvNULL,
+                dynamic->signal,
+                gcvFALSE));
 
-        /* Schedule a signal event. */
-        ioctl.command            = gcvHAL_SIGNAL;
-        ioctl.u.Signal.signal    = dynamic->signal;
-        ioctl.u.Signal.auxSignal = gcvNULL;
-        ioctl.u.Signal.process   = gcoOS_GetCurrentProcessID();
-        ioctl.u.Signal.fromWhere = gcvKERNEL_COMMAND;
-        gcmONERROR(gcoHARDWARE_CallEvent(&ioctl));
+            /* Schedule a signal event. */
+            ioctl.command            = gcvHAL_SIGNAL;
+            ioctl.u.Signal.signal    = gcmPTR_TO_UINT64(dynamic->signal);
+            ioctl.u.Signal.auxSignal = 0;
+            ioctl.u.Signal.process   = gcmPTR_TO_UINT64(gcoOS_GetCurrentProcessID());
+            ioctl.u.Signal.fromWhere = gcvKERNEL_COMMAND;
+            gcmONERROR(gcoHARDWARE_CallEvent(gcvNULL, &ioctl));
 
-        /* Commit the buffer. */
-        gcmONERROR(gcoHARDWARE_Commit());
+            /* Commit the buffer. */
+            gcmONERROR(gcoHARDWARE_Commit(gcvNULL));
+        }
 
-        /* Move it to the tail of the queue. */
-        gcmASSERT(Index->dynamicTail != gcvNULL);
-        Index->dynamicTail->next = dynamic;
-        Index->dynamicTail       = dynamic;
-        Index->dynamicHead       = dynamic->next;
-        dynamic->next            = gcvNULL;
-        gcmASSERT(Index->dynamicHead != gcvNULL);
+        /* Go to next dynamic
+        */
+        if (Index->dynamicAllocatedCount == 0)
+        {
+            dynamic = Index->dynamic;
+            Index->dynamicCurrent = 0;
+
+            size = gcmALIGN(Bytes * 2, 4 << 10);
+
+            size = size < Index->dynamicCacheSize ? Index->dynamicCacheSize : size;
+
+            /* Reallocate the index buffers. */
+            gcmONERROR(gcoINDEX_AllocateDynamicMemory(size,dynamic));
+
+            Index->dynamicAllocatedCount++;
+        }
+        else
+        {
+            Index->dynamicCurrent ++;
+            Index->dynamicCurrent = Index->dynamicCurrent % Index->dynamicAllocatedCount;
+
+            dynamic = Index->dynamic + Index->dynamicCurrent;
+
+            status = gcoOS_WaitSignal(gcvNULL, dynamic->signal, 0);
+
+            if (status == gcvSTATUS_TIMEOUT || dynamic->bytes < Bytes)
+            {
+                if (Index->dynamicAllocatedCount == Index->dynamicCount)
+                {
+                    gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_INDEX,
+                        "Waiting for index buffer 0x%x",
+                        dynamic);
+
+                    /* Wait for the top of the queue to become available. */
+                    gcmONERROR(gcoOS_WaitSignal(gcvNULL,
+                        dynamic->signal,
+                        gcvINFINITE));
+                }
+                else
+                {
+                    /* Go to new dynamic */
+                    dynamic = Index->dynamic + Index->dynamicAllocatedCount;
+                    Index->dynamicCurrent = Index->dynamicAllocatedCount;
+                    Index->dynamicAllocatedCount ++;
+                }
+
+                size = gcmALIGN(Bytes * 2, 4 << 10);
+
+                size = size < Index->dynamicCacheSize ? Index->dynamicCacheSize : size;
+
+                if (dynamic->bytes < size)
+                {
+                    /* Reallocate the index buffers. */
+                    gcmONERROR(gcoINDEX_AllocateDynamicMemory(size,dynamic));
+                }
+            }
+        }
+
+        Index->dynamicHead       = dynamic;
 
         /* Reinitialize the top of the queue. */
         dynamic            = Index->dynamicHead;
+
         dynamic->free      = dynamic->bytes;
         dynamic->lastStart = ~0U;
         dynamic->lastEnd   = 0;
 
-        status = gcoOS_WaitSignal(gcvNULL, dynamic->signal, 0);
-        if (status == gcvSTATUS_TIMEOUT)
+        spilitIndexMod = (dynamic->physical+dynamic->lastEnd+Bytes) % SPILIT_INDEX_CHUNCK_BYTE;
+        if(gcoHAL_IsFeatureAvailable(gcvNULL,gcvFEATURE_INDEX_FETCH_FIX) != gcvSTATUS_TRUE
+           && spilitIndexMod < SPILIT_INDEX_OFFSET )
         {
-            gcmTRACE_ZONE(gcvLEVEL_INFO, gcvZONE_INDEX,
-                          "Waiting for index buffer 0x%x",
-                          dynamic);
-
-            /* Wait for the top of the queue to become available. */
-            gcmONERROR(gcoOS_WaitSignal(gcvNULL,
-                                        dynamic->signal,
-                                        gcvINFINITE));
+            offset= SPILIT_INDEX_OFFSET - spilitIndexMod;
+            offset = gcmALIGN(offset, 16);
+            aligned = gcmALIGN(Bytes + offset, 16);
         }
     }
+
 
     /* Setup pointers for copying data. */
     src  = (gctUINT8_PTR) Data;
-    dest = dynamic->logical + dynamic->lastEnd;
+    dest = dynamic->logical + dynamic->lastEnd + offset;
 
     /* Dispatch on index type. */
-    switch (IndexType)
+    if (ConvertToIndexedTriangleList)
     {
-    case gcvINDEX_8:
-        /* Copy all indices as 8-bit data. */
-        for (bytes = Bytes; bytes >= 1; --bytes)
+        _PatchIndices(dynamic->logical + dynamic->lastEnd,
+            Data,
+            IndexType,
+            count,
+            &iMin,
+            &iMax);
+    }
+    else
+    {
+        gctBOOL primRestart = gcoHARDWARE_IsPrimitiveRestart(gcvNULL) == gcvTRUE;
+        switch (IndexType)
         {
-            gctUINT8 index = *(gctUINT8_PTR) src++;
-            *dest++ = index;
+        case gcvINDEX_8:
+            /* Copy all indices as 8-bit data. */
+            for (bytes = Bytes; bytes >= 1; --bytes)
+            {
+                gctUINT8 index = *(gctUINT8_PTR) src++;
+                *dest++ = index;
 
-            /* Keep track of min/max index. */
-            if (index < iMin) iMin = index;
-            if (index > iMax) iMax = index;
+                /* Skip the primitive restart index */
+                if (primRestart && (index == 0xFF))
+                {
+                    continue;
+                }
+
+                /* Keep track of min/max index. */
+                if (index < iMin) iMin = index;
+                if (index > iMax) iMax = index;
+            }
+            break;
+
+        case gcvINDEX_16:
+            /* Copy all indices as 16-bit data. */
+            for (bytes = Bytes; bytes >= 2; bytes -= 2)
+            {
+                gctUINT16 index = *(gctUINT16_PTR) src;
+                src += 2;
+                *(gctUINT16_PTR) dest = index;
+                dest += 2;
+
+                /* Skip the primitive restart index */
+                if (primRestart && (index == 0xFFFF))
+                {
+                    continue;
+                }
+
+                /* Keep track of min/max index. */
+                if (index < iMin) iMin = index;
+                if (index > iMax) iMax = index;
+            }
+            break;
+
+        case gcvINDEX_32:
+            /* Copy all indices as 32-bit data. */
+            for (bytes = Bytes; bytes >= 4; bytes -= 4)
+            {
+                gctUINT32 index = *(gctUINT32_PTR) src;
+                src += 4;
+                *(gctUINT32_PTR) dest = index;
+                dest += 4;
+
+                /* Skip the primitive restart index */
+                if (primRestart && (index == 0xFFFFFFFF))
+                {
+                    continue;
+                }
+
+                /* Keep track of min/max index. */
+                if (index < iMin) iMin = index;
+                if (index > iMax) iMax = index;
+            }
+            break;
         }
-        break;
-
-    case gcvINDEX_16:
-        /* Copy all indices as 16-bit data. */
-        for (bytes = Bytes; bytes >= 2; bytes -= 2)
-        {
-            gctUINT16 index = *(gctUINT16_PTR) src;
-            src += 2;
-            *(gctUINT16_PTR) dest = index;
-            dest += 2;
-
-            /* Keep track of min/max index. */
-            if (index < iMin) iMin = index;
-            if (index > iMax) iMax = index;
-        }
-        break;
-
-    case gcvINDEX_32:
-        /* Copy all indices as 32-bit data. */
-        for (bytes = Bytes; bytes >= 4; bytes -= 4)
-        {
-            gctUINT32 index = *(gctUINT32_PTR) src;
-            src += 4;
-            *(gctUINT32_PTR) dest = index;
-            dest += 4;
-
-            /* Keep track of min/max index. */
-            if (index < iMin) iMin = index;
-            if (index > iMax) iMax = index;
-        }
-        break;
     }
 
     /* Flush the cache. */
-    gcmONERROR(gcoSURF_NODE_Cache(&Index->memory,
-                                dynamic->logical + dynamic->lastEnd,
-                                Bytes,gcvCACHE_CLEAN));
+    gcmONERROR(gcoSURF_NODE_Cache(&dynamic->memory,
+        dynamic->logical + dynamic->lastEnd,
+        Bytes,gcvCACHE_CLEAN));
 
     /* Update the pointers. */
-    dynamic->lastStart = dynamic->lastEnd;
-    dynamic->lastEnd   = dynamic->lastStart + aligned;
+    dynamic->lastStart = dynamic->lastEnd+offset;
+    gcmSAFECASTSIZET(aligned32, aligned);
+    dynamic->lastEnd   = dynamic->lastEnd + aligned32;
     dynamic->free     -= aligned;
     dynamic->minIndex  = iMin;
     dynamic->maxIndex  = iMax;
 
     /* Dump the buffer. */
     gcmDUMP_BUFFER(gcvNULL,
-                   "index",
-                   dynamic->physical,
-                   dynamic->logical,
-                   dynamic->lastStart,
-                   Bytes);
+        "index",
+        dynamic->physical,
+        dynamic->logical,
+        dynamic->lastStart,
+        Bytes);
 
     /* Success. */
     gcmFOOTER_NO();
@@ -1631,10 +2474,23 @@ gcoINDEX_BindDynamic(
     }
 
     /* Program index buffer states. */
-    gcmONERROR(gcoHARDWARE_BindIndex(( Index->dynamicHead->physical
-                                     + Index->dynamicHead->lastStart
-                                     ),
-                                     Type));
+    if( gcoHAL_IsFeatureAvailable(gcvNULL,gcvFEATURE_INDEX_FETCH_FIX) == gcvSTATUS_TRUE)
+    {
+        gcmONERROR(gcoHARDWARE_BindIndex(gcvNULL,
+                                         (Index->dynamicHead->physical + Index->dynamicHead->lastStart),
+                                         0,
+                                         Type,
+                                         (Index->dynamicHead->lastEnd - Index->dynamicHead->lastStart)));
+    }
+    else
+    {
+        gcmONERROR(gcoHARDWARE_BindIndex(gcvNULL,
+                                         0,
+                                         (Index->dynamicHead->physical + Index->dynamicHead->lastStart),
+                                         Type,
+                                         (Index->dynamicHead->lastEnd - Index->dynamicHead->lastStart)));
+    }
+
 
     /* Success. */
     gcmFOOTER_NO();
@@ -1789,9 +2645,28 @@ gceSTATUS gcoINDEX_Upload(
 
 gceSTATUS gcoINDEX_UploadOffset(
     IN gcoINDEX Index,
-    IN gctUINT32 Offset,
+    IN gctSIZE_T Offset,
     IN gctCONST_POINTER Buffer,
     IN gctSIZE_T Bytes
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gctBOOL gcoINDEX_CheckRange(
+    IN gcoINDEX Index,
+    IN gceINDEX_TYPE Type,
+    IN gctINT Count,
+    IN gctUINT32  Indices
+    )
+{
+    return gcvSTATUS_OK;
+}
+
+gceSTATUS
+gcoINDEX_Merge(
+    IN gcoINDEX Index1,
+    IN gcoINDEX Index2
     )
 {
     return gcvSTATUS_OK;
@@ -1804,9 +2679,14 @@ gceSTATUS gcoINDEX_QueryCaps(
     OUT gctUINT * MaxIndex
     )
 {
-    *Index8 = gcvTRUE;
-    *Index16 = gcvTRUE;
-    *Index32 = gcvTRUE;
+    if (Index8 != gcvNULL)
+        *Index8 = gcvTRUE;
+    if (Index16 != gcvNULL)
+        *Index16 = gcvTRUE;
+    if (Index32 != gcvNULL)
+        *Index32 = gcvTRUE;
+    if (MaxIndex != gcvNULL)
+        *MaxIndex = 0;
     return gcvSTATUS_OK;
 }
 
@@ -1819,8 +2699,10 @@ gceSTATUS gcoINDEX_GetIndexRange(
     OUT gctUINT32 * MaximumIndex
     )
 {
-    *MinimumIndex = 0;
-    *MaximumIndex = 0;
+    if (MinimumIndex != gcvNULL)
+        *MinimumIndex = 0;
+    if (MaximumIndex != gcvNULL)
+        *MaximumIndex = 0;
     return gcvSTATUS_OK;
 }
 
@@ -1833,20 +2715,12 @@ gceSTATUS gcoINDEX_SetDynamic(
     return gcvSTATUS_OK;
 }
 
-gceSTATUS gcoINDEX_UploadDynamic(
-    IN gcoINDEX Index,
-    IN gctCONST_POINTER Data,
-    IN gctSIZE_T Bytes
-    )
-{
-    return gcvSTATUS_OK;
-}
-
 gceSTATUS gcoINDEX_UploadDynamicEx(
     IN gcoINDEX Index,
     IN gceINDEX_TYPE IndexType,
     IN gctCONST_POINTER Data,
-    IN gctSIZE_T Bytes
+    IN gctSIZE_T Bytes,
+    IN gctBOOL ConvertToIndexedTriangleList
     )
 {
     return gcvSTATUS_OK;
@@ -1866,10 +2740,13 @@ gceSTATUS gcoINDEX_GetDynamicIndexRange(
     OUT gctUINT32 * MaximumIndex
     )
 {
-    *MinimumIndex = 0;
-    *MaximumIndex = 0;
+    if (MinimumIndex != gcvNULL)
+        *MinimumIndex = 0;
+    if (MaximumIndex != gcvNULL)
+        *MaximumIndex = 0;
     return gcvSTATUS_OK;
 }
 
 #endif /* gcdNULL_DRIVER < 2 */
-#endif /* VIVANTE_NO_3D */
+#endif /* gcdENABLE_3D */
+

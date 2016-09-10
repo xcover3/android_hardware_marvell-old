@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -9,10 +9,6 @@
 *    without the express written permission of Vivante Corporation.
 *
 *****************************************************************************/
-
-
-
-
 
 
 #include "gc_hal_user_hardware_precomp.h"
@@ -45,11 +41,15 @@
 gceSTATUS
 gcoHARDWARE_SelectPipe(
     IN gcoHARDWARE Hardware,
-    IN gcePIPE_SELECT Pipe
+    IN gcePIPE_SELECT Pipe,
+    INOUT gctPOINTER *Memory
     )
 {
-    gceSTATUS status;
+    gceSTATUS status = gcvSTATUS_OK;
 
+#if gcdENABLE_3D
+    gcmDEFINESTATEBUFFER_NEW(reserve, stateDelta, memory);
+#endif
     gcmHEADER_ARG("Hardware=0x%x Pipe=%d", Hardware, Pipe);
 
     gcmGETHARDWARE(Hardware);
@@ -63,30 +63,33 @@ gcoHARDWARE_SelectPipe(
         gcmONERROR(gcvSTATUS_NOT_SUPPORTED);
     }
 
+#if gcdENABLE_3D
+    if ((Pipe == gcvPIPE_3D) && !Hardware->features[gcvFEATURE_PIPE_3D])
+    {
+        gcmONERROR(gcvSTATUS_NOT_SUPPORTED);
+    }
+#endif
+
     /* Don't do anything if the pipe has already been selected. */
     if (Hardware->currentPipe != Pipe)
     {
-#if !defined(VIVANTE_NO_3D)
+#if gcdENABLE_3D
         /* Set new pipe. */
         Hardware->currentPipe = Pipe;
-
         /* Flush current pipe. */
-        gcmONERROR(gcoHARDWARE_FlushPipe());
+        gcmONERROR(gcoHARDWARE_FlushPipe(Hardware, Memory));
 
         /* Send sempahore and stall. */
         gcmONERROR(gcoHARDWARE_Semaphore(
-            gcvWHERE_COMMAND, gcvWHERE_PIXEL, gcvHOW_SEMAPHORE_STALL
+            Hardware, gcvWHERE_COMMAND, gcvWHERE_PIXEL, gcvHOW_SEMAPHORE_STALL, Memory
             ));
 
-        /* Perform a load state. */
-        gcmONERROR(gcoHARDWARE_LoadState32(
-            Hardware,
-            0x03800,
-            ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 0:0) - (0 ? 0:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 0:0) - (0 ? 0:0) + 1))))))) << (0 ? 0:0))) | (((gctUINT32) ((gctUINT32) (Pipe) & ((gctUINT32) ((((1 ? 0:0) - (0 ? 0:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 0:0) - (0 ? 0:0) + 1))))))) << (0 ? 0:0)))
-            ));
-#else
-        /* Not supposed to be pipe switching in NO_3D driver. */
-        gcmONERROR(gcvSTATUS_NOT_SUPPORTED);
+        gcmBEGINSTATEBUFFER_NEW(Hardware, reserve, stateDelta, memory, Memory);
+
+        {    {    gcmVERIFYLOADSTATEALIGNED(reserve, memory);    gcmASSERT((gctUINT32)1 <= 1024);    *memory++        = ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 31:27) - (0 ? 31:27) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:27) - (0 ? 31:27) + 1))))))) << (0 ? 31:27))) | (((gctUINT32) (0x01 & ((gctUINT32) ((((1 ? 31:27) - (0 ? 31:27) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 31:27) - (0 ? 31:27) + 1))))))) << (0 ? 31:27)))        | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 26:26) - (0 ? 26:26) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:26) - (0 ? 26:26) + 1))))))) << (0 ? 26:26))) | (((gctUINT32) ((gctUINT32) (gcvFALSE) & ((gctUINT32) ((((1 ? 26:26) - (0 ? 26:26) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 26:26) - (0 ? 26:26) + 1))))))) << (0 ? 26:26)))        | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 25:16) - (0 ? 25:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:16) - (0 ? 25:16) + 1))))))) << (0 ? 25:16))) | (((gctUINT32) ((gctUINT32) (1) & ((gctUINT32) ((((1 ? 25:16) - (0 ? 25:16) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 25:16) - (0 ? 25:16) + 1))))))) << (0 ? 25:16)))        | ((((gctUINT32) (0)) & ~(((gctUINT32) (((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0))) | (((gctUINT32) ((gctUINT32) (0x0E00) & ((gctUINT32) ((((1 ? 15:0) - (0 ? 15:0) + 1) == 32) ? ~0 : (~(~0 << ((1 ? 15:0) - (0 ? 15:0) + 1))))))) << (0 ? 15:0)));    gcmSKIPSECUREUSER();};    gcmSETSTATEDATA_NEW(stateDelta, reserve, memory, gcvFALSE, 0x0E00, Pipe);    gcmENDSTATEBATCH_NEW(reserve, memory);};
+
+        gcmENDSTATEBUFFER_NEW(Hardware, reserve, memory, Memory);
+
 #endif
     }
 

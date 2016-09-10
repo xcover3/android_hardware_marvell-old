@@ -1,6 +1,6 @@
 /****************************************************************************
 *
-*    Copyright (c) 2005 - 2012 by Vivante Corp.  All rights reserved.
+*    Copyright (c) 2005 - 2015 by Vivante Corp.  All rights reserved.
 *
 *    The material in this file is confidential and contains trade secrets
 *    of Vivante Corporation. This is proprietary information owned by
@@ -9,8 +9,6 @@
 *    without the express written permission of Vivante Corporation.
 *
 *****************************************************************************/
-
-
 
 
 /**
@@ -25,6 +23,7 @@
 /* Zone used for header/footer. */
 #define _GC_OBJ_ZONE    gcvZONE_2D
 
+#if gcdENABLE_2D
 /******************************************************************************\
 ********************************** Structures **********************************
 \******************************************************************************/
@@ -164,7 +163,7 @@ static gceSTATUS _BuildBrushBuffer(
         size32 = size8 / 4;
 
         /* Copy brush bitmap. */
-        gcmVERIFY_OK(gcoOS_MemCopy(brushData + index, ColorBits, size8));
+        gcoOS_MemCopy(brushData + index, ColorBits, size8);
         index += size32;
     }
     else if ((OriginX != ~0U) && (OriginY != ~0U))
@@ -392,7 +391,7 @@ static gceSTATUS _Construct(
             bitmap = pointer;
 
             /* Copy the bitmap. */
-            gcmVERIFY_OK(gcoOS_MemCopy(bitmap, ColorBits, dataSize));
+            gcoOS_MemCopy(bitmap, ColorBits, dataSize);
         }
 
         /* Initialize the gcoBRUSH object.*/
@@ -894,7 +893,7 @@ gcoBRUSH_GetBrushData(
 **          If not zero, the flush function will upload the pattern data
 **          to the video memory block.
 **
-**      gcuVIDMEM_NODE_PTR Node
+**      gcsSURF_NODE_PTR Node
 **          Pointer to video memory node object.
 **
 **  OUTPUT:
@@ -918,7 +917,7 @@ gcoBRUSH_FlushBrush(
     /* Program the brush. */
     do
     {
-        if (Brush->colorBits != gcvNULL)
+        if (Brush && Brush->colorBits != gcvNULL)
         {
             /*
                Color brush.
@@ -931,9 +930,9 @@ gcoBRUSH_FlushBrush(
             /* Copy the pattern to the video memory. */
             if (Upload)
             {
-                gcmVERIFY_OK(gcoOS_MemCopy(Node->logical,
-                                           Brush->colorBits,
-                                           Brush->colorSize));
+                gcoOS_MemCopy(Node->logical,
+                              Brush->colorBits,
+                              Brush->colorSize);
 
                 gcmVERIFY_OK(gcoSURF_NODE_Cache(Node,
                                               Node->logical,
@@ -983,3 +982,4 @@ gcoBRUSH_FlushBrush(
     gcmFOOTER();
     return status;
 }
+#endif  /* gcdENABLE_2D */
