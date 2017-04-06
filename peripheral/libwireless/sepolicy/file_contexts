@@ -1,0 +1,5 @@
+/data/misc/wireless(/.*)?     u:object_r:wireless_data_file:s0
+/system/bin/wireless_daemon   u:object_r:mwirelessd_exec:s0
+
+# Label the socket to communicate with wireless_daemon
+/data/misc/wireless/socket_daemon           u:object_r:mwirelessd_socket:s0

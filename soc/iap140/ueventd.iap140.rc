@@ -1,0 +1,2 @@
+# bluetooth
+/dev/mbtchar*               0660 system       net_bt_stack

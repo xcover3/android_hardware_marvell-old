@@ -1,0 +1,2 @@
+# Bluetooth
+/dev/mbtchar[0-9]+      u:object_r:bluetoothtbd_device:s0

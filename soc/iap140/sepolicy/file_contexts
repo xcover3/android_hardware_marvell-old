@@ -1,0 +1,9 @@
+# Serial console
+/dev/ttyS1        u:object_r:console_device:s0
+
+# Block devices
+/dev/block/platform/soc\.2/d4200000\.axi/d4281000\.sdh/by-name/misc          u:object_r:misc_block_device:s0
+/dev/block/platform/soc\.2/d4200000\.axi/d4281000\.sdh/by-name/boot_a        u:object_r:boot_block_device:s0
+/dev/block/platform/soc\.2/d4200000\.axi/d4281000\.sdh/by-name/system_a      u:object_r:system_block_device:s0
+/dev/block/platform/soc\.2/d4200000\.axi/d4281000\.sdh/by-name/boot_b        u:object_r:boot_block_device:s0
+/dev/block/platform/soc\.2/d4200000\.axi/d4281000\.sdh/by-name/system_b      u:object_r:system_block_device:s0

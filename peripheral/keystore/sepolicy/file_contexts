@@ -1,0 +1,4 @@
+# teesst
+/dev/tzdd                 u:object_r:teecsstdca_device:s0
+/system/bin/teec_sstd_ca  u:object_r:teecsstdca_exec:s0
+/teesst(/.*)?             u:object_r:teesst_data_file:s0

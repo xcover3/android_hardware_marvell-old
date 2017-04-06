@@ -1,0 +1,31 @@
+# Domain for mwirelessd, the daemon that manages WiFi and Bluetooth drivers
+type mwirelessd, domain;
+type mwirelessd_exec, exec_type, file_type;
+type mwirelessd_socket, file_type;
+
+init_daemon_domain(mwirelessd)
+
+allow mwirelessd init:unix_stream_socket { connectto newconn acceptfrom };
+
+allow mwirelessd shell_exec:file rx_file_perms;
+
+allow mwirelessd sysfs:file rw_file_perms;
+allow mwirelessd sysfs:dir  r_dir_perms;
+allow mwirelessd sysfs:lnk_file read;
+
+allow mwirelessd proc:file r_file_perms;
+
+allow mwirelessd system_data_file:dir create_dir_perms;
+allow mwirelessd system_data_file:sock_file create_file_perms;
+allow mwirelessd system_data_file:file r_file_perms;
+
+allow mwirelessd wireless_data_file:dir create_dir_perms;
+allow mwirelessd wireless_data_file:file create_file_perms;
+allow mwirelessd wireless_data_file:sock_file create_file_perms;
+
+allow mwirelessd self:capability { setuid setgid sys_module };
+allow mwirelessd mwirelessd_socket:sock_file unlink;
+
+dontaudit mwirelessd property_socket:sock_file create_file_perms;
+dontaudit mwirelessd sysfs_devices_system_cpu:dir r_dir_perms;
+dontaudit mwirelessd sysfs_devices_system_cpu:file r_file_perms;

@@ -1,0 +1,3 @@
+allow wifi_setup wireless_data_file:dir search;
+allow wifi_setup wireless_data_file:sock_file write;
+unix_socket_connect(wifi_setup, mwirelessd, mwirelessd)

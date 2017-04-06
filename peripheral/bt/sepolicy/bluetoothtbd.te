@@ -1,0 +1,5 @@
+# Added for Marvell Bluetooth
+unix_socket_connect(bluetoothtbd, mwirelessd, mwirelessd)
+allow bluetoothtbd wireless_data_file:dir search;
+allow bluetoothtbd wireless_data_file:sock_file write;
+

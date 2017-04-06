@@ -1,0 +1,3 @@
+# Allow init to create directories and symlinks in /config
+allow init configfs:dir create_dir_perms;
+allow init configfs:{ file lnk_file } create_file_perms;
