@@ -1,0 +1,37 @@
+include ./Rules.make
+
+CFLAGS    += -I "../../src" -I "../../src" -I "../../../../driver/include" -I "../../../../lib/include"
+LNFLAGS   += -lpthread -ldl -lm
+
+.SUFFIXES : .c
+
+.c.o :
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+all : ../../bin/appIcrTerm_Linux
+clean:
+	-rm -f ../../bin/appIcrTerm_Linux
+	-rm -f *.o
+
+IcrTerm.o : ../../src/IcrTerm.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+utility.o : ../../src/utility.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+viewmodes.o : ../../src/viewmodes.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+OBJS=\
+IcrTerm.o\
+utility.o\
+viewmodes.o\
+
+USR_LIBS=\
+../../../../lib/lib/libicrctrlsvr.a\
+../../../../driver/lib/libicrdriver.a\
+
+../../bin/appIcrTerm_Linux : $(OBJS) $(USR_LIBS)
+	$(LN) -o $@ $(OBJS) $(USR_LIBS) $(LNFLAGS)
+
+	-rm -f *.o

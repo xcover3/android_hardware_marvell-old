@@ -1,0 +1,31 @@
+LOCAL_PATH := $(call my-dir)
+
+include $(CLEAR_VARS)
+
+LOCAL_PRELINK_MODULE := false
+
+LOCAL_SRC_FILES := \
+src/Mpeg2Dec.c\
+src/vgbuffer.c\
+../main/src/main.c
+
+LOCAL_MODULE := appMpeg2Dec.exe
+
+LOCAL_MODULE_TAGS := optional
+
+LOCAL_CFLAGS :=  -D_IPP_LINUX -D_LINUX 
+
+LOCAL_SHARED_LIBRARIES :=  libcodecmpeg2dec libmiscgen
+
+LOCAL_C_INCLUDES := \
+    $(LOCAL_PATH)/include \
+    $(LOCAL_PATH)/../misc \
+    vendor/marvell/generic/ipplib/include \
+
+ 	
+LOCAL_MODULE_PATH :=$(LOCAL_PATH)
+
+-include $(PV_TOP)/Android_system_extras.mk
+
+include $(BUILD_EXECUTABLE)
+
